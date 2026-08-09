@@ -49,7 +49,9 @@ module keyboard (
 	// Column outputs to ULA
 	KEYB,
 
-	F11
+	F11,
+	F8,
+	F12
 );
 
 	input           CLK;
@@ -62,6 +64,8 @@ module keyboard (
 	output reg [4:0]   KEYB;
 
 	output reg      F11;
+	output reg      F8;
+	output reg      F12;
 
 	// Interface to PS/2 block
 	wire    [7:0]   keyb_data;
@@ -72,6 +76,12 @@ module keyboard (
 	reg     [4:0]   keys [0:7];
 	reg             release_key;
 	reg             extended;
+	// Tracks whether a PC Shift key is currently physically held, so the
+	// number row can send "!"/"@"/"#"/"+" (SYMBOL SHIFT + digit) when
+	// shifted and plain digits when not - independent of keys[0][0],
+	// which several other combo keys also drive for their own fixed
+	// CAPS SHIFT combos (EDIT is on its own dedicated key, see Esc below).
+	reg             pc_shift;
 
 	ps2_intf ps2 (
 		.CLK(CLK),
@@ -109,6 +119,7 @@ module keyboard (
 		if (nRESET == 1'b0) begin
 			release_key <= 1'b0;
 			extended <= 1'b0;
+			pc_shift <= 1'b0;
 
 			keys[0] <= 5'b11111;
 			keys[1] <= 5'b11111;
@@ -119,6 +130,8 @@ module keyboard (
 			keys[6] <= 5'b11111;
 			keys[7] <= 5'b11111;
 			F11 <= 1'b0;
+			F8 <= 1'b0;
+			F12 <= 1'b0;
 		end else begin
 			if (keyb_valid == 1'b1) begin
 				if (keyb_data == 8'he0) begin
@@ -133,8 +146,14 @@ module keyboard (
 					extended <= 1'b0;
 
 					case (keyb_data)
-						8'h12: keys[0][0] <= release_key; // Left shift (CAPS SHIFT)
-						8'h59: keys[0][0] <= release_key; // Right shift (CAPS SHIFT)
+						8'h12: begin // Left shift (CAPS SHIFT)
+							keys[0][0] <= release_key;
+							pc_shift <= ~release_key;
+						end
+						8'h59: begin // Right shift (CAPS SHIFT)
+							keys[0][0] <= release_key;
+							pc_shift <= ~release_key;
+						end
 						8'h1a: keys[0][1] <= release_key; // Z
 						8'h22: keys[0][2] <= release_key; // X
 						8'h21: keys[0][3] <= release_key; // C
@@ -152,9 +171,27 @@ module keyboard (
 						8'h2d: keys[2][3] <= release_key; // R
 						8'h2c: keys[2][4] <= release_key; // T
 
-						8'h16: keys[3][0] <= release_key; // 1
-						8'h1e: keys[3][1] <= release_key; // 2
-						8'h26: keys[3][2] <= release_key; // 3
+						8'h16: begin // 1, or Shift+1 -> "!"
+							if (pc_shift) begin
+								keys[0][0] <= 1'b1; // cancel the CAPS SHIFT the Shift key asserted
+								keys[7][1] <= release_key; // SYMBOL SHIFT
+							end
+							keys[3][0] <= release_key;
+						end
+						8'h1e: begin // 2, or Shift+2 -> "@"
+							if (pc_shift) begin
+								keys[0][0] <= 1'b1;
+								keys[7][1] <= release_key;
+							end
+							keys[3][1] <= release_key;
+						end
+						8'h26: begin // 3, or Shift+3 -> "#"
+							if (pc_shift) begin
+								keys[0][0] <= 1'b1;
+								keys[7][1] <= release_key;
+							end
+							keys[3][2] <= release_key;
+						end
 						8'h25: keys[3][3] <= release_key; // 4
 						8'h2e: keys[3][4] <= release_key; // 5
 
@@ -208,16 +245,58 @@ module keyboard (
 							keys[0][0] <= release_key;
 							keys[4][0] <= release_key;
 						end
-						8'h58: begin // Caps lock (CAPS 2)
+						8'h58: begin // Caps lock -> Graphics mode, "G" cursor (CAPS SHIFT + 9)
 							keys[0][0] <= release_key;
-							keys[3][1] <= release_key;
+							keys[4][1] <= release_key;
 						end
-						8'h76: begin // Escape (CAPS SPACE)
+						8'h76: begin // Escape -> EDIT (CAPS SHIFT + 1)
 							keys[0][0] <= release_key;
-							keys[7][0] <= release_key;
+							keys[3][0] <= release_key;
+						end
+						8'h0d: begin // Tab -> Extended mode, "E" cursor (CAPS SHIFT + SYMBOL SHIFT)
+							keys[0][0] <= release_key;
+							keys[7][1] <= release_key;
+						end
+
+						// PC punctuation keys, unshifted, sent as SYMBOL SHIFT +
+						// the letter that carries that symbol on a real Spectrum
+						// keyboard - so they type like on a normal PC keyboard
+						8'h41: begin // , (comma) -> SYMBOL SHIFT + N
+							keys[7][1] <= release_key;
+							keys[7][3] <= release_key;
+						end
+						8'h49: begin // . (period) -> SYMBOL SHIFT + M
+							keys[7][1] <= release_key;
+							keys[7][2] <= release_key;
+						end
+						8'h4a: begin // / (slash) -> SYMBOL SHIFT + V
+							keys[7][1] <= release_key;
+							keys[0][4] <= release_key;
+						end
+						8'h4c: begin // ; (semicolon) -> SYMBOL SHIFT + O
+							keys[7][1] <= release_key;
+							keys[5][1] <= release_key;
+						end
+						8'h52: begin // ' (apostrophe) -> SYMBOL SHIFT + P ("), no separate ' on Spectrum
+							keys[7][1] <= release_key;
+							keys[5][0] <= release_key;
+						end
+						8'h4e: begin // - (minus) -> SYMBOL SHIFT + J
+							keys[7][1] <= release_key;
+							keys[6][3] <= release_key;
+						end
+						8'h55: begin // = (equals), or Shift+= -> "+" (SYMBOL SHIFT + K)
+							keys[7][1] <= release_key;
+							if (pc_shift) begin
+								keys[0][0] <= 1'b1; // cancel the CAPS SHIFT the Shift key asserted
+								keys[6][2] <= release_key; // K -> "+"
+							end else
+								keys[6][1] <= release_key; // L -> "="
 						end
 
 						8'h78: F11 <= ~release_key; // F11 key
+						8'h0a: F8  <= ~release_key; // F8 key  -> computer reset
+						8'h07: F12 <= ~release_key; // F12 key -> NMI
 
 						default: begin
 						end

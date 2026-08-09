@@ -12,3 +12,12 @@ PLLJ_PLLSPE_INFO.txt
 *.rpt
 *.smsg
 *.summary
+*.jic
+
+# ModelSim simulation artifacts - work library and run logs are
+# regenerated locally, not meaningful to track
+simulation/modelsim/work/
+simulation/modelsim/transcript
+simulation/modelsim/vsim_run*.log
+simulation/modelsim/trace*.log
+simulation/modelsim/spi_debug.log

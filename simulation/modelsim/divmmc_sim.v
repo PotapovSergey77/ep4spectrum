@@ -30,10 +30,13 @@ module divmmc (
 
 reg m1_trigger;
 
+// SIM-ONLY REORDERING: declare ctrl before the assigns that reference it
+// (some Verilog compilers, unlike Quartus, require declare-before-use) -
+// no functional change, just a local copy for simulation.
+reg [7:0] ctrl;
 assign sram_page = ctrl[3:0];
 assign mapram = ctrl[6];
 assign conmem = ctrl[7];
-reg [7:0] ctrl;
 
 // Control del modulo SPI
 reg spi_tx_strobe;
@@ -63,20 +66,7 @@ always @(posedge clk) begin
 		if(a[3:0]==4'h7 && enable && !wr_n)
 			sd_cs <= din[0];
 
-		// SPI read/write
-		//
-		// clken gates this: enable/a/wr_n stay stable for the CPU's
-		// entire IN/OUT bus cycle (many clk edges), and this block
-		// runs on every raw clk edge (clken was previously declared
-		// but never referenced anywhere in this module). Without the
-		// gate, a single Z80 IN/OUT to the SPI data port retriggers
-		// spi.v's transfer every time it goes idle mid-bus-cycle,
-		// silently shifting several real SPI bytes through for what
-		// the ROM code believes is one byte - desyncing the byte
-		// stream from the SD card and making response bytes
-		// unreadable (confirmed via simulation: a card-present
-		// behavioral SPI model would send a valid R1 response, but
-		// the ROM's poll loop only ever saw trailing 0xFF filler).
+		// SPI read/write (clken-gated - see divmmc.v for rationale)
 		if(enable && a[3:0]==4'hb && clken) begin
 			if(wr_n) spi_rx_strobe = 1'b1;
 			else     spi_tx_strobe = 1'b1;
