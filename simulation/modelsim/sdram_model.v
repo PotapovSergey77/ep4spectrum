@@ -1,0 +1,99 @@
+// sdram_model.v
+//
+// Behavioral SDRAM model, just complete enough to validate
+// sdram_ep4ce.v's ACTIVE -> READ/WRITE sequencing and the way
+// spectrum_top.v paces its accesses. Models the 4M x 16 x 4 bank part
+// on the EP4CE6E22C8 board: 12-bit row, 8-bit column, 2 bank bits.
+//
+// Deliberately not modelled: refresh timing/retention, tRP/tRC and
+// friends, power-up sequencing rules. The question this exists to
+// answer is purely "does a byte written at address X read back as the
+// same byte at address X", which is about command/address sequencing,
+// not analog retention.
+
+`timescale 1ns/1ps
+
+module sdram_model (
+	inout  [15:0] sd_data,
+	input  [11:0] sd_addr,
+	input  [1:0]  sd_dqm,
+	input  [1:0]  sd_ba,
+	input         sd_cs,
+	input         sd_we,
+	input         sd_ras,
+	input         sd_cas,
+	input         clk
+);
+
+	// flat address = {ba, row, col}, matching sdram_ep4ce.v's split of
+	// the 22-bit byte address it is handed (row=addr[19:8],
+	// ba=addr[21:20], col=addr[7:0])
+	reg [15:0] mem [0:4194303];
+
+	reg [11:0] active_row [0:3];
+
+	wire [3:0] cmd = {sd_cs, sd_ras, sd_cas, sd_we};
+
+	localparam CMD_NOP          = 4'b0111;
+	localparam CMD_ACTIVE       = 4'b0011;
+	localparam CMD_READ         = 4'b0101;
+	localparam CMD_WRITE        = 4'b0100;
+	localparam CMD_PRECHARGE    = 4'b0010;
+	localparam CMD_AUTO_REFRESH = 4'b0001;
+	localparam CMD_LOAD_MODE    = 4'b0000;
+
+	// CAS latency 3 read pipeline
+	reg [15:0] rd_data [0:3];
+	reg        rd_valid [0:3];
+
+	integer i;
+	initial begin
+		for (i = 0; i < 4; i = i + 1) begin
+			rd_valid[i] = 1'b0;
+			rd_data[i]  = 16'h0000;
+			active_row[i] = 12'h000;
+		end
+	end
+
+	// statistics, handy for spotting a write that never happened
+	integer writes_seen = 0;
+	integer reads_seen  = 0;
+
+	reg [21:0] a_full;
+
+	always @(posedge clk) begin
+		// shift the CAS pipeline
+		rd_valid[3] <= rd_valid[2];
+		rd_data[3]  <= rd_data[2];
+		rd_valid[2] <= rd_valid[1];
+		rd_data[2]  <= rd_data[1];
+		rd_valid[1] <= rd_valid[0];
+		rd_data[1]  <= rd_data[0];
+		rd_valid[0] <= 1'b0;
+
+		case (cmd)
+			CMD_ACTIVE: begin
+				active_row[sd_ba] <= sd_addr;
+			end
+
+			CMD_WRITE: begin
+				a_full = {sd_ba, active_row[sd_ba], sd_addr[7:0]};
+				if (sd_dqm[0] == 1'b0) mem[a_full][7:0]  = sd_data[7:0];
+				if (sd_dqm[1] == 1'b0) mem[a_full][15:8] = sd_data[15:8];
+				writes_seen = writes_seen + 1;
+			end
+
+			CMD_READ: begin
+				a_full = {sd_ba, active_row[sd_ba], sd_addr[7:0]};
+				rd_data[0]  <= mem[a_full];
+				rd_valid[0] <= 1'b1;
+				reads_seen  = reads_seen + 1;
+			end
+
+			default: ;
+		endcase
+	end
+
+	assign sd_data = rd_valid[3] ? rd_data[3] : 16'bzzzzzzzzzzzzzzzz;
+
+endmodule

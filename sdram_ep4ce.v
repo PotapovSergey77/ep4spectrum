@@ -63,7 +63,12 @@ localparam STATE_CMD_START = 3'd0;   // state in which a new command can be star
 localparam STATE_CMD_CONT  = STATE_CMD_START  + RASCAS_DELAY; // 4 command can be continued
 localparam STATE_LAST      = 3'd7;   // last state in cycle
 
-reg [2:0] q /* synthesis noprune */;
+// Explicit power-up value. Cyclone IV registers come out of
+// configuration at 0 anyway, so this changes nothing on hardware - but
+// without it the counter is X in simulation and, because every branch
+// of the condition below tests q, it stays X forever and the
+// controller never issues a single command.
+reg [2:0] q = 3'd0 /* synthesis noprune */;
 always @(posedge clk) begin
 	// 56Mhz counter synchronous to 7 Mhz clkref
    // force counter to pass state 5->6 exactly after the rising edge of clkref

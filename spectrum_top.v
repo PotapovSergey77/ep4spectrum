@@ -374,37 +374,52 @@ module spectrum_top (
 	//   runtime) - without this second pass it would find that area empty
 	//   and run garbage the moment it switches, regardless of whether an
 	//   SD card is even present.
-	// boot_copy_addr == 16384/16385: DIAGNOSTIC extra phase - see the
-	// address mux below.
 	reg         boot_copy_active;
 	reg  [14:0] boot_copy_addr;
-	reg  [14:0] boot_copy_waddr;
-	reg         boot_copy_wr;
+	reg         boot_prev_cpu_cycle;
 	wire [7:0]  boot_copy_rom_do;
 
+	// The write request is presented for a whole CPU slot rather than
+	// pulsed, so address and data stay put for the entire SDRAM
+	// transaction (see the pacing comment on the state machine below).
+	wire        boot_copy_wr = boot_copy_active & boot_settle_done & cpu_cycle;
+
+	// During the boot copy the ROM follows the copy counter; afterwards
+	// it follows the CPU, so the DivMMC fixed 8K can be served straight
+	// from block RAM (see the cpu_di mux).
 	rom_esxdos rom_esx (
 		.address(boot_copy_addr[12:0]),
 		.clock(clock),
 		.q(boot_copy_rom_do)
 	);
 
+	// Advance exactly one byte per CPU slot, at the end of the slot.
+	//
+	// This was previously gated on `mem_clken`, which looks like a slow
+	// per-slot tick but is not: clocks.v holds CLKEN_MEM high for three
+	// consecutive 56MHz clocks (counter 7, 8 and 9), so a
+	// `posedge clock, if (mem_clken)` block fires three times back to
+	// back and the address ran three bytes ahead inside a single slot.
+	// sdram_ep4ce.v needs the address stable across its whole 8-clock
+	// RAS->CAS sequence, so the row it opened and the column it wrote
+	// belonged to different addresses. Together with the write address
+	// being delayed a tick while the ROM data behind it was not, every
+	// byte landed several bytes away from where it belonged - confirmed
+	// on hardware, where reading the image back gave 0x01 at offset 0
+	// (the value from offset 5/6) instead of 0xF3.
+	//
+	// Keying off cpu_cycle instead gives the same address/data stability
+	// discipline the CPU's own SDRAM accesses get.
 	always @(posedge clock) begin
 		if (pll_locked == 1'b0) begin
-			boot_copy_active <= 1'b1;
-			boot_copy_addr <= 15'd0;
-			boot_copy_wr <= 1'b0;
-		end else if (mem_clken == 1'b1) begin
-			// paced by mem_clken (the same, much slower, tick the CPU's own
-			// SDRAM accesses use) rather than vid_clken - vid_clken is fast
-			// enough that the address/data here would change again before
-			// sdram_ep4ce.v's multi-tick RAS/CAS state machine finished the
-			// previous write, corrupting transactions.
-			// one tick behind boot_copy_addr, to match rom_esxdos's
-			// one-cycle read latency
-			boot_copy_wr <= boot_copy_active & boot_settle_done;
-			boot_copy_waddr <= boot_copy_addr;
-			if (boot_copy_active == 1'b1 && boot_settle_done == 1'b1) begin
-				if (boot_copy_addr == 15'd16385)
+			boot_copy_active    <= 1'b1;
+			boot_copy_addr      <= 15'd0;
+			boot_prev_cpu_cycle <= 1'b0;
+		end else begin
+			boot_prev_cpu_cycle <= cpu_cycle;
+			if (boot_prev_cpu_cycle == 1'b1 && cpu_cycle == 1'b0
+			    && boot_copy_active == 1'b1 && boot_settle_done == 1'b1) begin
+				if (boot_copy_addr == 15'd16383)
 					boot_copy_active <= 1'b0;
 				else
 					boot_copy_addr <= boot_copy_addr + 15'd1;
@@ -444,10 +459,18 @@ module spectrum_top (
 	// Board silkscreen numbers these in reverse of the LED[] index (its
 	// "LED1" is this code's LED[3], pin 84) - user wants the CS
 	// indicator specifically on silkscreen LED1, i.e. LED[3] here.
+	// DIAGNOSTIC: silkscreen LED1 (= LED[3]) lights when the readback
+	// verify has COMPLETED. Without this the displayed mismatch count is
+	// ambiguous - a count of 0000 reads the same whether every byte
+	// matched or the verify never ran at all (in which case the CPU is
+	// also still held in reset, which is exactly what happened).
 	assign LED[0] = 1'b1;
 	assign LED[1] = 1'b1;
 	assign LED[2] = 1'b1;
-	assign LED[3] = divmmc_cs;
+	// DIAGNOSTIC: lit once the boot copy has finished. Dark = the whole
+	// design is still held in reset by boot_copy_active, which is what a
+	// black screen plus a frozen PC would also look like.
+	assign LED[3] = boot_copy_active;
 
 	// ULA "ear" input (tape in) - no tape hardware on this board, keep idle
 	assign ula_ear_in = 1'b1;
@@ -800,6 +823,20 @@ module spectrum_top (
 	endgenerate
 
 	// first 1MB of sdram are used as ram, second 1MB sdram are used as rom
+	// rom_addr is registered on the same tick ram_addr is, so that the
+	// address presented to the SDRAM holds still for the whole of its
+	// RAS->CAS sequence.
+	//
+	// ram_addr has always been registered here; rom_addr was fed to the
+	// chip straight off cpu_a. That asymmetry did not matter while the
+	// ROM area was served from block RAM and SDRAM only ever carried
+	// data - but with DivMMC paged in the CPU fetches instructions out
+	// of SDRAM, and a combinational address can move between the cycle
+	// the row is opened and the cycle the column is read, so the byte
+	// that comes back belongs to neither. Confirmed on hardware: giving
+	// the CPU the chip to itself (video reads disabled) let the very
+	// same build boot ESXDOS through to the 48K ROM, while with video
+	// competing for the bus it ran off into RAM.
 	assign cpu_addr = (ram_enable == 1'b1) ? {1'b0, ram_addr} : {1'b1, rom_addr};
 
 	// Video from bank 7 (128K/+3)
@@ -882,10 +919,18 @@ module spectrum_top (
 			digit_scan <= digit_scan + 2'd1;
 	end
 
-	wire [3:0] nibble = (digit_scan == 2'd0) ? last_pc[3:0]   :
-	                    (digit_scan == 2'd1) ? last_pc[7:4]   :
-	                    (digit_scan == 2'd2) ? last_pc[11:8]  :
-	                                           last_pc[15:12];
+	// DIAGNOSTIC: display the SDRAM readback verify result instead of the
+	// live PC. 0000 = all 8192 bytes of the ESXDOS image read back out of
+	// SDRAM exactly as written, so the SDRAM round-trip is sound and the
+	// DivMMC fault lies elsewhere. Any other value = number of mismatching
+	// bytes, i.e. the ROM image the CPU is actually executing is corrupt.
+	// live CPU program counter, in hex
+	wire [15:0] seg_value = last_pc;
+
+	wire [3:0] nibble = (digit_scan == 2'd0) ? seg_value[3:0]   :
+	                    (digit_scan == 2'd1) ? seg_value[7:4]   :
+	                    (digit_scan == 2'd2) ? seg_value[11:8]  :
+	                                           seg_value[15:12];
 
 	reg [6:0] seg_gfedcba;
 	always @* begin
@@ -909,17 +954,14 @@ module spectrum_top (
 			4'hf: seg_gfedcba = 7'h71;
 		endcase
 	end
-	// Board wiring swaps segments b and f relative to the {g,f,e,d,c,b,a}
-	// bit order assumed above (confirmed on hardware: "3" displayed as
-	// a mirrored "6", the exact symptom of a b/f swap) - compensate here
-	// by swapping bits 1 (b) and 5 (f) when driving the physical pins,
-	// keeping the logical hex table above standard/untouched.
-	wire [6:0] seg_gfedcba_pins = {seg_gfedcba[6], seg_gfedcba[1], seg_gfedcba[4:2], seg_gfedcba[5], seg_gfedcba[0]};
-	assign SEG[6:0] = SEG_ACTIVE_LOW ? ~seg_gfedcba_pins : seg_gfedcba_pins;
-	// Decimal point repurposed as a live divmmc_paged_in indicator (lit
-	// while DivMMC's ROM is actually mapped in) - answers "does
-	// automap ever actually engage on this hardware at all" without
-	// adding another LED.
+	// REVERTED: a b/f segment swap was added here on the theory that the
+	// board wired those two segments crossed ("3" appearing as a mirrored
+	// "6"). It made every digit unreadable, so the wiring is in fact
+	// standard - the original odd-looking digit was a persistence blur
+	// from the display showing a rapidly-changing value (the PC), not a
+	// wiring fault. Straight mapping.
+	assign SEG[6:0] = SEG_ACTIVE_LOW ? ~seg_gfedcba : seg_gfedcba;
+	// decimal point doubles as a live "DivMMC ROM is paged in" indicator
 	assign SEG[7] = SEG_ACTIVE_LOW ? ~divmmc_paged_in : divmmc_paged_in;
 
 	wire [3:0] dig_onehot = 4'b0001 << digit_scan; // digit0=last_pc[3:0] (rightmost, matches earlier confirmed digit position) ... digit3=last_pc[15:12]
@@ -1000,31 +1042,15 @@ module spectrum_top (
 			// override the normal cpu/video arbitration outright.
 			sdram_oe = 1'b0;
 			sdram_we = 1'b1;
-			if (boot_copy_waddr < 15'd16384) begin
-				sdram_di = boot_copy_rom_do;
-				// pass 0 (boot_copy_waddr[13]=0): fixed ROM location, same
-				// address layout as rom_addr's DivMMC {1'b1, divmmc_addr}
-				// mapping with conmem=1 or mapram=0: {6'b000000, addr[12:0]}.
-				// pass 1: the mapram location (conmem=0, mapram=1):
-				// {6'b010011, addr[12:0]} - see boot_copy_addr comment above
-				sdram_addr = boot_copy_waddr[13] ?
-					{4'b0000, 2'b11, 6'b010011, boot_copy_waddr[12:0]} :
-					{4'b0000, 2'b11, 6'b000000, boot_copy_waddr[12:0]};
-			end else begin
-				// DIAGNOSTIC EXPERIMENT: zero out the RST 28h indirect-jump
-				// vector at 0x3DEE/0x3DEF (divmmc "hi" mapping, sram_page=0,
-				// which is what's live right after reset before any CPU
-				// code changes it) so RST 28h jumps to 0x0000 instead of
-				// whatever was in that never-initialized SDRAM before. This
-				// tests the theory that PC getting stuck at 0x0028 (and
-				// bouncing to 0x0038 on the interrupt vector) is caused by
-				// that vector table never being set up, rather than being
-				// the "real" fix - see conversation notes.
-				sdram_di = 8'h00;
-				sdram_addr = (boot_copy_waddr == 15'd16384) ?
-					{4'b0000, 2'b11, 2'b01, 4'b0000, 13'h1DEE} :
-					{4'b0000, 2'b11, 2'b01, 4'b0000, 13'h1DEF};
-			end
+			sdram_di = boot_copy_rom_do;
+			// pass 0 (boot_copy_addr[13]=0): fixed ROM location, same
+			// address layout as rom_addr's DivMMC {1'b1, divmmc_addr}
+			// mapping with conmem=1 or mapram=0: {6'b000000, addr[12:0]}.
+			// pass 1: the mapram location (conmem=0, mapram=1):
+			// {6'b010011, addr[12:0]} - see boot_copy_addr comment above
+			sdram_addr = boot_copy_addr[13] ?
+				{4'b0000, 2'b11, 6'b010011, boot_copy_addr[12:0]} :
+				{4'b0000, 2'b11, 6'b000000, boot_copy_addr[12:0]};
 		end else if (cpu_cycle == 1'b1) begin
 			sdram_oe = ~cpu_mreq_n & ~cpu_rd_n;  // any cpu read enables ram
 			sdram_we = ram_write;                // write only for memory used as ram

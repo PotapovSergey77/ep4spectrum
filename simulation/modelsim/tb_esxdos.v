@@ -179,8 +179,18 @@ module tb_esxdos;
 	reg [7:0] mem [0:(1<<21)-1];
 
 	integer i;
+	integer seed;
 	initial begin
-		for (i = 0; i < (1<<21); i = i + 1) mem[i] = 8'h00;
+		// Fill with pseudo-random garbage rather than zeros. Real SDRAM
+		// powers up with arbitrary contents, and the difference matters:
+		// with zeros the CPU slides harmlessly through a NOP field and
+		// finds its way back, which is what made earlier runs of this
+		// testbench look healthier than the board ever did. On hardware
+		// the same jump lands in garbage and the CPU ends up executing
+		// RAM at random addresses - reproduce that here.
+		seed = 32'h1234_5678;
+		for (i = 0; i < (1<<21); i = i + 1)
+			mem[i] = $random(seed);
 		// fixed ROM location: rom_addr = {1'b1(divmmc), 6'b000000, off[12:0]}
 		//   cpu_addr = {1'b1(rom), rom_addr} = 21'h180000 + off
 		$readmemh("esxmmc_plain.hex", mem, 21'h180000, 21'h181FFF);
