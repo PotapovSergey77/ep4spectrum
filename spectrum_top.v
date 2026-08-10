@@ -195,10 +195,10 @@ module spectrum_top (
 	reg             mem128 = 1'b1;
 
 	// Frame timing select: F5 picks Sinclair 48K, F8 picks Pentagon 128K.
-	// Pentagon runs a longer frame (320 lines of 232 T-states against
-	// 312 of 224) and takes its interrupt on line 239 instead of 248,
-	// which is what demos and music players written for it expect.
-	// Sinclair is the power-up default.
+	// Both use 224 T-states per line; Pentagon's frame is longer (320
+	// lines, 71680 T against 312 and 69888) and its interrupt falls on
+	// line 239 partway along the line rather than at the start of line
+	// 248. Sinclair is the power-up default.
 	reg             timing_pentagon = 1'b0;
 
 	// Master clock - 28 MHz
@@ -1089,9 +1089,24 @@ module spectrum_top (
 	// address of the first fetch that landed in the DivMMC sram-page
 	// window - stable, unlike a live PC, and says exactly where a jump
 	// into uninitialised page memory happened
-	// DIAGNOSTIC: a slow sample of the program counter. Updated about
-	// four times a second so it can actually be read - a live PC is a
-	// blur. Shows where execution sits when a TRD launch hangs.
+	// DIAGNOSTIC: count CPU clock enables between frame interrupts, i.e.
+	// how many T-states the CPU actually gets per frame. Shown divided
+	// by 16, so Sinclair's 69888 reads as 1110 and Pentagon's 71680 as
+	// 1180. Anything well below that is the shortfall the Pentagon demos
+	// are complaining about.
+	reg [19:0] tcount     = 20'd0;
+	reg [19:0] tcount_lat = 20'd0;
+	reg        irq_prev   = 1'b1;
+	always @(posedge clock) begin
+		irq_prev <= vid_irq_n;
+		if (irq_prev == 1'b1 && vid_irq_n == 1'b0) begin
+			tcount_lat <= tcount;
+			tcount     <= 20'd0;
+		end else if (cpu_clken == 1'b1) begin
+			tcount <= tcount + 20'd1;
+		end
+	end
+
 	reg [15:0] pc_slow = 16'd0;
 	reg [22:0] pc_slow_cnt = 23'd0;
 	reg        pc_arm = 1'b0;
@@ -1108,10 +1123,11 @@ module spectrum_top (
 			pc_arm  <= 1'b0;
 		end
 	end
-	wire [3:0] nibble = (digit_scan == 2'd0) ? pc_slow[3:0]   :
-	                    (digit_scan == 2'd1) ? pc_slow[7:4]   :
-	                    (digit_scan == 2'd2) ? pc_slow[11:8]  :
-	                                           pc_slow[15:12];
+	wire [15:0] tshow = tcount_lat[19:4];
+	wire [3:0] nibble = (digit_scan == 2'd0) ? tshow[3:0]   :
+	                    (digit_scan == 2'd1) ? tshow[7:4]   :
+	                    (digit_scan == 2'd2) ? tshow[11:8]  :
+	                                           tshow[15:12];
 
 	wire digit_blank = 1'b0;
 	wire digit_dp    = divmmc_paged_in && (digit_scan == 2'd0);

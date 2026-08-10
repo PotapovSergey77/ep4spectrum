@@ -228,15 +228,24 @@ module video (
 	assign nWAIT = 1'b1;
 
 	// First 192 lines are picture
-	// Frame geometry, selected by PENTAGON. Sinclair 48K is 224
-	// T-states per line and 312 lines per frame; Pentagon 128K is 232
-	// per line and 320 lines. hcounter runs at twice the pixel rate, so
-	// its limit is doubled (895 vs 911); vcounter[9:1] is the real line
-	// number, so its limit is not.
-	wire [9:0] hcount_last = PENTAGON ? 10'd911 : 10'd895;
+	// Frame geometry. Both machines use 224 T-states per line - only the
+	// frame length differs: 312 lines on Sinclair 48K (69888 T) against
+	// 320 on Pentagon 128K (71680 T). hcounter runs at twice the pixel
+	// rate, so 224 T-states is 448 counts and the limit is 895 either
+	// way; vcounter[9:1] is the real line number, so its limit is not
+	// doubled.
+	wire [9:0] hcount_last = 10'd895;
 	wire [8:0] vline_last  = PENTAGON ? 9'd319  : 9'd311;
-	// Frame interrupt line: 248 on Sinclair, 239 on Pentagon.
+
+	// Frame interrupt. Sinclair takes it at the start of line 248;
+	// Pentagon takes it on line 239 but partway along the line, at
+	// horizontal count 326. Getting that horizontal position wrong
+	// shifts everything a demo draws relative to the interrupt - with the
+	// interrupt fired at the start of the line instead, raster bars came
+	// out visibly too high. Held for 64 counts, i.e. the usual 32
+	// T-states.
 	wire [8:0] int_line    = PENTAGON ? 9'd239  : 9'd248;
+	localparam INT_HPOS    = 10'd326;
 
 	assign vpicture = ~(vcounter[9] | (vcounter[8] & vcounter[7]));
 
@@ -401,7 +410,8 @@ module video (
 			// behaviour exactly - vcounter[9:3] == 7'b0111110 is lines
 			// 248..251, i.e. vcounter[9:1] in 248..251.
 			if (PENTAGON == 1'b1) begin
-				if (vcounter[9:1] == int_line)
+				if (vcounter[9:1] == int_line &&
+				    hcounter >= INT_HPOS && hcounter < (INT_HPOS + 10'd64))
 					nIRQ <= 1'b0;
 			end else begin
 				if (vcounter[9:3] == 7'b0111110)
