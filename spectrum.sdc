@@ -1,5 +1,30 @@
 create_clock -name CLOCK_50 -period 20.000 [get_ports {CLOCK_50}]
 derive_pll_clocks
+
+# --------------------------------------------------------------------
+# Clocks the design makes in logic
+# --------------------------------------------------------------------
+#
+# These are the reason builds behaved like a lottery. TimeQuest listed
+# them as "was determined to be a clock but was found without an
+# associated clock assignment", which means it did not analyse anything
+# they clock - and `clock` is the 28MHz system clock that runs the CPU,
+# the video and effectively the whole design. So almost nothing was
+# being timed, the fitter placed it however it liked, and unrelated
+# edits (down to which signal drove an LED) flipped the board between
+# working and hanging while simulation stayed clean throughout.
+#
+# clock is clk56 halved in logic (clock <= ~clock).
+create_generated_clock -name clk28 \
+	-source [get_pins {pll|altpll_component|auto_generated|pll1|clk[0]}] \
+	-divide_by 2 [get_pins {clock|q}]
+
+# The block ROMs are clocked by the PSG clock enable pulse, which
+# clocks.v produces once per 16 cycles of clock.
+create_generated_clock -name clk_psg \
+	-source [get_pins {clock|q}] -divide_by 16 \
+	[get_pins {clocks:clken|CLKEN_PSG|q}]
+
 derive_clock_uncertainty
 
 # --------------------------------------------------------------------
@@ -47,6 +72,24 @@ set_multicycle_path -setup -end 2 \
 set_multicycle_path -hold -end 1 \
 	-from [get_ports {SDRAM_DQ[*]}] \
 	-to   [get_registers {sdram_ep4ce:sdr|dout_r[*]}]
+
+# Write data reaches SDRAM_DQ combinationally, from registers a long way
+# back (the boot-copy ROM, or the CPU through the arbitration mux), so
+# by a single-cycle measure it misses setup at the chip. In reality the
+# mux selects a requester for a whole slot and the data sits there well
+# before the WRITE command is issued later in the same q cycle.
+set_multicycle_path -setup -start 2 -to [get_ports {SDRAM_DQ[*]}]
+set_multicycle_path -hold  -start 1 -to [get_ports {SDRAM_DQ[*]}]
+
+# The video controller reads the bus through the unregistered dout_raw
+# and latches it on its own schedule, which is likewise not the edge
+# that launched the data. Same correction as above.
+set_multicycle_path -setup -end 2 \
+	-from [get_ports {SDRAM_DQ[*]}] \
+	-to   [get_registers {video:vid|*}]
+set_multicycle_path -hold -end 1 \
+	-from [get_ports {SDRAM_DQ[*]}] \
+	-to   [get_registers {video:vid|*}]
 
 # --------------------------------------------------------------------
 # Asynchronous / non-timing-critical I/O

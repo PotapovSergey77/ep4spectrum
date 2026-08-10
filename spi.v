@@ -31,6 +31,12 @@ module spi (
 // of thing its timeouts are not written for. /8 gives 56MHz/2/8 =
 // 3.5MHz, comfortably inside the 25MHz an SD card allows in SPI mode
 // and roughly the rate real DivMMC hardware runs at.
+// The usable window is narrower than "slower is safer" would suggest.
+// 219kHz initialised the card and mounted the filesystem but timed
+// ESXDOS out when loading a file; 1.75MHz stopped even initialising, so
+// ESXDOS's card-init path has its own timeout that a slow clock misses.
+// 3.5MHz is the rate that has actually got through both, and it is what
+// real DivMMC hardware runs at.
 reg [2:0] div_cnt;
 wire      tick = (div_cnt == 3'd7);
 always @(posedge clk) div_cnt <= div_cnt + 3'd1;

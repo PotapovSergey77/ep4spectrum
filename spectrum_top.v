@@ -1003,16 +1003,15 @@ module spectrum_top (
 	// address of the first fetch that landed in the DivMMC sram-page
 	// window - stable, unlike a live PC, and says exactly where a jump
 	// into uninitialised page memory happened
-	// DivMMC sram page currently selected; the decimal point below shows
-	// whether its ROM is paged in
-	// DivMMC sram page currently selected; the decimal point shows
-	// whether its ROM is paged in
-	wire [15:0] seg_value = {12'h000, divmmc_sram_page};
+	// Display layout, left to right: "3.5" (the CPU clock in MHz), a
+	// blanked digit, then the currently selected memory page.
+	wire [3:0] nibble = (digit_scan == 2'd0) ? divmmc_sram_page :
+	                    (digit_scan == 2'd1) ? 4'd0             :  // blanked
+	                    (digit_scan == 2'd2) ? 4'd5             :
+	                                           4'd3;
 
-	wire [3:0] nibble = (digit_scan == 2'd0) ? seg_value[3:0]   :
-	                    (digit_scan == 2'd1) ? seg_value[7:4]   :
-	                    (digit_scan == 2'd2) ? seg_value[11:8]  :
-	                                           seg_value[15:12];
+	wire digit_blank = (digit_scan == 2'd1);
+	wire digit_dp    = (digit_scan == 2'd3);   // the point in "3.5"
 
 	reg [6:0] seg_gfedcba;
 	always @* begin
@@ -1042,9 +1041,9 @@ module spectrum_top (
 	// standard - the original odd-looking digit was a persistence blur
 	// from the display showing a rapidly-changing value (the PC), not a
 	// wiring fault. Straight mapping.
-	assign SEG[6:0] = SEG_ACTIVE_LOW ? ~seg_gfedcba : seg_gfedcba;
-	// decimal point doubles as a live "DivMMC ROM is paged in" indicator
-	assign SEG[7] = SEG_ACTIVE_LOW ? ~divmmc_paged_in : divmmc_paged_in;
+	wire [6:0] seg_out = digit_blank ? 7'b0000000 : seg_gfedcba;
+	assign SEG[6:0] = SEG_ACTIVE_LOW ? ~seg_out : seg_out;
+	assign SEG[7] = SEG_ACTIVE_LOW ? ~digit_dp : digit_dp;
 
 	wire [3:0] dig_onehot = 4'b0001 << digit_scan; // digit0=last_pc[3:0] (rightmost, matches earlier confirmed digit position) ... digit3=last_pc[15:12]
 	assign DIG = DIG_ACTIVE_LOW ? ~dig_onehot : dig_onehot;

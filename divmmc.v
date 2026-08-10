@@ -39,13 +39,12 @@ reg [7:0] ctrl;
 reg spi_tx_strobe;
 reg spi_rx_strobe;
 
-reg [7:0] acc_cnt /* synthesis noprune */;
-always @(posedge enable or negedge reset_n) begin
-	if(reset_n == 1'b0)
-		acc_cnt <= 8'd0;
-	else
-		acc_cnt <= acc_cnt + 8'd1;
-end
+// (removed: an acc_cnt access counter clocked by `enable` and never read
+// by anything, kept alive only by a noprune attribute. Because `enable`
+// is derived from the CPU's IORQ_n, it made TimeQuest treat IORQ_n as a
+// clock - "was determined to be a clock but was found without an
+// associated clock assignment" - adding a bogus unanalysed clock domain
+// for no benefit.)
 
 always @(posedge clk) begin
 	if(reset_n == 1'b0) begin
