@@ -56,7 +56,9 @@ module clocks (
 	// reference to sync video memory access to
 	VID_MEM_SYNC,
 	// clock reference for sdram to sync onto
-	CLK_REF
+	CLK_REF,
+	// one tick per SDRAM cycle boundary, for the CPU/video arbiter
+	CLKEN_SLOT
 );
 
 	input           CLK;
@@ -70,6 +72,7 @@ module clocks (
 	output reg      CLKEN_VID;
 	output reg      VID_MEM_SYNC;
 	output reg      CLK_REF;
+	output reg      CLKEN_SLOT;
 
 	reg     [3:0]   counter;
 
@@ -111,7 +114,32 @@ module clocks (
 			else
 				VID_MEM_SYNC <= 1'b0;
 
-			if ((counter == 4'b0111 && MREQ == 1'b0) || counter == 4'b1111)
+			// One tick per SDRAM cycle boundary. The four cycles in a
+			// window run over counters 1-4, 5-8, 9-12 and 13-0, so the
+			// arbiter's grant register has to update entering 1, 5, 9
+			// and 13 - which means this must be high during 0, 4, 8, 12.
+			if (counter[1:0] == 2'b11)
+				CLKEN_SLOT <= 1'b1;
+			else
+				CLKEN_SLOT <= 1'b0;
+
+			// Unconditional. The MREQ term used to withhold this enable
+			// whenever the CPU was touching memory or IO, which is a
+			// blanket wait state on every access: measured at 7 lost
+			// enables in 5006, matching the 71456-against-71680 T-state
+			// shortfall that stopped Pentagon-timed demos working.
+			// The CPU is now held only when its data genuinely has not
+			// arrived, through WAIT_n off the arbiter in spectrum_top.v.
+			// Asserted one clock earlier than the obvious 7/15 so that
+			// the CPU's MREQ lands exactly on an arbiter boundary. The
+			// CPU updates its outputs on the enable, so an enable
+			// during counter 8 only makes the request visible during 9
+			// - one clock past the boundary at 8, which costs a whole
+			// slot and shows up as a wait state on most accesses (82%
+			// of full speed when measured). Enabling during 7 and 15
+			// puts the request on the boundary at 8 and 0, and the byte
+			// then comes back exactly at the next enable.
+			if (counter == 4'b0110 || counter == 4'b1110)
 				CLKEN_CPU <= 1'b1;
 			else
 				CLKEN_CPU <= 1'b0;

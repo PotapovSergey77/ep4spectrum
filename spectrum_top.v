@@ -156,10 +156,14 @@ module spectrum_top (
 	wire    [18:0]  divmmc_hi_addr;
 	wire    [18:0]  divmmc_addr;
 	wire    [19:0]  rom_addr;
-	reg     [19:0]  ram_addr;
+	// Explicit power-up value, as for `clock` above. It matches what
+	// Cyclone IV configuration gives anyway, but the arbiter compares
+	// this address against the one it captured, and an X here makes the
+	// comparison - and with it WAIT_n - unknown, which stalls the CPU
+	// outright instead of merely reading a wrong byte.
+	reg     [19:0]  ram_addr = 20'd0;
 	wire    [20:0]  cpu_addr;
 	wire    [18:0]  vid_addr;
-	reg             cpu_cycle;
 	wire    [7:0]   rom_do;
 	reg     [7:0]   mem_do;
 	wire            ps2_clk;
@@ -220,6 +224,16 @@ module spectrum_top (
 	wire            vid_clken;
 	wire            clk_ref;
 	wire            vid_mem_sync;
+	// one tick per SDRAM cycle boundary - the arbiter's decision point
+	wire            slot_tick;
+	// which byte video is asking for right now: 0 = pixels, 1 = attribute
+	wire            vid_req_step;
+	// arbiter -> video handshake (driven in the arbiter block below,
+	// declared here because the video instance reads them first)
+	reg     [7:0]   vid_do = 8'd0;
+	reg             vid_data_valid = 1'b0;
+	reg             vid_data_step = 1'b0;
+	reg             vid_req_ack = 1'b0;
 
 	// Address decoding
 	wire            ula_enable; // all even IO addresses
@@ -334,7 +348,8 @@ module spectrum_top (
 		.CLKEN_DIO(dio_clken),
 		.CLKEN_VID(vid_clken),
 		.VID_MEM_SYNC(vid_mem_sync),
-		.CLK_REF(clk_ref)
+		.CLK_REF(clk_ref),
+		.CLKEN_SLOT(slot_tick)
 	);
 
 	// SDRAM
@@ -403,19 +418,18 @@ module spectrum_top (
 	//   SD card is even present.
 	reg         boot_copy_active = 1'b1;
 	reg  [14:0] boot_copy_addr = 15'd0;
-	reg         boot_prev_cpu_cycle = 1'b0;
 	wire [7:0]  boot_copy_rom_do;
 
 	// The write request is presented for a whole CPU slot rather than
 	// pulsed, so address and data stay put for the entire SDRAM
 	// transaction (see the pacing comment on the state machine below).
-	wire        boot_copy_wr = boot_copy_active & boot_settle_done & cpu_cycle;
+	wire        boot_copy_wr = boot_copy_active & boot_settle_done;
 
 	// Second boot phase: zero the DivMMC sram pages (see the state
 	// machine below for why).
 	reg         boot_zero_active = 1'b1;
 	reg  [16:0] boot_zero_addr   = 17'd0;
-	wire        boot_zero_wr = boot_zero_active & ~boot_copy_active & boot_settle_done & cpu_cycle;
+	wire        boot_zero_wr = boot_zero_active & ~boot_copy_active & boot_settle_done;
 
 	// During the boot copy the ROM follows the copy counter; afterwards
 	// it follows the CPU, so the DivMMC fixed 8K can be served straight
@@ -447,12 +461,10 @@ module spectrum_top (
 		if (pll_locked == 1'b0) begin
 			boot_copy_active    <= 1'b1;
 			boot_copy_addr      <= 15'd0;
-			boot_prev_cpu_cycle <= 1'b0;
 			boot_zero_active    <= 1'b1;
 			boot_zero_addr      <= 17'd0;
 		end else begin
-			boot_prev_cpu_cycle <= cpu_cycle;
-			if (boot_prev_cpu_cycle == 1'b1 && cpu_cycle == 1'b0
+			if (slot_tick == 1'b1
 			    && boot_copy_active == 1'b0 && boot_zero_active == 1'b1
 			    && boot_settle_done == 1'b1) begin
 				// Clear the 16 DivMMC sram pages once the ROM is in place.
@@ -472,7 +484,7 @@ module spectrum_top (
 				else
 					boot_zero_addr <= boot_zero_addr + 17'd1;
 			end
-			if (boot_prev_cpu_cycle == 1'b1 && cpu_cycle == 1'b0
+			if (slot_tick == 1'b1
 			    && boot_copy_active == 1'b1 && boot_settle_done == 1'b1) begin
 				if (boot_copy_addr == 15'd16383)
 					boot_copy_active <= 1'b0;
@@ -519,54 +531,10 @@ module spectrum_top (
 	// ambiguous - a count of 0000 reads the same whether every byte
 	// matched or the verify never ran at all (in which case the CPU is
 	// also still held in reset, which is exactly what happened).
-	// DIAGNOSTIC: pinpoint exactly where the boot sequence stalls, rather
-	// than inferring it. Silkscreen numbering runs opposite to the LED[]
-	// index, so LED[3] is the leftmost (silkscreen LED1).
-	//   LED[3] (silkscreen LED1) - boot copy finished
-	//   LED[2] (LED2)            - boot_settle_done
-	//   LED[1] (LED3)            - PLL locked
-	//   LED[0] (LED4)            - slow blink while cpu_cycle is toggling
-	reg [22:0] cc_blink_cnt = 23'd0;
-	reg        cc_prev      = 1'b0;
-	reg        cc_seen      = 1'b0;
-	reg        cc_blink     = 1'b0;
-	// count cpu_cycle falling edges - the exact event the boot copy
-	// advances on. The copy is stalled with its address at 0, so either
-	// these edges never happen or the advance condition never matches.
-	reg [15:0] cc_fall_cnt  = 16'd0;
-	always @(posedge clock) begin
-		cc_prev <= cpu_cycle;
-		if (cc_prev != cpu_cycle) cc_seen <= 1'b1;
-		if (cc_prev == 1'b1 && cpu_cycle == 1'b0)
-			cc_fall_cnt <= cc_fall_cnt + 16'd1;
-		cc_blink_cnt <= cc_blink_cnt + 23'd1;
-		if (cc_blink_cnt == 23'd0) begin
-			cc_blink <= cc_seen;
-			cc_seen  <= 1'b0;
-		end
-	end
 
-	// LED[0] (silkscreen LED4): blinks only if the CPU has actually
-	// completed an opcode fetch since the last blink period. A steady
-	// 0000 on the PC display cannot tell "held in reset" from "fetching
-	// at address 0 forever"; this can.
-	// Count M1 *edges*, not level: a steady lit LED with a PC display
-	// frozen at 0000 is exactly what a CPU stalled mid-fetch (M1 held
-	// asserted) looks like, and only an edge count tells that apart from
-	// real instruction traffic.
+	// Tracks the M1 edge for the PC display sampler further down.
 	reg        prev_cpu_m1_n = 1'b1;
-	reg [15:0] m1_edge_cnt = 16'd0;
-	reg        m1_seen2  = 1'b0;
-	reg        m1_blink  = 1'b0;
-	always @(posedge clock) begin
-		if (prev_cpu_m1_n == 1'b1 && cpu_m1_n == 1'b0)
-			m1_edge_cnt <= m1_edge_cnt + 16'd1;
-		if (~cpu_m1_n) m1_seen2 <= 1'b1;
-		if (cc_blink_cnt == 23'd0) begin
-			m1_blink <= m1_seen2;
-			m1_seen2 <= 1'b0;
-		end
-	end
+
 	// silkscreen LED1 (= LED[3]) is the SD card access light; rest off
 	assign LED[0] = 1'b1;
 	// silkscreen LED3: lit while 128K memory paging is enabled
@@ -628,8 +596,7 @@ module spectrum_top (
 	// (tested disabling this entirely as a diagnostic - made no
 	// difference on real hardware, ruled out)
 	assign cpu_irq_n = vid_irq_n;
-	// Unused CPU input signals
-	assign cpu_wait_n = 1'b1;
+	// cpu_wait_n is driven by the arbiter further down.
 	// F12 (PS/2 keyboard) or board button S2 triggers a plain NMI directly -
 	// the T80 core only latches this on the falling edge internally
 	// (see T80.v's NMI_s/OldNMI_n), so holding it doesn't re-trigger
@@ -689,9 +656,16 @@ module spectrum_top (
 		.VGA(1'b0),
 		.PENTAGON(timing_pentagon),
 		.VID_A(vid_a),
-		.VID_D_IN(sdram_do_raw),
+		// The registered byte the arbiter hands back, not the raw bus:
+		// video's cycle is no longer at a predictable moment, so there
+		// is no fixed instant at which the bus could be sampled.
+		.VID_D_IN(vid_do),
 		.nVID_RD(vid_rd_n),
 		.nWAIT(vid_wait_n),
+		.VID_REQ_STEP(vid_req_step),
+		.VID_REQ_ACK(vid_req_ack),
+		.VID_DATA_VALID(vid_data_valid),
+		.VID_DATA_STEP(vid_data_step),
 		.BORDER_IN(ula_border),
 		.R(vid_r_out),
 		.G(vid_g_out),
@@ -886,14 +860,112 @@ module spectrum_top (
 	// byte - on the board that showed as the CPU fetching a constant
 	// wrong value and spinning on address 0000 forever, with opcode
 	// fetches still happening (so not a reset).
-	reg cpu_cycle_d  = 1'b0;
-	reg cpu_cycle_d2 = 1'b0;
+	// ---------------------------------------------------------------
+	// CPU/video SDRAM arbiter, after zx-sizif-512's ram_arbiter
+	// (cpld/rtl/mem.sv).
+	//
+	// The old scheme nailed the CPU to one fixed SDRAM cycle per
+	// 16-count window (counters 9-12) and gave video everything else.
+	// That is not a bandwidth problem - a group of 8 pixels spans 8
+	// SDRAM cycles and video only needs 2 of them - it is a rigidity
+	// problem: an access that becomes ready just after counter 12 has
+	// to sit out a whole window, and clocks.v papered over it with a
+	// blanket wait state on every memory access. That cost ~0.15% of
+	// the CPU's T-states, which is exactly what stops Pentagon demos
+	// keeping time.
+	//
+	// Sizif inverts the priority: the CPU is served first and video
+	// yields, because video asks far enough ahead that being pushed
+	// back a cycle still leaves its data in time. Video therefore can
+	// no longer read the bus at a fixed moment - it is handed its byte
+	// with a data-valid strobe whenever the cycle happens to land.
+	//
+	// The step tag travels with the transaction rather than being read
+	// from video's current state at capture time. Video has usually
+	// moved on to its next request by then, and reading its live state
+	// is what corrupted several earlier attempts at this.
+	localparam OWN_NONE = 2'd0;
+	localparam OWN_CPU  = 2'd1;
+	localparam OWN_VID  = 2'd2;
+
+	reg  [1:0]  cur_own  = OWN_NONE;   // owner of the cycle in flight
+	reg  [1:0]  prev_own = OWN_NONE;   // owner of the cycle just finished
+	reg  [20:0] cpu_addr_held = 21'd0;
+	reg  [18:0] vid_addr_held = 19'd0;
+	reg         cur_vid_step = 1'b0;
+	reg         prev_vid_step = 1'b0;
+	reg         cpu_served = 1'b0;
+	reg         slot_tick_d = 1'b0;
+	reg         slot_tick_d2 = 1'b0;
+
+	// A request the CPU has made and that has not been answered yet.
+	// esxdos_downloaded gates the DivMMC ROM because before the boot
+	// copy has run there is nothing in SDRAM to fetch.
+	wire cpu_needs_sdram = ram_enable |
+		(rom_enable & divmmc_paged_in & esxdos_downloaded[1]);
+	wire cpu_mem_active  = (~cpu_mreq_n) & ((~cpu_rd_n) | (~cpu_wr_n)) & cpu_needs_sdram;
+	wire cpu_wants = cpu_mem_active & ~cpu_served;
+	wire vid_wants = ~vid_rd_n;
+
+	wire [1:0] next_own = cpu_wants ? OWN_CPU :
+	                      vid_wants ? OWN_VID : OWN_NONE;
+
 	always @(posedge clock) begin
-		cpu_cycle_d  <= cpu_cycle;
-		cpu_cycle_d2 <= cpu_cycle_d;
-		if (cpu_cycle_d2 == 1'b1 && cpu_cycle_d == 1'b0)
-			mem_do <= sdram_do;
+		slot_tick_d    <= slot_tick;
+		slot_tick_d2   <= slot_tick_d;
+		vid_data_valid <= 1'b0;
+		vid_req_ack    <= 1'b0;
+
+		if (slot_tick == 1'b1) begin
+			prev_own      <= cur_own;
+			prev_vid_step <= cur_vid_step;
+			cur_own       <= next_own;
+			// Hold the address for the whole cycle. sdram_ep4ce.v opens
+			// the row at the start and selects the column three clk56
+			// later, so an address that moves underneath it splits one
+			// transaction across two different locations.
+			if (next_own == OWN_CPU)
+				cpu_addr_held <= cpu_addr;
+			if (next_own == OWN_VID) begin
+				vid_addr_held <= vid_addr;
+				cur_vid_step  <= vid_req_step;
+				vid_req_ack   <= 1'b1;
+			end
+		end
+
+		// Two clocks after the boundary the finished cycle's byte has
+		// been registered inside sdram_ep4ce.v and is stable on
+		// sdram_do. This is the same instant the previous fixed-slot
+		// design captured at, just reached by counting from the cycle
+		// boundary instead of from a cpu_cycle edge.
+		if (slot_tick_d2 == 1'b1) begin
+			if (prev_own == OWN_CPU) begin
+				mem_do <= sdram_do;
+				// Sizif's cpu_read_misaddress: only answer the request
+				// if the CPU is still asking about the address the
+				// cycle actually fetched. Without this the answer can
+				// be credited to a later access - after a write to X,
+				// a read of X straight afterwards took the write
+				// cycle's leftovers.
+				if (cpu_addr_held == cpu_addr)
+					cpu_served <= 1'b1;
+			end
+			if (prev_own == OWN_VID) begin
+				vid_do         <= sdram_do;
+				vid_data_valid <= 1'b1;
+				vid_data_step  <= prev_vid_step;
+			end
+		end
+
+		// The request going away retires its answer with it, so nothing
+		// is ever carried over into the next access.
+		if (cpu_mem_active == 1'b0)
+			cpu_served <= 1'b0;
 	end
+
+	// The CPU runs at a steady 3.5MHz and is held only while its own
+	// data is genuinely outstanding.
+	assign cpu_wait_n = ~(cpu_mem_active & ~cpu_served);
 
 	// CPU data bus mux
 	assign cpu_di =
@@ -1227,11 +1299,6 @@ module spectrum_top (
 	wire ram_write = int_ram_write | ext_ram_write;
 
 	always @(posedge clock) begin
-		// synchonize cpu memory access to video memory access
-		if (vid_clken == 1'b1) begin
-			cpu_cycle <= mem_clken;
-		end
-
 		// Register SRAM signals to outputs (clock must be at least 2x CPU clock)
 		if (vid_clken == 1'b1) begin
 			// Fetch data from previous CPU cycle
@@ -1271,17 +1338,26 @@ module spectrum_top (
 			sdram_we = 1'b1;
 			sdram_di = 8'h00;
 			sdram_addr = {4'b0000, 2'b11, 2'b01, boot_zero_addr[16:13], boot_zero_addr[12:0]};
-		end else if (cpu_cycle == 1'b1) begin
+		end else if (cur_own == OWN_CPU) begin
 			sdram_oe = ~cpu_mreq_n & ~cpu_rd_n;  // any cpu read enables ram
 			sdram_we = ram_write;                // write only for memory used as ram
 			sdram_di = cpu_do;
-			sdram_addr = {4'b0000, cpu_addr};
-		end else begin
-			// no cpu access. Thus do video access
-			sdram_oe = ~vid_rd_n;
+			// The held address, not the live one: the CPU may move on
+			// mid-cycle, and sdram_ep4ce.v needs one address for the
+			// whole RAS-to-CAS sequence.
+			sdram_addr = {4'b0000, cpu_addr_held};
+		end else if (cur_own == OWN_VID) begin
+			sdram_oe = 1'b1;
 			sdram_we = 1'b0;    // video never writes
 			sdram_di = 8'b00000000;
-			sdram_addr = {6'b000000, vid_addr};
+			sdram_addr = {6'b000000, vid_addr_held};
+		end else begin
+			// nobody asked for this cycle - leave it idle so
+			// sdram_ep4ce.v can slot a refresh into it
+			sdram_oe = 1'b0;
+			sdram_we = 1'b0;
+			sdram_di = 8'b00000000;
+			sdram_addr = {6'b000000, vid_addr_held};
 		end
 	end
 

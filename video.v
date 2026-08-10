@@ -55,6 +55,14 @@ module video (
 	VID_D_IN,
 	nVID_RD,
 	nWAIT,
+	// Arbiter handshake: which byte is being asked for, and the strobe
+	// that hands one back. Video no longer reads the bus at a fixed
+	// moment - the CPU has priority now, so a fetch can land in any
+	// cycle and only the strobe says when it has.
+	VID_REQ_STEP,
+	VID_REQ_ACK,
+	VID_DATA_VALID,
+	VID_DATA_STEP,
 
 	// IO interface
 	BORDER_IN,
@@ -83,8 +91,13 @@ module video (
 
 	output  [12:0]  VID_A;
 	input   [7:0]   VID_D_IN;
-	output reg      nVID_RD;
+	output          nVID_RD;
 	output          nWAIT;
+
+	output          VID_REQ_STEP;
+	input           VID_REQ_ACK;
+	input           VID_DATA_VALID;
+	input           VID_DATA_STEP;
 
 	input   [2:0]   BORDER_IN;
 
@@ -101,11 +114,6 @@ module video (
 
 	reg     [9:0]   pixels;
 	reg     [7:0]   attr;
-
-	// additional buffer used in non-VGA mode (TV) to store the pixels/attr a little
-	// bit ahead of time to not interfere with cpu ram access
-	reg     [7:0]   pixels_tv;
-	reg     [7:0]   attr_tv;
 
 	// Video logic runs at 14 MHz so hcounter has an additonal LSb which is
 	// skipped if running in VGA scan-doubled mode.  The value of this
@@ -216,13 +224,81 @@ module video (
 	// a LOAD/STORE pair, as the bus routing logic will disconnect the memory from
 	// the CPU during this time.
 
-	// RAM address is generated continuously from the counter values
-	// Pixel fetch takes place when hcounter(2) = 0, attribute when = 1
-	assign VID_A = ((VGA == 1'b1 && hcounter[2] == 1'b0) || (VGA == 1'b0 && hcounter[1] == 1'b0)) ?
+	// Fetch address registers, after zx-sizif-512's video.sv.
+	//
+	// The address used to be generated combinationally from the live
+	// counters, which only works while the fetch is nailed to a fixed
+	// memory cycle. Now that the CPU has priority and video takes
+	// whatever cycle is free, a request can be served a cycle or two
+	// later than it was made - by which time the live counters have
+	// moved on and point somewhere else entirely. Capturing the group's
+	// address once, up front, makes a displaced read still fetch the
+	// right byte.
+	reg     [8:1]   vaddr_r;
+	reg     [8:4]   haddr_r;
+	// 0 = pixels, 1 = attribute, 2 = both done for this group
+	reg     [1:0]   read_step;
+	reg     [7:0]   pixels_next;
+	reg     [7:0]   attr_next;
+
+	assign VID_REQ_STEP = read_step[0];
+
+	assign VID_A = (read_step == 2'd0) ?
 		// Picture
-		{vcounter[8:7], vcounter[3:1], vcounter[6:4], hcounter[8:4]} :
+		{vaddr_r[8:7], vaddr_r[3:1], vaddr_r[6:4], haddr_r} :
 		// Attribute
-		{3'b110, vcounter[8:7], vcounter[6:4], hcounter[8:4]};
+		{3'b110, vaddr_r[8:7], vaddr_r[6:4], haddr_r};
+
+	// Start the group's fetch half a group early - 8 hcounter ticks, so
+	// four SDRAM cycles of slack before the first byte is needed at
+	// hcounter[3:0]==0011. Fetching inside the group, as the fixed
+	// schedule did, leaves under two cycles: fine when the slot was
+	// pre-aligned, not enough once a CPU access can get in front.
+	wire fetch_start = (hcounter[3:0] == 4'b1000);
+	// The group being set up is the one after the current one. At the
+	// very end of a line that is group 0 of the next line, so the line
+	// number has to be stepped as well - vcounter[0] is the half-line
+	// bit, so the line number is vcounter[8:1].
+	wire line_wrap = (hcounter[9:4] == 6'b111111);
+	// Only groups that are actually displayed need fetching. Vertical
+	// position is deliberately not checked: a wasted read in the top or
+	// bottom border costs nothing now that the CPU is served first.
+	wire fetch_wanted = line_wrap |
+		((hcounter[9] == 1'b0) & (hcounter[8:4] != 5'b11111));
+
+	// A request stands until the arbiter acknowledges it.
+	assign nVID_RD = (read_step == 2'd2);
+
+	// Runs on the full 28MHz clock rather than under CLKEN: the ack and
+	// data-valid strobes are one 28MHz clock wide, and a block gated by
+	// the 14MHz enable would sample straight past them.
+	always @(posedge CLK or negedge nRESET) begin
+		if (nRESET == 1'b0) begin
+			vaddr_r     <= 8'b0;
+			haddr_r     <= 5'b0;
+			read_step   <= 2'd2;
+			pixels_next <= 8'b0;
+			attr_next   <= 8'b0;
+		end else begin
+			if (CLKEN == 1'b1 && fetch_start == 1'b1) begin
+				vaddr_r   <= line_wrap ? (vcounter[8:1] + 1'b1) : vcounter[8:1];
+				haddr_r   <= line_wrap ? 5'b0 : (hcounter[8:4] + 1'b1);
+				read_step <= fetch_wanted ? 2'd0 : 2'd2;
+			end else if (VID_REQ_ACK == 1'b1 && read_step != 2'd2) begin
+				read_step <= read_step + 1'b1;
+			end
+
+			// The step tag arrives with the data instead of being read
+			// from read_step, which by now has usually moved on to the
+			// next request.
+			if (VID_DATA_VALID == 1'b1) begin
+				if (VID_DATA_STEP == 1'b0)
+					pixels_next <= VID_D_IN;
+				else
+					attr_next <= VID_D_IN;
+			end
+		end
+	end
 
 	// This timing model is completely uncontended.  CPU runs all the time.
 	assign nWAIT = 1'b1;
@@ -262,23 +338,10 @@ module video (
 			hsync <= 1'b0;
 			vsync <= 1'b0;
 			nIRQ <= 1'b1;
-			nVID_RD <= 1'b1;
 
 			pixels <= 10'b0;
 			attr <= 8'b0;
 		end else if (CLKEN == 1'b1) begin
-
-			// activate nVID_RD in advance of pixel and attribute read so data
-			// is present in time. This is needed for the SDRAM which is operated at
-			// much lower speed than the orignal SRAM in the DE1/DE2
-			if (blanking == 1'b0 &&
-					(hcounter[3:1] == 3'b111 ||
-					 hcounter[3:1] == 3'b000 ||
-					 hcounter[3:1] == 3'b001 ||
-					 hcounter[3:1] == 3'b010))
-				nVID_RD <= 1'b0;
-			else
-				nVID_RD <= 1'b1;
 
 			// Most functions are only performed when hcounter(0) is clear.
 			// This is the 'half' bit inserted to allow for scan-doubled VGA output.
@@ -290,39 +353,21 @@ module video (
 				// the attribute byte, stored two ticks later
 				pixels[9:1] <= pixels[8:0];
 
-				// in TV mode everything happens a little slower. Fetch data ahead of
-				// time to have the same memory timing as VGA
+				// Move the prefetched bytes into the live registers at
+				// the same instants the old fixed-slot code did, so the
+				// picture keeps its horizontal alignment. Both bytes
+				// were fetched during the previous group and are only
+				// overwritten from hcounter[3:0]==1000 onwards, well
+				// after they have been consumed here.
 				if (hcounter[9] == 1'b0 && hcounter[3] == 1'b0) begin
-					if (hcounter[2] == 1'b0) begin
-						if (hcounter[1] == 1'b0)
-							pixels_tv <= VID_D_IN;
-						else
-							attr_tv <= VID_D_IN;
-					end
-				end
-
-				if (hcounter[9] == 1'b0 && hcounter[3] == 1'b0) begin
-					// Handle the fetch cycle
 					// 3210
-					// 0000 PICTURE LOAD
-					// 0010 PICTURE STORE
-					// 0100 ATTR LOAD
-					// 0110 ATTR STORE
+					// 0011 PICTURE STORE
+					// 0111 ATTR STORE
 					if (hcounter[1] == 1'b1) begin
-						// STORE
-						if (hcounter[2] == 1'b0) begin
-							// PICTURE
-							if (VGA == 1'b1)
-								pixels[7:0] <= VID_D_IN;
-							else
-								pixels[7:0] <= pixels_tv;
-						end else begin
-							// ATTR
-							if (VGA == 1'b1)
-								attr <= VID_D_IN;
-							else
-								attr <= attr_tv;
-						end
+						if (hcounter[2] == 1'b0)
+							pixels[7:0] <= pixels_next;
+						else
+							attr <= attr_next;
 					end
 				end
 

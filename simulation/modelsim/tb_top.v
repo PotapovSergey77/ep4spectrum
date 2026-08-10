@@ -245,14 +245,28 @@ module tb_top;
 	// video fetches in, and the picture broke into diagonal stripes -
 	// and unlike comparing the data itself it does not depend on knowing
 	// the precise instant video samples the bus.
+	// Reads as 3954 of 15811 on the known-good fixed-slot design, so it
+	// is a load figure, not a defect count - kept only for comparison
+	// between builds.
 	integer vid_denied = 0;
 	integer vid_reads  = 0;
 	always @(posedge dut.clock) begin
 		if (dut.reset_n == 1'b1 && dut.vid_rd_n == 1'b0) begin
 			vid_reads <= vid_reads + 1;
-			if (dut.cpu_cycle == 1'b1)
+			if (dut.cur_own == 2'd1)   // OWN_CPU
 				vid_denied <= vid_denied + 1;
 		end
+	end
+
+	// Video fetches that were still outstanding when their data was
+	// due. This one is a real defect count: the arbiter is only correct
+	// if every group's two bytes arrive before the group is displayed.
+	integer vid_late = 0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n == 1'b1 && dut.vid_clken == 1'b1
+		    && dut.vid.hcounter[9] == 1'b0 && dut.vid.hcounter[3:0] == 4'b0111
+		    && dut.vid.read_step != 2'd2)
+			vid_late <= vid_late + 1;
 	end
 
 	// ------------------------------------------------------------
@@ -311,6 +325,7 @@ module tb_top;
 		$display("  clocks spent stalled on WAIT: %0d", cpu_wait);
 		$display("Video: %0d read-clocks, %0d with the bus held by the CPU",
 			vid_reads, vid_denied);
+		$display("Video fetches late for display: %0d", vid_late);
 		$display("=====================================================");
 		$display("SIMULATION DONE");
 		$finish;
