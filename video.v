@@ -47,8 +47,8 @@ module video (
 
 	// Mode
 	VGA,
-	// 0 = Sinclair 48K frame timing, 1 = Pentagon 128K
-	PENTAGON,
+	// Frame timing: which machine to be. See the geometry table below.
+	MACHINE,
 
 	// Memory interface
 	VID_A,
@@ -87,7 +87,13 @@ module video (
 	input           nRESET;
 
 	input           VGA;
-	input           PENTAGON;
+	input   [1:0]   MACHINE;
+
+	// Machine codes, shared with spectrum_top.v
+	localparam MACHINE_S48  = 2'd0;   // Sinclair 48K
+	localparam MACHINE_S128 = 2'd1;   // Sinclair 128K
+	localparam MACHINE_S3   = 2'd2;   // Sinclair +2A/+3
+	localparam MACHINE_PENT = 2'd3;   // Pentagon 128K
 
 	output  [12:0]  VID_A;
 	input   [7:0]   VID_D_IN;
@@ -304,24 +310,41 @@ module video (
 	assign nWAIT = 1'b1;
 
 	// First 192 lines are picture
-	// Frame geometry. Both machines use 224 T-states per line - only the
-	// frame length differs: 312 lines on Sinclair 48K (69888 T) against
-	// 320 on Pentagon 128K (71680 T). hcounter runs at twice the pixel
-	// rate, so 224 T-states is 448 counts and the limit is 895 either
-	// way; vcounter[9:1] is the real line number, so its limit is not
-	// doubled.
-	wire [9:0] hcount_last = 10'd895;
-	wire [8:0] vline_last  = PENTAGON ? 9'd319  : 9'd311;
+	//
+	// Frame geometry, taken from zx-sizif-512 (cpld/rtl/video.sv for the
+	// line and frame totals, cpld/rtl/cpu.sv for the interrupt). One
+	// T-state is four hcounter counts here - hcounter runs at 14MHz and
+	// the CPU at 3.5MHz - so a 224 T-state line is 896 counts and a 228
+	// T-state line is 912. Sizif counts horizontally in pixels (7MHz),
+	// which is half our rate, hence the doubling of its interrupt
+	// positions.
+	//
+	//   machine    T/line  lines   T/frame   INT line  INT pos  INT len
+	//   48K          224     312    69888      248        0       32 T
+	//   128K         228     311    70908      248        2 T     36 T
+	//   +2A/+3       228     311    70908      248        2 T     36 T
+	//   Pentagon     224     320    71680      239      161 T     32 T
+	//
+	// vcounter[9:1] is the real line number, so its limit is not doubled.
+	wire lines228 = (MACHINE == MACHINE_S128) | (MACHINE == MACHINE_S3);
 
-	// Frame interrupt. Sinclair takes it at the start of line 248;
-	// Pentagon takes it on line 239 but partway along the line, at
-	// horizontal count 326. Getting that horizontal position wrong
-	// shifts everything a demo draws relative to the interrupt - with the
-	// interrupt fired at the start of the line instead, raster bars came
-	// out visibly too high. Held for 64 counts, i.e. the usual 32
-	// T-states.
-	wire [8:0] int_line    = PENTAGON ? 9'd239  : 9'd248;
-	localparam INT_HPOS    = 10'd326;
+	wire [9:0] hcount_last = lines228 ? 10'd911 : 10'd895;
+	wire [8:0] vline_last  =
+		(MACHINE == MACHINE_PENT) ? 9'd319 :
+		lines228                  ? 9'd310 :
+		                            9'd311;
+
+	// Getting the horizontal position wrong shifts everything a demo
+	// draws relative to the interrupt - fired at the start of the line
+	// instead, raster bars come out visibly too high.
+	wire [8:0] int_line =
+		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd248;
+	wire [9:0] int_hpos =
+		(MACHINE == MACHINE_PENT) ? 10'd644 :
+		lines228                  ? 10'd8   :
+		                            10'd0;
+	wire [9:0] int_len =
+		lines228 ? 10'd144 : 10'd128;
 
 	assign vpicture = ~(vcounter[9] | (vcounter[8] & vcounter[7]));
 
@@ -443,25 +466,21 @@ module video (
 				end
 			endcase
 
-			// Clear interrupt after 32T
-			if (hcounter[7] == 1'b1)
+			// Frame interrupt: one window on one line, the same shape
+			// for every machine. Kept separate from the vsync case
+			// below because the two do not coincide on Pentagon - vsync
+			// stays where it is (the picture is still PAL-shaped, the
+			// frame is simply longer) while the interrupt moves to line
+			// 239, most of a line in.
+			//
+			// This replaces a cruder pair of rules that asserted for
+			// four whole lines and cleared on hcounter[7], which held
+			// the interrupt for the wrong length on every machine.
+			if (vcounter[9:1] == int_line &&
+			    hcounter >= int_hpos && hcounter < (int_hpos + int_len))
+				nIRQ <= 1'b0;
+			else
 				nIRQ <= 1'b1;
-
-			// Assert the frame interrupt. Kept separate from the vsync
-			// case below because the two do not coincide on Pentagon:
-			// vsync stays where it is (the picture is still PAL-shaped,
-			// the frame is simply longer) while the interrupt moves to
-			// line 239. On Sinclair this reproduces the previous
-			// behaviour exactly - vcounter[9:3] == 7'b0111110 is lines
-			// 248..251, i.e. vcounter[9:1] in 248..251.
-			if (PENTAGON == 1'b1) begin
-				if (vcounter[9:1] == int_line &&
-				    hcounter >= INT_HPOS && hcounter < (INT_HPOS + 10'd64))
-					nIRQ <= 1'b0;
-			end else begin
-				if (vcounter[9:3] == 7'b0111110)
-					nIRQ <= 1'b0;
-			end
 
 			//----------------
 			// VERTICAL

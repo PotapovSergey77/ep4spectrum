@@ -185,6 +185,8 @@ module spectrum_top (
 	wire            key_f8;
 	wire            key_f12;
 	wire            key_f5;
+	wire            key_f6;
+	wire            key_f7;
 	wire            key_f9;
 	wire            key_f10;
 
@@ -198,12 +200,24 @@ module spectrum_top (
 	// TR-DOS, so what those need is the RAM banks, not the 128K ROM.
 	reg             mem128 = 1'b1;
 
-	// Frame timing select: F5 picks Sinclair 48K, F8 picks Pentagon 128K.
-	// Both use 224 T-states per line; Pentagon's frame is longer (320
-	// lines, 71680 T against 312 and 69888) and its interrupt falls on
-	// line 239 partway along the line rather than at the start of line
-	// 248. Sinclair is the power-up default.
-	reg             timing_pentagon = 1'b0;
+	// Frame timing select:
+	//   F5 Sinclair 48K   F6 Sinclair 128K
+	//   F7 Sinclair +2A/+3   F8 Pentagon 128K
+	// Geometry and interrupt positions per machine are in video.v,
+	// taken from zx-sizif-512. Sinclair 48K is the power-up default.
+	//
+	// This picks timing only. The ROM is the 48K one in every mode - a
+	// 128K ROM needs 32 of this device's 30 M9K blocks on its own - and
+	// memory size stays on F9/F10 as before. The +2A/+3 differs from
+	// 128K in its contention pattern rather than its frame, and
+	// contention is not modelled here at all, so F6 and F7 currently
+	// produce the same frame; the distinction is wired through so it is
+	// there when contention is.
+	localparam MACHINE_S48  = 2'd0;
+	localparam MACHINE_S128 = 2'd1;
+	localparam MACHINE_S3   = 2'd2;
+	localparam MACHINE_PENT = 2'd3;
+	reg     [1:0]   machine = MACHINE_S48;
 
 	// Master clock - 28 MHz
 	wire            clk56;
@@ -540,7 +554,7 @@ module spectrum_top (
 	// silkscreen LED3: lit while 128K memory paging is enabled
 	assign LED[1] = ~mem128;
 	// silkscreen LED2: lit while Pentagon 128K frame timing is selected
-	assign LED[2] = ~timing_pentagon;
+	assign LED[2] = ~(machine == MACHINE_PENT);
 	assign LED[3] = divmmc_cs;
 
 	// ULA "ear" input (tape in) - no tape hardware on this board, keep idle
@@ -548,11 +562,17 @@ module spectrum_top (
 
 	// KEY[0] = board button S1 -> computer reset (also see reset_cond)
 	// KEY[1] = board button S2 -> NMI (also see nmi_trigger)
+	// F5..F8 pick the machine. Switching deliberately does NOT reset,
+	// so the effect can be watched on a running program.
 	always @(posedge clock) begin
 		if (key_f5 == 1'b1)
-			timing_pentagon <= 1'b0;
+			machine <= MACHINE_S48;
+		else if (key_f6 == 1'b1)
+			machine <= MACHINE_S128;
+		else if (key_f7 == 1'b1)
+			machine <= MACHINE_S3;
 		else if (key_f8 == 1'b1)
-			timing_pentagon <= 1'b1;
+			machine <= MACHINE_PENT;
 	end
 
 	// Switching memory size under a running program leaves it with its
@@ -623,6 +643,8 @@ module spectrum_top (
 		.F8(key_f8),
 		.F12(key_f12),
 		.F5(key_f5),
+		.F6(key_f6),
+		.F7(key_f7),
 		.F9(key_f9),
 		.F10(key_f10)
 	);
@@ -654,7 +676,7 @@ module spectrum_top (
 		.MEM_CYC(vid_mem_sync),
 		.nRESET(reset_n),
 		.VGA(1'b0),
-		.PENTAGON(timing_pentagon),
+		.MACHINE(machine),
 		.VID_A(vid_a),
 		// The registered byte the arbiter hands back, not the raw bus:
 		// video's cycle is no longer at a predictable moment, so there
