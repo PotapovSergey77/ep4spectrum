@@ -554,6 +554,7 @@ module spectrum_top (
 	// frozen at 0000 is exactly what a CPU stalled mid-fetch (M1 held
 	// asserted) looks like, and only an edge count tells that apart from
 	// real instruction traffic.
+	reg        prev_cpu_m1_n = 1'b1;
 	reg [15:0] m1_edge_cnt = 16'd0;
 	reg        m1_seen2  = 1'b0;
 	reg        m1_blink  = 1'b0;
@@ -1064,7 +1065,6 @@ module spectrum_top (
 	// was likely showing bogus mid-instruction snapshots rather than
 	// real execution being stuck there.
 	reg [15:0] last_pc;
-	reg        prev_cpu_m1_n = 1'b1;
 	always @(posedge clock) begin
 		if ((cpu_m1_n == 1'b0) && (prev_cpu_m1_n == 1'b1))
 			last_pc <= cpu_a;

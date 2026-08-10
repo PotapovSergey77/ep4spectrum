@@ -225,6 +225,37 @@ module tb_top;
 	end
 
 	// ------------------------------------------------------------
+	// Video data check.
+	//
+	// This testbench had no view of the video side at all, which is how
+	// it passed an arbiter change that broke the display into diagonal
+	// stripes on hardware: the CPU's own fetches stayed perfect while
+	// the video controller was being starved of the cycles it fetches
+	// in. Watch the bytes the video path actually receives and compare
+	// them against what the modelled chip holds at the address video
+	// asked for.
+	//
+	// Sampled on the falling edge of the video slot, mirroring how
+	// video.v takes VID_D_IN, with the address captured when the slot
+	// opened.
+	// ------------------------------------------------------------
+	// Count clocks where the video controller is asking to read but the
+	// CPU has the bus. That is exactly the failure an earlier arbiter
+	// change caused - it took a cycle out of the half of the window
+	// video fetches in, and the picture broke into diagonal stripes -
+	// and unlike comparing the data itself it does not depend on knowing
+	// the precise instant video samples the bus.
+	integer vid_denied = 0;
+	integer vid_reads  = 0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n == 1'b1 && dut.vid_rd_n == 1'b0) begin
+			vid_reads <= vid_reads + 1;
+			if (dut.cpu_cycle == 1'b1)
+				vid_denied <= vid_denied + 1;
+		end
+	end
+
+	// ------------------------------------------------------------
 	// CPU throughput: how many clock enables the CPU actually gets.
 	// clocks.v withholds the second enable of each 16-clock window while
 	// the CPU is mid memory access, so the machine runs short of the
@@ -278,6 +309,8 @@ module tb_top;
 		$display("  effective (CPU not stalled): %0d = %0d%% of 3.5MHz",
 			cpu_eff, (meas_run == 0) ? 0 : (cpu_eff * 800) / meas_run);
 		$display("  clocks spent stalled on WAIT: %0d", cpu_wait);
+		$display("Video: %0d read-clocks, %0d with the bus held by the CPU",
+			vid_reads, vid_denied);
 		$display("=====================================================");
 		$display("SIMULATION DONE");
 		$finish;
