@@ -181,6 +181,18 @@ module spectrum_top (
 	wire            key_f8;
 	wire            key_f12;
 	wire            key_f5;
+	wire            key_f9;
+	wire            key_f10;
+
+	// Memory size select: F9 gives 48K, F10 gives 128K. 128K is the
+	// default. This only gates the paging register's effect - the 0x7FFD
+	// register and the banked RAM at 0xC000 are present either way, and
+	// with page_ram_sel forced to 0 the mapping is exactly a 48K
+	// machine's. There is no 128K ROM: it needs 32 of this device's 30
+	// M9K blocks on its own, which is why the build is 48K-ROM based.
+	// ESXDOS reads TRD images with its own driver rather than through
+	// TR-DOS, so what those need is the RAM banks, not the 128K ROM.
+	reg             mem128 = 1'b1;
 
 	// Frame timing select: F5 picks Sinclair 48K, F8 picks Pentagon 128K.
 	// Pentagon runs a longer frame (320 lines of 232 T-states against
@@ -399,6 +411,12 @@ module spectrum_top (
 	// transaction (see the pacing comment on the state machine below).
 	wire        boot_copy_wr = boot_copy_active & boot_settle_done & cpu_cycle;
 
+	// Second boot phase: zero the DivMMC sram pages (see the state
+	// machine below for why).
+	reg         boot_zero_active = 1'b1;
+	reg  [16:0] boot_zero_addr   = 17'd0;
+	wire        boot_zero_wr = boot_zero_active & ~boot_copy_active & boot_settle_done & cpu_cycle;
+
 	// During the boot copy the ROM follows the copy counter; afterwards
 	// it follows the CPU, so the DivMMC fixed 8K can be served straight
 	// from block RAM (see the cpu_di mux).
@@ -430,8 +448,30 @@ module spectrum_top (
 			boot_copy_active    <= 1'b1;
 			boot_copy_addr      <= 15'd0;
 			boot_prev_cpu_cycle <= 1'b0;
+			boot_zero_active    <= 1'b1;
+			boot_zero_addr      <= 17'd0;
 		end else begin
 			boot_prev_cpu_cycle <= cpu_cycle;
+			if (boot_prev_cpu_cycle == 1'b1 && cpu_cycle == 1'b0
+			    && boot_copy_active == 1'b0 && boot_zero_active == 1'b1
+			    && boot_settle_done == 1'b1) begin
+				// Clear the 16 DivMMC sram pages once the ROM is in place.
+				//
+				// ESXDOS keeps tables in this window and expects to find
+				// zeroed entries in them. Launching a TRD hangs without
+				// this: the ROM scans a table at 0x2C00 in steps of 40
+				// bytes looking for a zero byte, and since only the low
+				// address byte is incremented the search wraps inside one
+				// 256-byte page and never terminates if no zero is there.
+				// Observed directly on hardware - the CPU sat in the loop
+				// at 0x034C-0x0354 with the DivMMC ROM paged in. Real
+				// DivMMC SRAM powers up arbitrarily too, so this is the
+				// sort of thing that works by luck rather than by design.
+				if (boot_zero_addr == 17'd131071)
+					boot_zero_active <= 1'b0;
+				else
+					boot_zero_addr <= boot_zero_addr + 17'd1;
+			end
 			if (boot_prev_cpu_cycle == 1'b1 && cpu_cycle == 1'b0
 			    && boot_copy_active == 1'b1 && boot_settle_done == 1'b1) begin
 				if (boot_copy_addr == 15'd16383)
@@ -448,7 +488,7 @@ module spectrum_top (
 	always @(posedge clock) begin
 		if (pll_locked == 1'b0)
 			esxdos_downloaded <= 2'b00;
-		else if (boot_copy_active == 1'b0)
+		else if (boot_copy_active == 1'b0 && boot_zero_active == 1'b0)
 			esxdos_downloaded <= 2'b11;
 	end
 
@@ -528,7 +568,8 @@ module spectrum_top (
 	end
 	// silkscreen LED1 (= LED[3]) is the SD card access light; rest off
 	assign LED[0] = 1'b1;
-	assign LED[1] = 1'b1;
+	// silkscreen LED3: lit while 128K memory paging is enabled
+	assign LED[1] = ~mem128;
 	// silkscreen LED2: lit while Pentagon 128K frame timing is selected
 	assign LED[2] = ~timing_pentagon;
 	assign LED[3] = divmmc_cs;
@@ -544,6 +585,20 @@ module spectrum_top (
 		else if (key_f8 == 1'b1)
 			timing_pentagon <= 1'b1;
 	end
+
+	// Switching memory size under a running program leaves it with its
+	// banks moved out from under it, so it will usually crash - but the
+	// switch deliberately does NOT reset the machine, to leave room to
+	// experiment. Press F11 to reset when needed.
+	reg mem128_d = 1'b1;
+	always @(posedge clock) begin
+		mem128_d <= mem128;
+		if (key_f9 == 1'b1)
+			mem128 <= 1'b0;
+		else if (key_f10 == 1'b1)
+			mem128 <= 1'b1;
+	end
+	wire mem128_changed = (mem128 != mem128_d);
 
 	wire nmi_trigger = key_f12 | ~KEY[1];
 
@@ -581,9 +636,17 @@ module spectrum_top (
 	assign cpu_busreq_n = 1'b1;
 
 	// Keyboard
+	// The keyboard is deliberately NOT reset by reset_n. F11 is the reset
+	// key, and resetting the keyboard along with the machine cleared the
+	// very register holding F11 down - so the reset tore itself down
+	// again instead of staying asserted, and holding F11 could not work
+	// the way holding the board's button does. It only resets with the
+	// PLL now, which is also closer to how a real keyboard behaves: it
+	// does not forget which keys are held just because the computer was
+	// reset.
 	keyboard kb (
 		.CLK(clock),
-		.nRESET(reset_n),
+		.nRESET(pll_locked),
 		.PS2_CLK(PS2_CLK),
 		.PS2_DATA(PS2_DATA),
 		.A(cpu_a),
@@ -591,7 +654,9 @@ module spectrum_top (
 		.F11(key_f11),
 		.F8(key_f8),
 		.F12(key_f12),
-		.F5(key_f5)
+		.F5(key_f5),
+		.F9(key_f9),
+		.F10(key_f10)
 	);
 
 	// ULA port
@@ -716,7 +781,7 @@ module spectrum_top (
 	// CPU can never page DivMMC in before that content is valid - the very
 	// first instruction fetch after reset (address 0x0000) is one of
 	// divmmc.v's auto-page-in trap addresses.
-	wire reset_cond = (pll_locked == 1'b0) || (RESET_BTN == 1'b0) || (key_f11 == 1'b1) || (KEY[0] == 1'b0) || (boot_copy_active == 1'b1);
+	wire reset_cond = (pll_locked == 1'b0) || (RESET_BTN == 1'b0) || (key_f11 == 1'b1) || (KEY[0] == 1'b0) || (boot_copy_active == 1'b1) || (boot_zero_active == 1'b1);
 	reg [24:0] reset_cnt = 25'd32000000;
 	always @(posedge clock) begin
 		if (reset_cond) begin
@@ -966,8 +1031,11 @@ module spectrum_top (
 	end
 	assign page_reg_disable = preg_disable;
 	assign page_rom_sel = prom_sel;
-	assign page_shadow_scr = pshadow_scr;
-	assign page_ram_sel = pram_sel;
+	assign page_shadow_scr = mem128 & pshadow_scr;
+	// In 48K mode the paging register still exists and can be written,
+	// but has no effect: bank 0 at 0xC000 and the normal screen is
+	// exactly the 48K machine's layout.
+	assign page_ram_sel = mem128 ? pram_sel : 3'b000;
 
 	// 7-segment "digital tube" - digit 1 normally shows page_ram_sel (0-7).
 	// Polarity is a guess (common-anode: segment/digit driven low = lit) -
@@ -1021,15 +1089,32 @@ module spectrum_top (
 	// address of the first fetch that landed in the DivMMC sram-page
 	// window - stable, unlike a live PC, and says exactly where a jump
 	// into uninitialised page memory happened
-	// Display layout, left to right: "3.5" (the CPU clock in MHz), a
-	// blanked digit, then the currently selected memory page.
-	wire [3:0] nibble = (digit_scan == 2'd0) ? divmmc_sram_page :
-	                    (digit_scan == 2'd1) ? 4'd0             :  // blanked
-	                    (digit_scan == 2'd2) ? 4'd5             :
-	                                           4'd3;
+	// DIAGNOSTIC: a slow sample of the program counter. Updated about
+	// four times a second so it can actually be read - a live PC is a
+	// blur. Shows where execution sits when a TRD launch hangs.
+	reg [15:0] pc_slow = 16'd0;
+	reg [22:0] pc_slow_cnt = 23'd0;
+	reg        pc_arm = 1'b0;
+	always @(posedge clock) begin
+		pc_slow_cnt <= pc_slow_cnt + 23'd1;
+		// arm on the tick, then take the next opcode fetch. Requiring the
+		// tick and the fetch in the same cycle - as a first attempt did -
+		// is a coincidence that almost never happens, so the display just
+		// sat at its initial value and read as a hang at 0000.
+		if (pc_slow_cnt == 23'd0)
+			pc_arm <= 1'b1;
+		else if (pc_arm && (prev_cpu_m1_n == 1'b1) && (cpu_m1_n == 1'b0)) begin
+			pc_slow <= cpu_a;
+			pc_arm  <= 1'b0;
+		end
+	end
+	wire [3:0] nibble = (digit_scan == 2'd0) ? pc_slow[3:0]   :
+	                    (digit_scan == 2'd1) ? pc_slow[7:4]   :
+	                    (digit_scan == 2'd2) ? pc_slow[11:8]  :
+	                                           pc_slow[15:12];
 
-	wire digit_blank = (digit_scan == 2'd1);
-	wire digit_dp    = (digit_scan == 2'd3);   // the point in "3.5"
+	wire digit_blank = 1'b0;
+	wire digit_dp    = divmmc_paged_in && (digit_scan == 2'd0);
 
 	reg [6:0] seg_gfedcba;
 	always @* begin
@@ -1164,6 +1249,12 @@ module spectrum_top (
 			sdram_addr = boot_copy_addr[13] ?
 				{4'b0000, 2'b11, 6'b010011, boot_copy_addr[12:0]} :
 				{4'b0000, 2'b11, 6'b000000, boot_copy_addr[12:0]};
+		end else if (boot_zero_wr == 1'b1) begin
+			// zeroing the DivMMC sram pages: {2'b11, 2'b01, page, offset}
+			sdram_oe = 1'b0;
+			sdram_we = 1'b1;
+			sdram_di = 8'h00;
+			sdram_addr = {4'b0000, 2'b11, 2'b01, boot_zero_addr[16:13], boot_zero_addr[12:0]};
 		end else if (cpu_cycle == 1'b1) begin
 			sdram_oe = ~cpu_mreq_n & ~cpu_rd_n;  // any cpu read enables ram
 			sdram_we = ram_write;                // write only for memory used as ram

@@ -52,7 +52,9 @@ module keyboard (
 	F11,
 	F8,
 	F12,
-	F5
+	F5,
+	F9,
+	F10
 );
 
 	input           CLK;
@@ -68,6 +70,8 @@ module keyboard (
 	output reg      F8;
 	output reg      F12;
 	output reg      F5;
+	output reg      F9;
+	output reg      F10;
 
 	// Interface to PS/2 block
 	wire    [7:0]   keyb_data;
@@ -135,6 +139,8 @@ module keyboard (
 			F8 <= 1'b0;
 			F12 <= 1'b0;
 			F5  <= 1'b0;
+			F9  <= 1'b0;
+			F10 <= 1'b0;
 		end else begin
 			if (keyb_valid == 1'b1) begin
 				if (keyb_data == 8'he0) begin
@@ -301,6 +307,8 @@ module keyboard (
 						8'h0a: F8  <= ~release_key; // F8 key  -> Pentagon 128K timings
 						8'h07: F12 <= ~release_key; // F12 key -> NMI
 						8'h03: F5  <= ~release_key; // F5 key  -> Sinclair 48K timings
+						8'h01: F9  <= ~release_key; // F9 key  -> 48K memory
+						8'h09: F10 <= ~release_key; // F10 key -> 128K memory
 
 						default: begin
 						end
