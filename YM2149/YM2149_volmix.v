@@ -176,38 +176,69 @@ module YM2149 (
 	// if we are emulating a real chip, maybe clock this to fake up the tristate typ delay of 100ns
 	assign O_DA_OE_L = ~busctrl_re;
 
-	// LATCHED, useful when emulating a real chip in circuit. Nasty as gated clock.
-	always @(negedge RESET_L or negedge busctrl_addr) begin
+	// Originally these two blocks were clocked by busctrl_addr and
+	// busctrl_we themselves - the source called it "nasty as gated
+	// clock", and it is worse than untidy: those signals derive from the
+	// CPU's IORQ_n, so TimeQuest saw IORQ_n as a clock with no
+	// constraint and left everything they clock unanalysed. That is the
+	// same class of problem that made this design behave differently
+	// from build to build. Same behaviour, but clocked from CLK with the
+	// falling edge detected in logic, so the paths are timed.
+	//
+	// I_DA is captured while the strobe is asserted and committed when it
+	// falls, rather than sampled at the edge itself - by then the CPU may
+	// already have let go of the bus.
+	reg             busctrl_addr_d = 1'b1;
+	reg             busctrl_we_d   = 1'b1;
+	reg     [7:0]   da_hold        = 8'b0;
+
+	always @(posedge CLK or negedge RESET_L) begin
+		if (RESET_L == 1'b0) begin
+			busctrl_addr_d <= 1'b1;
+			busctrl_we_d   <= 1'b1;
+			da_hold        <= 8'b0;
+		end else begin
+			busctrl_addr_d <= busctrl_addr;
+			busctrl_we_d   <= busctrl_we;
+			if (busctrl_addr == 1'b1 || busctrl_we == 1'b1)
+				da_hold <= I_DA;
+		end
+	end
+
+	wire addr_strobe_end = (busctrl_addr_d == 1'b1) && (busctrl_addr == 1'b0);
+	wire we_strobe_end   = (busctrl_we_d   == 1'b1) && (busctrl_we   == 1'b0);
+
+	always @(posedge CLK or negedge RESET_L) begin
 		// looks like registers are latches in real chip, but the address is caught at the end of the address state.
 		if (RESET_L == 1'b0)
 			addr <= 8'b0;
-		else // yuk
-			addr <= I_DA;
+		else if (addr_strobe_end)
+			addr <= da_hold;
 	end
 
 	integer wi;
-	always @(negedge RESET_L or negedge busctrl_we) begin
+	always @(posedge CLK or negedge RESET_L) begin
 		if (RESET_L == 1'b0) begin
 			for (wi = 0; wi < 16; wi = wi + 1)
 				regs[wi] <= 8'b0;
-		end else begin
+		end else if (we_strobe_end) begin
 			case (addr[3:0])
-				4'h0: regs[0]  <= I_DA;
-				4'h1: regs[1]  <= I_DA;
-				4'h2: regs[2]  <= I_DA;
-				4'h3: regs[3]  <= I_DA;
-				4'h4: regs[4]  <= I_DA;
-				4'h5: regs[5]  <= I_DA;
-				4'h6: regs[6]  <= I_DA;
-				4'h7: regs[7]  <= I_DA;
-				4'h8: regs[8]  <= I_DA;
-				4'h9: regs[9]  <= I_DA;
-				4'hA: regs[10] <= I_DA;
-				4'hB: regs[11] <= I_DA;
-				4'hC: regs[12] <= I_DA;
-				4'hD: regs[13] <= I_DA;
-				4'hE: regs[14] <= I_DA;
-				4'hF: regs[15] <= I_DA;
+				4'h0: regs[0]  <= da_hold;
+				4'h1: regs[1]  <= da_hold;
+				4'h2: regs[2]  <= da_hold;
+				4'h3: regs[3]  <= da_hold;
+				4'h4: regs[4]  <= da_hold;
+				4'h5: regs[5]  <= da_hold;
+				4'h6: regs[6]  <= da_hold;
+				4'h7: regs[7]  <= da_hold;
+				4'h8: regs[8]  <= da_hold;
+				4'h9: regs[9]  <= da_hold;
+				4'hA: regs[10] <= da_hold;
+				4'hB: regs[11] <= da_hold;
+				4'hC: regs[12] <= da_hold;
+				4'hD: regs[13] <= da_hold;
+				4'hE: regs[14] <= da_hold;
+				4'hF: regs[15] <= da_hold;
 				default: ;
 			endcase
 		end

@@ -180,6 +180,14 @@ module spectrum_top (
 	wire            key_f11;
 	wire            key_f8;
 	wire            key_f12;
+	wire            key_f5;
+
+	// Frame timing select: F5 picks Sinclair 48K, F8 picks Pentagon 128K.
+	// Pentagon runs a longer frame (320 lines of 232 T-states against
+	// 312 of 224) and takes its interrupt on line 239 instead of 248,
+	// which is what demos and music players written for it expect.
+	// Sinclair is the power-up default.
+	reg             timing_pentagon = 1'b0;
 
 	// Master clock - 28 MHz
 	wire            clk56;
@@ -521,7 +529,8 @@ module spectrum_top (
 	// silkscreen LED1 (= LED[3]) is the SD card access light; rest off
 	assign LED[0] = 1'b1;
 	assign LED[1] = 1'b1;
-	assign LED[2] = 1'b1;
+	// silkscreen LED2: lit while Pentagon 128K frame timing is selected
+	assign LED[2] = ~timing_pentagon;
 	assign LED[3] = divmmc_cs;
 
 	// ULA "ear" input (tape in) - no tape hardware on this board, keep idle
@@ -529,6 +538,13 @@ module spectrum_top (
 
 	// KEY[0] = board button S1 -> computer reset (also see reset_cond)
 	// KEY[1] = board button S2 -> NMI (also see nmi_trigger)
+	always @(posedge clock) begin
+		if (key_f5 == 1'b1)
+			timing_pentagon <= 1'b0;
+		else if (key_f8 == 1'b1)
+			timing_pentagon <= 1'b1;
+	end
+
 	wire nmi_trigger = key_f12 | ~KEY[1];
 
 	// CPU
@@ -574,7 +590,8 @@ module spectrum_top (
 		.KEYB(keyb),
 		.F11(key_f11),
 		.F8(key_f8),
-		.F12(key_f12)
+		.F12(key_f12),
+		.F5(key_f5)
 	);
 
 	// ULA port
@@ -604,6 +621,7 @@ module spectrum_top (
 		.MEM_CYC(vid_mem_sync),
 		.nRESET(reset_n),
 		.VGA(1'b0),
+		.PENTAGON(timing_pentagon),
 		.VID_A(vid_a),
 		.VID_D_IN(sdram_do_raw),
 		.nVID_RD(vid_rd_n),
@@ -698,7 +716,7 @@ module spectrum_top (
 	// CPU can never page DivMMC in before that content is valid - the very
 	// first instruction fetch after reset (address 0x0000) is one of
 	// divmmc.v's auto-page-in trap addresses.
-	wire reset_cond = (pll_locked == 1'b0) || (RESET_BTN == 1'b0) || (key_f8 == 1'b1) || (KEY[0] == 1'b0) || (boot_copy_active == 1'b1);
+	wire reset_cond = (pll_locked == 1'b0) || (RESET_BTN == 1'b0) || (key_f11 == 1'b1) || (KEY[0] == 1'b0) || (boot_copy_active == 1'b1);
 	reg [24:0] reset_cnt = 25'd32000000;
 	always @(posedge clock) begin
 		if (reset_cond) begin

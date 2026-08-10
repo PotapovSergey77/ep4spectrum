@@ -47,6 +47,8 @@ module video (
 
 	// Mode
 	VGA,
+	// 0 = Sinclair 48K frame timing, 1 = Pentagon 128K
+	PENTAGON,
 
 	// Memory interface
 	VID_A,
@@ -77,6 +79,7 @@ module video (
 	input           nRESET;
 
 	input           VGA;
+	input           PENTAGON;
 
 	output  [12:0]  VID_A;
 	input   [7:0]   VID_D_IN;
@@ -225,6 +228,16 @@ module video (
 	assign nWAIT = 1'b1;
 
 	// First 192 lines are picture
+	// Frame geometry, selected by PENTAGON. Sinclair 48K is 224
+	// T-states per line and 312 lines per frame; Pentagon 128K is 232
+	// per line and 320 lines. hcounter runs at twice the pixel rate, so
+	// its limit is doubled (895 vs 911); vcounter[9:1] is the real line
+	// number, so its limit is not.
+	wire [9:0] hcount_last = PENTAGON ? 10'd911 : 10'd895;
+	wire [8:0] vline_last  = PENTAGON ? 9'd319  : 9'd311;
+	// Frame interrupt line: 248 on Sinclair, 239 on Pentagon.
+	wire [8:0] int_line    = PENTAGON ? 9'd239  : 9'd248;
+
 	assign vpicture = ~(vcounter[9] | (vcounter[8] & vcounter[7]));
 
 	always @(posedge CLK or negedge nRESET) begin
@@ -312,10 +325,13 @@ module video (
 					hpicture <= 1'b0;
 			end
 
+			// Frame geometry. Sinclair 48K is 224 T-states per line and 312
+			// lines; Pentagon 128K is 232 per line and 320 lines. hcounter
+			// runs at twice the pixel rate so its limits are doubled.
 			// Step the horizontal counter and check for wrap
 			if (VGA == 1'b1) begin
 				// Counter wraps after 894 in VGA mode
-				if (hcounter == 10'b1101111111) begin
+				if (hcounter == hcount_last) begin
 					if (MEM_CYC == 1'b1) begin
 						hcounter <= 10'b0;
 						// Increment vertical counter by ones for VGA so that
@@ -331,7 +347,7 @@ module video (
 				hcounter[0] <= 1'b1;
 			end else begin
 				// Counter wraps after 895 in PAL mode
-				if (hcounter == 10'b1101111111) begin
+				if (hcounter == hcount_last) begin
 					if (MEM_CYC == 1'b1) begin
 						hcounter <= 10'b0;
 						// Increment vertical counter by even values for PAL
@@ -377,6 +393,21 @@ module video (
 			if (hcounter[7] == 1'b1)
 				nIRQ <= 1'b1;
 
+			// Assert the frame interrupt. Kept separate from the vsync
+			// case below because the two do not coincide on Pentagon:
+			// vsync stays where it is (the picture is still PAL-shaped,
+			// the frame is simply longer) while the interrupt moves to
+			// line 239. On Sinclair this reproduces the previous
+			// behaviour exactly - vcounter[9:3] == 7'b0111110 is lines
+			// 248..251, i.e. vcounter[9:1] in 248..251.
+			if (PENTAGON == 1'b1) begin
+				if (vcounter[9:1] == int_line)
+					nIRQ <= 1'b0;
+			end else begin
+				if (vcounter[9:3] == 7'b0111110)
+					nIRQ <= 1'b0;
+			end
+
 			//----------------
 			// VERTICAL
 			//----------------
@@ -386,8 +417,6 @@ module video (
 					// Start of blanking and vsync(line 248)
 					vblanking <= 1'b1;
 					vsync <= 1'b1;
-					// Assert vsync interrupt
-					nIRQ <= 1'b0;
 				end
 				7'b0111111: begin
 					// End of vsync after 4 lines (line 252)
@@ -405,9 +434,9 @@ module video (
 
 			// Wrap vertical counter at line 312-1,
 			// Top counter value is 623 for VGA, 622 for PAL
-			if (vcounter[9:1] == 9'b100110111) begin
-				if ((VGA == 1'b1 && vcounter[0] == 1'b1 && hcounter == 10'b1101111111) ||
-					 (VGA == 1'b0 && hcounter == 10'b1101111111)) begin
+			if (vcounter[9:1] == vline_last) begin
+				if ((VGA == 1'b1 && vcounter[0] == 1'b1 && hcounter == hcount_last) ||
+					 (VGA == 1'b0 && hcounter == hcount_last)) begin
 					// Start of picture area
 					vcounter <= 10'b0;
 					// Increment the flash counter once per frame
