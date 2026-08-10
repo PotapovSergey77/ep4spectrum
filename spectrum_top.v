@@ -1069,15 +1069,29 @@ module spectrum_top (
 	end
 	endgenerate
 
-	// Connect ULA to video output - only the base colour bit survives on
-	// this board's single-pin-per-channel VGA connector (8 colours, no
-	// bright/scanline shading)
+	// Connect ULA to video output. This board has a single pin per colour
+	// channel, so the ULA's 4-bit levels cannot be output directly - but
+	// the BRIGHT attribute can still be reproduced by switching the pin
+	// on and off within each pixel and letting the monitor average it.
+	//
+	// video.v builds each channel as {colour, {3{bright & colour}}}, so
+	// bit 3 says whether the colour is present at all and bit 0 says
+	// whether it is bright. One PWM period is exactly one pixel: the
+	// pixel clock is 7MHz and this counter runs on the 56MHz clock, so
+	// eight steps fit per pixel. Bright colours stay on for all eight,
+	// normal ones for six - about the 3/4 ratio between the two levels
+	// on a real Spectrum.
 	assign zx_red = vid_r_out[3];
 	assign zx_green = vid_g_out[3];
 	assign zx_blue = vid_b_out[3];
-	assign VGA_R = zx_red;
-	assign VGA_G = zx_green;
-	assign VGA_B = zx_blue;
+
+	reg [2:0] pwm_cnt = 3'd0;
+	always @(posedge clk56) pwm_cnt <= pwm_cnt + 3'd1;
+	wire pwm_dim = (pwm_cnt < 3'd6);   // 6/8 duty
+
+	assign VGA_R = zx_red   & (vid_r_out[0] | pwm_dim);
+	assign VGA_G = zx_green & (vid_g_out[0] | pwm_dim);
+	assign VGA_B = zx_blue  & (vid_b_out[0] | pwm_dim);
 	// 15kHz mode: composite (H^V) sync on VGA_HS, VGA_VS unused/high
 	assign VGA_HS = vid_hcsync_n;
 	assign VGA_VS = 1'b1;
