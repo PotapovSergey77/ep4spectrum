@@ -1005,6 +1005,8 @@ module spectrum_top (
 	// into uninitialised page memory happened
 	// DivMMC sram page currently selected; the decimal point below shows
 	// whether its ROM is paged in
+	// DivMMC sram page currently selected; the decimal point shows
+	// whether its ROM is paged in
 	wire [15:0] seg_value = {12'h000, divmmc_sram_page};
 
 	wire [3:0] nibble = (digit_scan == 2'd0) ? seg_value[3:0]   :

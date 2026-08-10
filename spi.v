@@ -24,9 +24,16 @@ module spi (
 // a card refusing to answer a too-fast SPI clock. div_cnt gates the
 // shift/counter advance to roughly clk/128 (56MHz/128/2 =~ 219kHz
 // SCK), safely under the 400kHz limit.
-reg [6:0] div_cnt;
-wire      tick = (div_cnt == 7'd127);
-always @(posedge clk) div_cnt <= div_cnt + 7'd1;
+// ~219kHz turned out to be far slower than necessary: the card now
+// answers, gets detected and the filesystem mounts, so initialisation
+// is plainly not the problem any more - but ESXDOS then fails loading
+// a file, and at that rate a 4KB read takes ~150ms, which is the sort
+// of thing its timeouts are not written for. /8 gives 56MHz/2/8 =
+// 3.5MHz, comfortably inside the 25MHz an SD card allows in SPI mode
+// and roughly the rate real DivMMC hardware runs at.
+reg [2:0] div_cnt;
+wire      tick = (div_cnt == 3'd7);
+always @(posedge clk) div_cnt <= div_cnt + 3'd1;
 
 reg [4:0] counter = 5'd16; // tx/rx counter is idle
 reg [7:0] io_byte;
