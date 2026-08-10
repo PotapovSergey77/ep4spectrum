@@ -125,6 +125,18 @@ module tb_top;
 		repeat (200) @(posedge dut.clock);
 		release dut.boot_copy_addr;
 
+		// The page-clearing phase that follows the copy walks 131072
+		// addresses, which is ~75ms of simulated time - fast-forward it
+		// too. The pages are already zero here, since the model's memory
+		// starts that way.
+		wait (dut.boot_copy_active === 1'b0);
+		@(posedge dut.clock);
+		force dut.boot_zero_addr = 17'd131060;
+		repeat (400) @(posedge dut.clock);
+		release dut.boot_zero_addr;
+		wait (dut.boot_zero_active === 1'b0);
+		$display("[%0t] page clear finished", $time);
+
 		// The design also holds reset for reset_cnt cycles - 32,000,000 of
 		// them at power-up, which is 1.14s at 28MHz. Sensible on the board,
 		// hopeless to simulate, so wind it down once the copy is done.
@@ -212,6 +224,32 @@ module tb_top;
 		end
 	end
 
+	// ------------------------------------------------------------
+	// CPU throughput: how many clock enables the CPU actually gets.
+	// clocks.v withholds the second enable of each 16-clock window while
+	// the CPU is mid memory access, so the machine runs short of the
+	// 3.5MHz a Pentagon expects - by 224 T-states per frame even when
+	// idle on hardware, and more under memory-heavy code. Measured here
+	// over a fixed window so a change to the arbitration can be compared
+	// against the current design without simulating a whole frame.
+	// ------------------------------------------------------------
+	integer cpu_ticks = 0;   // clock enables issued
+	integer cpu_eff   = 0;   // enables on which the CPU actually advances
+	integer cpu_wait  = 0;   // clocks spent stalled on WAIT_n
+	integer meas_run  = 0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n == 1'b1) begin
+			meas_run <= meas_run + 1;
+			if (dut.cpu_clken == 1'b1) begin
+				cpu_ticks <= cpu_ticks + 1;
+				if (dut.cpu_wait_n == 1'b1)
+					cpu_eff <= cpu_eff + 1;
+			end
+			if (dut.cpu_wait_n == 1'b0)
+				cpu_wait <= cpu_wait + 1;
+		end
+	end
+
 	// note when the boot copy finishes and the CPU is let go
 	reg copy_done_seen = 0;
 	always @(posedge dut.clock) begin
@@ -225,11 +263,21 @@ module tb_top;
 	// and its buffer never reaches disk - which is why an earlier 25ms
 	// run left an empty log despite the design executing.
 	initial begin
-		#3_000_000;    // 3ms
+		#1_500_000;    // 1.5ms
 		$fclose(logfile);
 		$display("=====================================================");
 		$display("DivMMC fixed-ROM opcode fetches: %0d good, %0d corrupted",
 			good_fetch, bad_fetch);
+		$display("CPU clock enables: %0d over %0d clocks of 28MHz",
+			cpu_ticks, meas_run);
+		$display("  = %0d%% of the 2-per-16-clock maximum (3.5MHz)",
+			(meas_run == 0) ? 0 : (cpu_ticks * 800) / meas_run);
+		// What actually counts: enables on which the CPU was not held by
+		// WAIT_n. Clock enables alone say nothing once WAIT exists - the
+		// CPU can be issued every enable and still stand still.
+		$display("  effective (CPU not stalled): %0d = %0d%% of 3.5MHz",
+			cpu_eff, (meas_run == 0) ? 0 : (cpu_eff * 800) / meas_run);
+		$display("  clocks spent stalled on WAIT: %0d", cpu_wait);
 		$display("=====================================================");
 		$display("SIMULATION DONE");
 		$finish;
