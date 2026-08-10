@@ -94,6 +94,12 @@ module sdram_model (
 		endcase
 	end
 
-	assign sd_data = rd_valid[3] ? rd_data[3] : 16'bzzzzzzzzzzzzzzzz;
+	// Access time from the clock edge (tAC). Without this the model puts
+	// read data on the bus instantaneously, which real parts do not do -
+	// and that difference is not cosmetic: constraining the interface
+	// showed the design was capturing reads ~7ns before the chip could
+	// possibly have driven them. A zero-delay model hides exactly that
+	// class of fault, so give it a realistic tAC.
+	assign #6 sd_data = rd_valid[3] ? rd_data[3] : 16'bzzzzzzzzzzzzzzzz;
 
 endmodule

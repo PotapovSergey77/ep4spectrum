@@ -21,3 +21,18 @@ simulation/modelsim/transcript
 simulation/modelsim/vsim_run*.log
 simulation/modelsim/trace*.log
 simulation/modelsim/spi_debug.log
+
+# more ModelSim / Quartus generated artifacts
+simulation/modelsim/work_full/
+simulation/modelsim/modelsim.ini
+simulation/modelsim/*.ver
+simulation/modelsim/*.vo
+simulation/modelsim/*.sdo
+simulation/modelsim/*.sft
+simulation/modelsim/48.hex
+simulation/modelsim/esxmmc.hex
+simulation/modelsim/vol_table.hex
+output_files/*.pof
+output_files/*.cdf
+simulation/modelsim/*.xrf
+simulation/modelsim/vsim_*.log

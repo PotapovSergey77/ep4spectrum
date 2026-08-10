@@ -142,6 +142,7 @@ module spectrum_top (
 	wire    [1:0]   sdram_dqm;
 	reg     [7:0]   sdram_di;
 	wire    [7:0]   sdram_do;
+	wire    [7:0]   sdram_do_raw;
 	reg     [24:0]  sdram_addr;
 	reg             sdram_we;
 	reg             sdram_oe;
@@ -171,7 +172,7 @@ module spectrum_top (
 	// so if this were hardwired true from power-on, DivMMC would page in
 	// on the very first boot before the copy had written anything there,
 	// running whatever garbage SDRAM happened to power up with.
-	reg     [1:0]   esxdos_downloaded;
+	reg     [1:0]   esxdos_downloaded = 2'b00;
 	wire            divmmc_paged_in;
 	wire    [3:0]   divmmc_sram_page;
 	wire            divmmc_mapram;
@@ -183,7 +184,12 @@ module spectrum_top (
 	// Master clock - 28 MHz
 	wire            clk56;
 	wire            pll_locked;
-	reg             clock;
+	// Explicit power-up value. Cyclone IV registers come out of
+	// configuration at 0 regardless, so this changes nothing on hardware
+	// - but this register is derived from itself (clock <= ~clock), so
+	// without it the whole 28MHz domain is stuck at X in simulation and
+	// the design does absolutely nothing.
+	reg             clock = 1'b0;
 	reg             reset_n;
 
 	// Clock control
@@ -331,6 +337,7 @@ module spectrum_top (
 		// cpu interface
 		.din(sdram_di),
 		.dout(sdram_do),
+		.dout_raw(sdram_do_raw),
 		.addr(sdram_addr),
 		.we(sdram_we),
 		.oe(sdram_oe)
@@ -351,8 +358,8 @@ module spectrum_top (
 	// internal init sequence first, so the first few bytes aren't
 	// silently dropped.
 	//--------------------------------------------------------------
-	reg  [9:0]  boot_settle_cnt;
-	reg         boot_settle_done;
+	reg  [9:0]  boot_settle_cnt = 10'd0;
+	reg         boot_settle_done = 1'b0;
 	always @(posedge clock) begin
 		if (pll_locked == 1'b0) begin
 			boot_settle_cnt <= 10'd0;
@@ -374,9 +381,9 @@ module spectrum_top (
 	//   runtime) - without this second pass it would find that area empty
 	//   and run garbage the moment it switches, regardless of whether an
 	//   SD card is even present.
-	reg         boot_copy_active;
-	reg  [14:0] boot_copy_addr;
-	reg         boot_prev_cpu_cycle;
+	reg         boot_copy_active = 1'b1;
+	reg  [14:0] boot_copy_addr = 15'd0;
+	reg         boot_prev_cpu_cycle = 1'b0;
 	wire [7:0]  boot_copy_rom_do;
 
 	// The write request is presented for a whole CPU slot rather than
@@ -464,13 +471,58 @@ module spectrum_top (
 	// ambiguous - a count of 0000 reads the same whether every byte
 	// matched or the verify never ran at all (in which case the CPU is
 	// also still held in reset, which is exactly what happened).
+	// DIAGNOSTIC: pinpoint exactly where the boot sequence stalls, rather
+	// than inferring it. Silkscreen numbering runs opposite to the LED[]
+	// index, so LED[3] is the leftmost (silkscreen LED1).
+	//   LED[3] (silkscreen LED1) - boot copy finished
+	//   LED[2] (LED2)            - boot_settle_done
+	//   LED[1] (LED3)            - PLL locked
+	//   LED[0] (LED4)            - slow blink while cpu_cycle is toggling
+	reg [22:0] cc_blink_cnt = 23'd0;
+	reg        cc_prev      = 1'b0;
+	reg        cc_seen      = 1'b0;
+	reg        cc_blink     = 1'b0;
+	// count cpu_cycle falling edges - the exact event the boot copy
+	// advances on. The copy is stalled with its address at 0, so either
+	// these edges never happen or the advance condition never matches.
+	reg [15:0] cc_fall_cnt  = 16'd0;
+	always @(posedge clock) begin
+		cc_prev <= cpu_cycle;
+		if (cc_prev != cpu_cycle) cc_seen <= 1'b1;
+		if (cc_prev == 1'b1 && cpu_cycle == 1'b0)
+			cc_fall_cnt <= cc_fall_cnt + 16'd1;
+		cc_blink_cnt <= cc_blink_cnt + 23'd1;
+		if (cc_blink_cnt == 23'd0) begin
+			cc_blink <= cc_seen;
+			cc_seen  <= 1'b0;
+		end
+	end
+
+	// LED[0] (silkscreen LED4): blinks only if the CPU has actually
+	// completed an opcode fetch since the last blink period. A steady
+	// 0000 on the PC display cannot tell "held in reset" from "fetching
+	// at address 0 forever"; this can.
+	// Count M1 *edges*, not level: a steady lit LED with a PC display
+	// frozen at 0000 is exactly what a CPU stalled mid-fetch (M1 held
+	// asserted) looks like, and only an edge count tells that apart from
+	// real instruction traffic.
+	reg [15:0] m1_edge_cnt = 16'd0;
+	reg        m1_seen2  = 1'b0;
+	reg        m1_blink  = 1'b0;
+	always @(posedge clock) begin
+		if (prev_cpu_m1_n == 1'b1 && cpu_m1_n == 1'b0)
+			m1_edge_cnt <= m1_edge_cnt + 16'd1;
+		if (~cpu_m1_n) m1_seen2 <= 1'b1;
+		if (cc_blink_cnt == 23'd0) begin
+			m1_blink <= m1_seen2;
+			m1_seen2 <= 1'b0;
+		end
+	end
+	// silkscreen LED1 (= LED[3]) is the SD card access light; rest off
 	assign LED[0] = 1'b1;
 	assign LED[1] = 1'b1;
 	assign LED[2] = 1'b1;
-	// DIAGNOSTIC: lit once the boot copy has finished. Dark = the whole
-	// design is still held in reset by boot_copy_active, which is what a
-	// black screen plus a frozen PC would also look like.
-	assign LED[3] = boot_copy_active;
+	assign LED[3] = divmmc_cs;
 
 	// ULA "ear" input (tape in) - no tape hardware on this board, keep idle
 	assign ula_ear_in = 1'b1;
@@ -553,7 +605,7 @@ module spectrum_top (
 		.nRESET(reset_n),
 		.VGA(1'b0),
 		.VID_A(vid_a),
-		.VID_D_IN(sdram_do),
+		.VID_D_IN(sdram_do_raw),
 		.nVID_RD(vid_rd_n),
 		.nWAIT(vid_wait_n),
 		.BORDER_IN(ula_border),
@@ -731,9 +783,32 @@ module spectrum_top (
 	end
 	endgenerate
 
-	always @(negedge cpu_cycle) begin
-		// latch sdram data at the end of cpus memory cycle
-		mem_do <= sdram_do;
+	// Latch SDRAM data at the end of the CPU's memory cycle.
+	//
+	// This used to be `always @(negedge cpu_cycle)`, i.e. clocked by a
+	// logic-generated signal on ordinary routing. TimeQuest does not
+	// recognise cpu_cycle as a clock at all (the design's clock list holds
+	// only CLOCK_50 and the two PLL outputs), so that register's timing
+	// was never analysed and its skew came out differently on every
+	// build - which is exactly the behaviour seen on the board, where two
+	// builds differing only in which signal drove an LED behaved
+	// completely differently. Clocking it from the real 28MHz clock and
+	// detecting the cpu_cycle edge in logic keeps the same sampling
+	// instant while putting the path under proper timing analysis.
+	// Captured one clock after the end of the CPU's slot, not on the edge
+	// itself: sdram_ep4ce.v now latches read data internally at its q==0,
+	// which lands just after cpu_cycle has already fallen. Sampling on
+	// the falling edge therefore picked up the *previous* transaction's
+	// byte - on the board that showed as the CPU fetching a constant
+	// wrong value and spinning on address 0000 forever, with opcode
+	// fetches still happening (so not a reset).
+	reg cpu_cycle_d  = 1'b0;
+	reg cpu_cycle_d2 = 1'b0;
+	always @(posedge clock) begin
+		cpu_cycle_d  <= cpu_cycle;
+		cpu_cycle_d2 <= cpu_cycle_d;
+		if (cpu_cycle_d2 == 1'b1 && cpu_cycle_d == 1'b0)
+			mem_do <= sdram_do;
 	end
 
 	// CPU data bus mux
@@ -924,8 +999,13 @@ module spectrum_top (
 	// SDRAM exactly as written, so the SDRAM round-trip is sound and the
 	// DivMMC fault lies elsewhere. Any other value = number of mismatching
 	// bytes, i.e. the ROM image the CPU is actually executing is corrupt.
-	// live CPU program counter, in hex
-	wire [15:0] seg_value = last_pc;
+	// DIAGNOSTIC: boot copy address, so a stalled copy shows where it stopped
+	// address of the first fetch that landed in the DivMMC sram-page
+	// window - stable, unlike a live PC, and says exactly where a jump
+	// into uninitialised page memory happened
+	// DivMMC sram page currently selected; the decimal point below shows
+	// whether its ROM is paged in
+	wire [15:0] seg_value = {12'h000, divmmc_sram_page};
 
 	wire [3:0] nibble = (digit_scan == 2'd0) ? seg_value[3:0]   :
 	                    (digit_scan == 2'd1) ? seg_value[7:4]   :

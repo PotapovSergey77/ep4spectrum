@@ -33,7 +33,8 @@ module sdram_ep4ce (
 	input					clkref,		// reference clock to sync to
 
 	input [7:0]  		din,			// data input from chipset/cpu
-	output [7:0]  dout,				// data output to chipset/cpu
+	output [7:0]  dout,				// data output to chipset/cpu (registered)
+	output [7:0]  dout_raw,			// same data, straight off the pins
 	input [24:0]   	addr,       // byte address (only addr[21:0] are decoded, giving 4MB usable)
 	input 		 		oe,         // cpu/chipset requests read
 	input 		 		we          // cpu/chipset requests write
@@ -121,7 +122,86 @@ assign sd_we  = sd_cmd[0];
 // at a time when writing
 assign sd_data = we?{din, din}:16'bZZZZZZZZZZZZZZZZ;
 
-assign dout = sd_data[7:0];
+// Latch the read data here, at the one phase it is actually on the bus
+// (q=7, measured in simulation), instead of presenting the raw pins and
+// leaving the consumer to sample at exactly the right instant.
+//
+// spectrum_top.v captures this into mem_do on the falling edge of
+// cpu_cycle - a derived signal on ordinary routing, so on real silicon
+// its skew decides precisely when the data bus is sampled. Combinational
+// dout is only valid for a single ~18ns window, so a small skew samples
+// a neighbouring transaction instead - which can only happen when there
+// IS a neighbouring transaction, i.e. when video is competing for the
+// chip. That matches the board exactly: disabling video's SDRAM reads
+// let an otherwise unchanged build boot, while simulation (where a
+// derived clock has no skew at all) never reproduced the fault.
+// Registered here, dout stays valid for a whole ~143ns q cycle.
+reg [6:0] refresh_timer = 7'd0;
+reg       refresh_due   = 1'b0;
+reg       refresh_cycle = 1'b0;
+reg       read_cycle    = 1'b0;
+
+// Registered, at the one phase the data is actually on the bus (q=7,
+// measured in simulation). Tried combinational as well: with it the
+// board was markedly worse, so the extra hold this gives the consumer
+// matters more than the risk of straddling a neighbouring video read.
+// Captured one clock after the data is launched, not on the launching
+// edge itself. Constraining the interface (see spectrum.sdc) exposed
+// this as a real -6.9ns setup violation on SDRAM_DQ -> here: the part
+// needs up to ~6ns after its clock edge to drive the data out, and the
+// earlier capture edge simply came before that. SDRAM holds read data
+// until tOH past the following edge, so sampling one clock later sits
+// comfortably inside the valid window and gains a full 17.9ns of setup
+// margin. This is invisible in simulation, where the model produces
+// data with no delay at all.
+//
+// read_cycle is assigned at q==0 too, so the value read here is still
+// the finishing cycle's - which is the one whose data this is.
+reg [7:0] dout_r;
+always @(posedge clk) begin
+	if (q == 3'd0 && read_cycle)
+		dout_r <= sd_data[7:0];
+end
+assign dout = dout_r;
+
+// Unregistered copy for the video controller, which samples the bus on
+// its own schedule and was designed around the combinational output.
+// The CPU path needs the registered one for timing margin; giving each
+// consumer the form it expects avoids making one work at the cost of
+// the other.
+assign dout_raw = sd_data[7:0];
+
+// ---------------------------------------------------------------------
+// ------------------------- forced refresh ----------------------------
+// ---------------------------------------------------------------------
+//
+// AUTO_REFRESH used to be issued only on cycles where neither oe nor we
+// happened to be asserted. That is fine while the bus is mostly idle,
+// but the video controller reads SDRAM continuously through the whole
+// active display area, so those idle cycles nearly vanish and the chip
+// stops being refreshed. Its contents then decay in tens of ms - which
+// is exactly the observed board behaviour: with video's SDRAM reads
+// disabled the very same build booted ESXDOS through to the 48K ROM,
+// and with video enabled it ran off into RAM, while the ROM image was
+// verified byte-perfect (16384/16384) by a check that ran with video
+// held in reset and therefore refreshing normally.
+//
+// So take a cycle for refresh on a fixed schedule instead of hoping for
+// a gap. The part needs 4096 refreshes per 64ms; one every 32 q cycles
+// is one every ~4.6us, covering all 4096 rows in ~19ms, a wide margin
+// inside the 64ms requirement, and costs 1/32nd of the bandwidth.
+always @(posedge clk) begin
+	if (q == STATE_LAST) begin
+		if (refresh_timer == 7'd31) begin
+			refresh_timer <= 7'd0;
+			refresh_due   <= 1'b1;
+		end else begin
+			refresh_timer <= refresh_timer + 7'd1;
+		end
+	end
+	if (q == STATE_CMD_START && refresh_due && !(we || oe))
+		refresh_due <= 1'b0;
+end
 
 always @(posedge clk) begin
 	sd_cmd <= CMD_INHIBIT;  // default: idle
@@ -142,30 +222,41 @@ always @(posedge clk) begin
 
 		end
 	end else begin
-		// normal operation
+		// normal operation.
+		//
+		// The decision for the whole q cycle is taken once, at
+		// STATE_CMD_START, and remembered: a refresh must suppress the
+		// CAS phase too, otherwise a column access would be issued
+		// against a row that was never opened.
+		if(q == STATE_CMD_START) begin
+			refresh_cycle <= refresh_due && !(we || oe);
+			read_cycle    <= oe && !we;
 
-		// -------------------  cpu/chipset read/write ----------------------
-		if(we || oe) begin
-
-			// RAS phase - 12 bit row address
-			if(q == STATE_CMD_START) begin
+			// Refresh only when the bus is otherwise idle. Preempting a
+			// requester silently DROPS that access - the transaction is
+			// suppressed but nothing tells the requester, so a write is
+			// lost or a read returns stale data. With refresh every 32 q
+			// cycles and accesses every 4, that lost roughly one access
+			// in eight on each pass, which showed up as ~37% of a 16K
+			// RAM write/read-back test failing, on all eight data bits.
+			if(refresh_due && !(we || oe)) begin
+				sd_cmd <= CMD_AUTO_REFRESH;
+			end else if(we || oe) begin
+				// RAS phase - 12 bit row address
 				sd_cmd <= CMD_ACTIVE;
 				sd_addr <= addr[19:8];
 				sd_ba <= addr[21:20];
 				sd_dqm <= 2'b00;
-			end
-
-			// CAS phase - 8 bit column address, A10 forces auto precharge
-			if(q == STATE_CMD_CONT) begin
-				sd_cmd <= we?CMD_WRITE:CMD_READ;
-				sd_addr <= { 4'b0100, addr[7:0] };  // auto precharge
+			end else begin
+				// bus idle anyway - may as well refresh
+				sd_cmd <= CMD_AUTO_REFRESH;
 			end
 		end
 
-		// ------------------------ no access --------------------------
-		else begin
-			if(q == STATE_CMD_START)
-				sd_cmd <= CMD_AUTO_REFRESH;
+		// CAS phase - 8 bit column address, A10 forces auto precharge
+		if(q == STATE_CMD_CONT && !refresh_cycle && (we || oe)) begin
+			sd_cmd <= we?CMD_WRITE:CMD_READ;
+			sd_addr <= { 4'b0100, addr[7:0] };  // auto precharge
 		end
 	end
 end
