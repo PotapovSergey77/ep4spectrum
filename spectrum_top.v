@@ -206,17 +206,16 @@ module spectrum_top (
 	// M9K blocks on its own, which is why the build is 48K-ROM based.
 	// ESXDOS reads TRD images with its own driver rather than through
 	// TR-DOS, so what those need is the RAM banks, not the 128K ROM.
-	reg             mem128 = 1'b1;
 
 	// Frame timing select:
 	//   F5 Sinclair 48K   F6 Sinclair 128K
 	//   F7 Sinclair +2A/+3   F8 Pentagon 128K
 	// Geometry and interrupt positions per machine are in video.v,
-	// taken from zx-sizif-512. Sinclair 48K is the power-up default.
+	// taken from zx-sizif-512. Pentagon 128K is the power-up default.
 	//
 	// This picks timing only. The ROM is the 48K one in every mode - a
 	// 128K ROM needs 32 of this device's 30 M9K blocks on its own - and
-	// memory size stays on F9/F10 as before. The +2A/+3 differs from
+	// memory size follows from it. The +2A/+3 differs from
 	// 128K in its contention pattern rather than its frame, and
 	// contention is not modelled here at all, so F6 and F7 currently
 	// produce the same frame; the distinction is wired through so it is
@@ -225,7 +224,12 @@ module spectrum_top (
 	localparam MACHINE_S128 = 2'd1;
 	localparam MACHINE_S3   = 2'd2;
 	localparam MACHINE_PENT = 2'd3;
-	reg     [1:0]   machine = MACHINE_S48;
+	// Pentagon 128K at power-up.
+	reg     [1:0]   machine = MACHINE_PENT;
+	// Memory size follows the machine: 48K has none of it, the other
+	// three have 128K. Pentagon can additionally be given 1024K on F9.
+	wire            mem128 = (machine != MACHINE_S48);
+	reg             ext1024 = 1'b0;
 	// Interrupt position trim, in hcounter counts. F1 and F2 step it by
 	// four - two pixels, the precision Pentagon border effects use.
 	reg     [7:0]   int_adj = 8'd0;
@@ -282,7 +286,9 @@ module spectrum_top (
 	wire            page_reg_disable; // bit 5
 	wire            page_rom_sel; // bit 4
 	wire            page_shadow_scr; // bit 3
-	wire    [2:0]   page_ram_sel; // bits 2:0
+	// Six bits: three from the 128K paging register, three more from the
+	// Pentagon 1024 extension in bits 7:5 of the same port.
+	wire    [5:0]   page_ram_sel;
 
 	// +3 extensions (with default values for systems that don't have it)
 	reg             plus3_printer_strobe = 1'b0; // bit 4
@@ -291,7 +297,7 @@ module spectrum_top (
 	reg             plus3_special = 1'b0; // bit 0
 
 	// RAM bank actually being accessed
-	wire    [2:0]   ram_page;
+	wire    [5:0]   ram_page;
 
 	// CPU signals
 	wire            cpu_wait_n;
@@ -565,13 +571,17 @@ module spectrum_top (
 	// Tracks the M1 edge for the PC display sampler further down.
 	reg        prev_cpu_m1_n = 1'b1;
 
-	// silkscreen LED1 (= LED[3]) is the SD card access light; rest off
-	assign LED[0] = 1'b1;
-	// silkscreen LED3: lit while 128K memory paging is enabled
-	assign LED[1] = ~mem128;
-	// silkscreen LED2: lit while Pentagon 128K frame timing is selected
-	assign LED[2] = ~(machine == MACHINE_PENT);
+	// Silkscreen numbering runs opposite to the LED[] index, so LED[3]
+	// is the leftmost lamp (silkscreen LED1) and LED[0] the rightmost
+	// (silkscreen LED4). Active low.
+	//
+	//   LED1, leftmost  - SD card access
+	//   LED4, rightmost - Pentagon 1024K extension on
+	//   LED2, LED3      - unused
 	assign LED[3] = divmmc_cs;
+	assign LED[2] = 1'b1;
+	assign LED[1] = 1'b1;
+	assign LED[0] = ~ext1024;
 
 	// ULA "ear" input (tape in) - no tape hardware on this board, keep idle
 	assign ula_ear_in = 1'b1;
@@ -603,13 +613,17 @@ module spectrum_top (
 	// banks moved out from under it, so it will usually crash - but the
 	// switch deliberately does NOT reset the machine, to leave room to
 	// experiment. Press F11 to reset when needed.
+	// F9 turns the 1024K extension on and off, and only means anything
+	// on Pentagon. Leaving Pentagon drops it: the extra pages do not
+	// exist on the other machines and leaving them selected would strand
+	// whatever is running on a bank it cannot reach.
 	reg mem128_d = 1'b1;
 	always @(posedge clock) begin
 		mem128_d <= mem128;
-		if (key_f9 == 1'b1)
-			mem128 <= 1'b0;
-		else if (key_f10 == 1'b1)
-			mem128 <= 1'b1;
+		if (machine != MACHINE_PENT)
+			ext1024 <= 1'b0;
+		else if (key_f9 == 1'b1)
+			ext1024 <= ~ext1024;
 	end
 	wire mem128_changed = (mem128 != mem128_d);
 
@@ -763,23 +777,101 @@ module spectrum_top (
 	// Sound - AY-3-8912 (via YM2149) wired in unconditionally, see MODEL
 	// comment above for why this isn't gated on MODEL != 0 like upstream.
 	wire [7:0] psg_aout;
+	// Turbo Sound: a second AY, selected by writing 1111111N to the
+	// register-select port, after sorgelig/ZX_Spectrum-128K_MIST's
+	// turbosound.sv. 0xFF picks the first chip, 0xFE the second; the
+	// value is not a valid register number either way, so it does no
+	// harm if it also reaches a chip.
+	//
+	// Both the direction and the select strobe are gated per chip, not
+	// just the select strobe as the reference does: with only the
+	// select gated, a data write still reaches the chip that is not
+	// selected and lands in whatever register it had latched.
+	//
+	// The write is edge-triggered, like every other port in this design
+	// - gating it on the psg_clken level is what silently dropped
+	// writes to the DivMMC SPI port, the paging register and the ULA.
+	reg  ay_select = 1'b0;
+	reg  ay_sel_wr_d = 1'b0;
+	wire ay_sel_wr = psg_bdir & psg_bc1;
+	always @(posedge clock or negedge reset_n) begin
+		if (reset_n == 1'b0) begin
+			ay_select   <= 1'b0;
+			ay_sel_wr_d <= 1'b0;
+		end else begin
+			ay_sel_wr_d <= ay_sel_wr;
+			if (ay_sel_wr == 1'b1 && ay_sel_wr_d == 1'b0
+			    && cpu_do[7:1] == 7'b1111111)
+				ay_select <= cpu_do[0];
+		end
+	end
+
+	wire psg_bdir_0 = psg_bdir & ~ay_select;
+	wire psg_bc1_0  = psg_bc1  & ~ay_select;
+	wire psg_bdir_1 = psg_bdir &  ay_select;
+	wire psg_bc1_1  = psg_bc1  &  ay_select;
+	wire [7:0] psg_do_0;
+	wire [7:0] psg_do_1;
+	wire [7:0] psg_aout_0;
+	wire [7:0] psg_aout_1;
+	// One volume table, two read ports - see YM2149/vol_table_array.v.
+	wire [11:0] vol_addr_0;
+	wire [11:0] vol_addr_1;
+	wire [9:0]  vol_data_0;
+	wire [9:0]  vol_data_1;
+	vol_table u_vol_table (
+		.CLK(clock),
+		.ADDR(vol_addr_0),
+		.DATA(vol_data_0),
+		.ADDR_B(vol_addr_1),
+		.DATA_B(vol_data_1)
+	);
+	assign psg_do   = ay_select ? psg_do_1 : psg_do_0;
+	// Summed and halved so two chips playing cannot clip the mixer.
+	assign psg_aout = ({1'b0, psg_aout_0} + {1'b0, psg_aout_1}) >> 1;
+
 	YM2149 psg (
 		.I_DA(cpu_do),
-		.O_DA(psg_do),
+		.O_DA(psg_do_0),
 		.O_DA_OE_L(),
 		.I_A9_L(1'b0), // /A9 pulled down internally
 		.I_A8(1'b1), // A8 pulled up on Spectrum
-		.I_BDIR(psg_bdir),
+		.I_BDIR(psg_bdir_0),
 		.I_BC2(1'b1), // BC2 pulled up on Spectrum
-		.I_BC1(psg_bc1),
+		.I_BC1(psg_bc1_0),
 		.I_SEL_L(1'b1), // /SEL is high for AY-3-8912 compatibility
-		.O_AUDIO(psg_aout),
+		.O_AUDIO(psg_aout_0),
+		.VOL_ADDR(vol_addr_0),
+		.VOL_DATA(vol_data_0),
 		.I_IOA(8'b0),
 		.O_IOA(),
 		.O_IOA_OE_L(), // port A unused (keypad and serial on Spectrum 128K)
 		.I_IOB(8'b0),
 		.O_IOB(),
 		.O_IOB_OE_L(), // port B unused (non-existent on AY-3-8912)
+		.ENA(psg_clken),
+		.RESET_L(reset_n),
+		.CLK(clock)
+	);
+	YM2149 psg2 (
+		.I_DA(cpu_do),
+		.O_DA(psg_do_1),
+		.O_DA_OE_L(),
+		.I_A9_L(1'b0),
+		.I_A8(1'b1),
+		.I_BDIR(psg_bdir_1),
+		.I_BC2(1'b1),
+		.I_BC1(psg_bc1_1),
+		.I_SEL_L(1'b1),
+		.O_AUDIO(psg_aout_1),
+		.VOL_ADDR(vol_addr_1),
+		.VOL_DATA(vol_data_1),
+		.I_IOA(8'b0),
+		.O_IOA(),
+		.O_IOA_OE_L(),
+		.I_IOB(8'b0),
+		.O_IOB(),
+		.O_IOB_OE_L(),
 		.ENA(psg_clken),
 		.RESET_L(reset_n),
 		.CLK(clock)
@@ -899,7 +991,7 @@ module spectrum_top (
 		// 128K has pageable RAM at 0xc000
 		assign ram_page =
 			(cpu_a[15:14] == 2'b11) ? page_ram_sel : // Selectable bank at 0xc000
-			{cpu_a[14], cpu_a[15:14]}; // A=bank: 00=XXX, 01=101, 10=010, 11=XXX
+			{3'b000, cpu_a[14], cpu_a[15:14]}; // A=bank: 01=101, 10=010
 	end
 	endgenerate
 	generate
@@ -915,11 +1007,11 @@ module spectrum_top (
 		// NORMAL        ROM     5       2       PAGED
 		assign ram_page =
 			(plus3_special == 1'b0 && cpu_a[15:14] == 2'b11) ? page_ram_sel :
-			(plus3_special == 1'b0) ? {cpu_a[14], cpu_a[15:14]} :
-			(plus3_special == 1'b1 && plus3_page == 2'b00) ? {1'b0, cpu_a[15:14]} :
-			(plus3_special == 1'b1 && plus3_page == 2'b01) ? {1'b1, cpu_a[15:14]} :
-			(plus3_special == 1'b1 && plus3_page == 2'b10) ? {~(cpu_a[15] & cpu_a[14]), cpu_a[15:14]} :
-			{~(cpu_a[15] & cpu_a[14]), (cpu_a[15] | cpu_a[14]), cpu_a[14]};
+			(plus3_special == 1'b0) ? {3'b000, cpu_a[14], cpu_a[15:14]} :
+			(plus3_special == 1'b1 && plus3_page == 2'b00) ? {4'b0000, cpu_a[15:14]} :
+			(plus3_special == 1'b1 && plus3_page == 2'b01) ? {3'b000, 1'b1, cpu_a[15:14]} :
+			(plus3_special == 1'b1 && plus3_page == 2'b10) ? {3'b000, ~(cpu_a[15] & cpu_a[14]), cpu_a[15:14]} :
+			{3'b000, ~(cpu_a[15] & cpu_a[14]), (cpu_a[15] | cpu_a[14]), cpu_a[14]};
 	end
 	endgenerate
 
@@ -933,7 +1025,7 @@ module spectrum_top (
 	// build - which is exactly the behaviour seen on the board, where two
 	// builds differing only in which signal drove an LED behaved
 	// completely differently. Clocking it from the real 28MHz clock and
-	// detecting the cpu_cycle edge in logic keeps the same sampling
+	assign ram_addr = {ram_page, cpu_a[13:0]};
 	// instant while putting the path under proper timing analysis.
 	// Captured one clock after the end of the CPU's slot, not on the edge
 	// itself: sdram_ep4ce.v now latches read data internally at its q==0,
@@ -1211,6 +1303,10 @@ module spectrum_top (
 	reg     prom_sel;
 	reg     pshadow_scr;
 	reg     [2:0] pram_sel;
+	// Pentagon 1024 keeps its extra page bits in the top three bits of
+	// the same 0x7FFD port, where a 128K has the paging lock and the
+	// unused pair. Six bits give 64 banks of 16K.
+	reg     [2:0] pram_hi;
 	// Taken on the start of the OUT, not on the level while psg_clken
 	// happens to be high.
 	//
@@ -1229,14 +1325,20 @@ module spectrum_top (
 			prom_sel <= 1'b0;
 			pshadow_scr <= 1'b0;
 			pram_sel <= 3'b000;
+			pram_hi  <= 3'b000;
 			page_wr_d <= 1'b0;
 		end else begin
 			page_wr_d <= page_wr;
 			if (page_wr == 1'b1 && page_wr_d == 1'b0 && preg_disable == 1'b0) begin
-				preg_disable <= cpu_do[5];
+				// On Pentagon 1024 bit 5 is a page bit, not the paging
+				// lock, so the lock must never engage there - otherwise
+				// the first write selecting a high bank would freeze the
+				// port for good.
+				preg_disable <= ext1024 ? 1'b0 : cpu_do[5];
 				prom_sel <= cpu_do[4];
 				pshadow_scr <= cpu_do[3];
 				pram_sel <= cpu_do[2:0];
+				pram_hi  <= cpu_do[7:5];
 			end
 		end
 	end
@@ -1246,7 +1348,10 @@ module spectrum_top (
 	// In 48K mode the paging register still exists and can be written,
 	// but has no effect: bank 0 at 0xC000 and the normal screen is
 	// exactly the 48K machine's layout.
-	assign page_ram_sel = mem128 ? pram_sel : 3'b000;
+	assign page_ram_sel =
+		(mem128 == 1'b0)  ? 6'b000000 :
+		(ext1024 == 1'b1) ? {pram_hi, pram_sel} :
+		                    {3'b000, pram_sel};
 
 	// 7-segment "digital tube" - digit 1 normally shows page_ram_sel (0-7).
 	// Polarity is a guess (common-anode: segment/digit driven low = lit) -
@@ -1336,6 +1441,32 @@ module spectrum_top (
 	// "3.5" for the CPU clock on the two left digits, then a blank, then
 	// the upper RAM page on the right. While the interrupt trim is
 	// non-zero it takes over the right-hand pair.
+	// Page number in decimal, so it reads the way software counts banks.
+	// Pentagon 1024 goes to 63, hence two digits; the tens digit is
+	// blanked below 10 so a 128K machine still shows a single figure.
+	reg [3:0] pg_tens;
+	reg [3:0] pg_units;
+	always @* begin
+		if (page_ram_sel >= 6'd60) begin
+			pg_tens = 4'd6; pg_units = page_ram_sel - 6'd60;
+		end else if (page_ram_sel >= 6'd50) begin
+			pg_tens = 4'd5; pg_units = page_ram_sel - 6'd50;
+		end else if (page_ram_sel >= 6'd40) begin
+			pg_tens = 4'd4; pg_units = page_ram_sel - 6'd40;
+		end else if (page_ram_sel >= 6'd30) begin
+			pg_tens = 4'd3; pg_units = page_ram_sel - 6'd30;
+		end else if (page_ram_sel >= 6'd20) begin
+			pg_tens = 4'd2; pg_units = page_ram_sel - 6'd20;
+		end else if (page_ram_sel >= 6'd10) begin
+			pg_tens = 4'd1; pg_units = page_ram_sel - 6'd10;
+		end else begin
+			pg_tens = 4'd0; pg_units = page_ram_sel[3:0];
+		end
+	end
+
+	// "3.5" for the CPU clock on the two left digits, the page on the
+	// two right ones. While the interrupt trim is non-zero it takes over
+	// the right-hand pair.
 	wire [3:0] nibble =
 	                    (int_adj != 8'd0) ?
 	                    ((digit_scan == 2'd1) ? int_adj[7:4] :
@@ -1343,10 +1474,11 @@ module spectrum_top (
 	                     (digit_scan == 2'd3) ? 4'd3 : 4'd5) :
 	                    (digit_scan == 2'd3) ? 4'd3 :
 	                    (digit_scan == 2'd2) ? 4'd5 :
-	                    (digit_scan == 2'd1) ? 4'd0 :
-	                                           {1'b0, page_ram_sel};
+	                    (digit_scan == 2'd1) ? pg_tens :
+	                                           pg_units;
 
-	wire digit_blank = (int_adj == 8'd0) && (digit_scan == 2'd1);
+	wire digit_blank = (int_adj == 8'd0) && (digit_scan == 2'd1)
+	                   && (page_ram_sel < 6'd10);
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in
 	wire digit_dp    = (digit_scan == 2'd3) ||

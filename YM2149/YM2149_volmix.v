@@ -63,6 +63,8 @@ module YM2149 (
 	I_SEL_L,
 
 	O_AUDIO,
+	VOL_ADDR,
+	VOL_DATA,
 	// port a
 	I_IOA,
 	O_IOA,
@@ -89,6 +91,8 @@ module YM2149 (
 	input           I_SEL_L;
 
 	output reg [7:0]   O_AUDIO;
+	output  [11:0]  VOL_ADDR;
+	input   [9:0]   VOL_DATA;
 
 	input   [7:0]   I_IOA;
 	output          O_IOA;
@@ -508,11 +512,11 @@ module YM2149 (
 		end
 	end
 
-	vol_table u_vol_table (
-		.CLK(CLK),
-		.ADDR(vol_table_in),
-		.DATA(vol_table_out)
-	);
+	// The table lives outside this module now, shared between the two
+	// chips of the Turbo Sound pair - two copies do not fit in this
+	// device alongside the ROMs.
+	assign VOL_ADDR = vol_table_in;
+	assign vol_table_out = VOL_DATA;
 
 	always @(posedge CLK) begin
 		if (RESET_L == 1'b0)
