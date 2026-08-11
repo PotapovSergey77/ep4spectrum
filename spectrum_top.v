@@ -1484,6 +1484,31 @@ module spectrum_top (
 	reg [7:0] resp_lat = 8'd0;
 	reg       resp_run = 1'b0;
 	reg       resp_ack_d = 1'b0;
+
+	// CALIBRATION: the M1 period while halted, which the Z80 fixes at
+	// four T-states. The response measurement reads 20 where a real Z80
+	// takes 19 in IM2, and one T-state of that could be the counter
+	// rather than the core - the endpoints are detected a clock apart
+	// from where they nominally are. If this reads 4 the counter is
+	// honest and the response really is 20; if it reads 5 the counter
+	// runs one long and the response is 19, which is correct, and the
+	// two T-states are somewhere else entirely.
+	//
+	// Worth doing because a good part of this session has been spent
+	// believing measurements that turned out to be measuring something
+	// else.
+	reg [7:0] halt_t = 8'd0;
+	reg [7:0] halt_lat = 8'd0;
+	reg       halt_m1_d = 1'b1;
+	always @(posedge clock) begin
+		halt_m1_d <= cpu_m1_n;
+		if (cpu_halt_n == 1'b0 && halt_m1_d == 1'b1 && cpu_m1_n == 1'b0) begin
+			halt_lat <= halt_t;
+			halt_t   <= 8'd0;
+		end else if (cpu_clken == 1'b1 && halt_t != 8'hFF) begin
+			halt_t <= halt_t + 8'd1;
+		end
+	end
 	reg [15:0] ack_t = 16'd0;
 	reg [7:0]  ack_min = 8'hFF;
 	reg [7:0]  ack_max = 8'h00;
@@ -1539,8 +1564,8 @@ module spectrum_top (
 	// two right ones. While the interrupt trim is non-zero it takes over
 	// the right-hand pair.
 	wire [3:0] nibble =
-	                    (digit_scan == 2'd3) ? ack_min[7:4] :
-	                    (digit_scan == 2'd2) ? ack_min[3:0] :
+	                    (digit_scan == 2'd3) ? halt_lat[7:4] :
+	                    (digit_scan == 2'd2) ? halt_lat[3:0] :
 	                    (digit_scan == 2'd1) ? resp_lat[7:4] :
 	                                           resp_lat[3:0];
 
