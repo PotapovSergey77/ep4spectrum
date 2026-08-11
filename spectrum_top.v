@@ -1360,6 +1360,39 @@ module spectrum_top (
 	// then whatever instruction it happened to be in - which is the
 	// jitter, and its cause is that the demo is not where it expects to
 	// be by that point in the frame.
+	// T-states from the interrupt being acknowledged to the CPU reaching
+	// HALT again - how long the demo's per-frame work takes.
+	//
+	// In HALT the CPU runs M1 cycles of 4 T-states and takes the
+	// interrupt at the end of the current one, so the phase of those
+	// cycles is set by when HALT was entered. That makes the acceptance
+	// phase evolve as (previous phase + this length) mod 4: a length
+	// divisible by 4 holds still, a length leaving 2 alternates between
+	// two positions every frame - which is exactly a border picture
+	// flicking four pixels. So this number decides it.
+	//
+	//   constant and divisible by 4 - the jitter is not from here
+	//   constant, remainder 2       - inherent to the demo's own length
+	//   varying                     - its work varies, and since the CPU
+	//                                 never waits, something it reads is
+	//                                 making it branch differently
+	reg [15:0] work_t = 16'd0;
+	reg [15:0] work_t_lat = 16'd0;
+	reg        work_counting = 1'b0;
+	always @(posedge clock) begin
+		if (int_counting == 1'b1 && cpu_m1_n == 1'b0 && cpu_ioreq_n == 1'b0) begin
+			work_t        <= 16'd0;
+			work_counting <= 1'b1;
+		end else if (work_counting == 1'b1) begin
+			if (cpu_halt_n == 1'b0) begin
+				work_counting <= 1'b0;
+				work_t_lat    <= work_t;
+			end else if (cpu_clken == 1'b1) begin
+				work_t <= work_t + 16'd1;
+			end
+		end
+	end
+
 	reg halted_at_int = 1'b0;
 	always @(posedge clock) begin
 		if (prev_irq_n == 1'b1 && vid_irq_n == 1'b0) begin
@@ -1383,14 +1416,15 @@ module spectrum_top (
 	// delay in T-states - the number that has to stand still. The frame
 	// count is already known good at 71680, so it no longer needs the
 	// digits.
-	// Leftmost digit: 1 if the CPU was in HALT when the interrupt
-	// arrived. The three to its right: T-states from the interrupt to
-	// the CPU acknowledging it.
+	// How long the demo's per-frame work takes, in T-states. Whether it
+	// stands still, and what it leaves when divided by 4, decides where
+	// the flicker comes from - see the comment on work_t above. The
+	// halted flag has already read 1 and no longer needs a digit.
 	wire [3:0] nibble = show_diag ?
-	                    ((digit_scan == 2'd3) ? {3'b000, halted_at_int} :
-	                     (digit_scan == 2'd2) ? int_ack_t_lat[11:8]  :
-	                     (digit_scan == 2'd1) ? int_ack_t_lat[7:4]   :
-	                                            int_ack_t_lat[3:0]) :
+	                    ((digit_scan == 2'd3) ? work_t_lat[15:12] :
+	                     (digit_scan == 2'd2) ? work_t_lat[11:8]  :
+	                     (digit_scan == 2'd1) ? work_t_lat[7:4]   :
+	                                            work_t_lat[3:0]) :
 	                    (int_adj != 8'd0) ?
 	                    ((digit_scan == 2'd1) ? int_adj[7:4] :
 	                     (digit_scan == 2'd0) ? int_adj[3:0] :
