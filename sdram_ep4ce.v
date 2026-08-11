@@ -120,7 +120,22 @@ assign sd_we  = sd_cmd[0];
 // the eight bits are sent on both bytes ports. Which one's actually
 // written depends on the state of dqm of which only one is active
 // at a time when writing
-assign sd_data = we?{din, din}:16'bZZZZZZZZZZZZZZZZ;
+// Driven only around the WRITE command at STATE_CMD_CONT, not for the
+// whole cycle.
+//
+// The chip samples write data on the WRITE command itself, so driving
+// the bus from q==0 is unnecessary - and harmful. Read data from the
+// previous cycle is latched into dout_r at q==0 (below), and if this
+// cycle is a write, the FPGA was already driving the bus by then, so
+// dout_r captured the byte being written instead of the byte being
+// read. Whoever asked for that read got the CPU's write data instead:
+// content unrelated to the address requested, changing with CPU
+// activity. That is what the artefacts on screen were, and the reason
+// they were absent in the DivMMC browser at rest - where the CPU reads
+// constantly but hardly writes - and present in BASIC, where the
+// flashing cursor writes.
+assign sd_data = (we && q >= 3'd2 && q <= 3'd4) ?
+	{din, din} : 16'bZZZZZZZZZZZZZZZZ;
 
 // Latch the read data here, at the one phase it is actually on the bus
 // (q=7, measured in simulation), instead of presenting the raw pins and

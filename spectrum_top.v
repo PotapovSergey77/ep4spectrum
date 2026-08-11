@@ -1273,26 +1273,18 @@ module spectrum_top (
 			pc_arm  <= 1'b0;
 		end
 	end
-	// DIAGNOSTIC: how many video bytes came back too late and had to be
-	// discarded because they belonged to the previous group. If the
-	// moving artefacts are what this counter describes, it climbs while
-	// the CPU is busy and sits still while it is not. If it stays at
-	// 0000 through a run that shows artefacts, the cause is elsewhere
-	// and this whole line of reasoning is wrong.
-	reg [15:0] vid_stale_cnt = 16'd0;
-	always @(posedge clock) begin
-		if (vid_stale == 1'b1)
-			vid_stale_cnt <= vid_stale_cnt + 16'd1;
-	end
+	// "3.5" for the CPU clock on the two left digits, then a blank, then
+	// the upper RAM page on the right. digit_scan 3 is the leftmost.
+	wire [3:0] nibble = (digit_scan == 2'd3) ? 4'd3 :
+	                    (digit_scan == 2'd2) ? 4'd5 :
+	                    (digit_scan == 2'd1) ? 4'd0 :
+	                                           {1'b0, page_ram_sel};
 
-	wire [15:0] tshow = vid_stale_cnt;
-	wire [3:0] nibble = (digit_scan == 2'd0) ? tshow[3:0]   :
-	                    (digit_scan == 2'd1) ? tshow[7:4]   :
-	                    (digit_scan == 2'd2) ? tshow[11:8]  :
-	                                           tshow[15:12];
-
-	wire digit_blank = 1'b0;
-	wire digit_dp    = divmmc_paged_in && (digit_scan == 2'd0);
+	wire digit_blank = (digit_scan == 2'd1);
+	// decimal point after the 3, and on the page digit while DivMMC is
+	// paged in
+	wire digit_dp    = (digit_scan == 2'd3) ||
+	                   (divmmc_paged_in && (digit_scan == 2'd0));
 
 	reg [6:0] seg_gfedcba;
 	always @* begin
