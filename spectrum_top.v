@@ -1165,14 +1165,28 @@ module spectrum_top (
 	reg     prom_sel;
 	reg     pshadow_scr;
 	reg     [2:0] pram_sel;
+	// Taken on the start of the OUT, not on the level while psg_clken
+	// happens to be high.
+	//
+	// psg_clken fires once every 16 clocks and an IO cycle lasts about
+	// 20, so whether a write to 0x7FFD was seen at all depended on
+	// where the CPU's T-states happened to fall. Simulation of a
+	// program that pages bank 1, then bank 2, then bank 1 again caught
+	// it: only the middle OUT took effect, so the machine reported
+	// itself as 48K however often software asked for a bank. This is
+	// the same fault the DivMMC SPI strobe had, for the same reason.
+	reg page_wr_d = 1'b0;
+	wire page_wr = page_enable & ~cpu_wr_n;
 	always @(posedge clock or negedge reset_n) begin
 		if (reset_n == 1'b0) begin
 			preg_disable <= 1'b0;
 			prom_sel <= 1'b0;
 			pshadow_scr <= 1'b0;
 			pram_sel <= 3'b000;
-		end else if (psg_clken == 1'b1) begin
-			if (page_enable == 1'b1 && preg_disable == 1'b0 && cpu_wr_n == 1'b0) begin
+			page_wr_d <= 1'b0;
+		end else begin
+			page_wr_d <= page_wr;
+			if (page_wr == 1'b1 && page_wr_d == 1'b0 && preg_disable == 1'b0) begin
 				preg_disable <= cpu_do[5];
 				prom_sel <= cpu_do[4];
 				pshadow_scr <= cpu_do[3];

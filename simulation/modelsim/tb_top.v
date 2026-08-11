@@ -523,4 +523,17 @@ module tb_top;
 		$display("cpu_clken: %0d high, %0d low, %0d unknown", ck1, ck0, ckx);
 	end
 
+	// 128K paging check, driven by pagetest.hex: page bank 1 at 0xC000
+	// and write 0x11, page bank 2 and write 0x22, page bank 1 back and
+	// read. Banked RAM lives at page*16384, so bank 1 is byte 16384 and
+	// bank 2 is byte 32768. The read-back result is stored at 0x9000,
+	// which is in bank 2 (0x8000-0xBFFF) at offset 0x1000 -> 36864.
+	initial begin
+		#1_400_000;
+		$display("PAGING: bank1[0]=%02h (want 11)  bank2[0]=%02h (want 22)  readback=%02h (want 11)",
+			chip.mem[16384][7:0], chip.mem[32768][7:0], chip.mem[36864][7:0]);
+		$display("PAGING: page register pram_sel=%0d mem128=%b",
+			dut.pram_sel, dut.mem128);
+	end
+
 endmodule
