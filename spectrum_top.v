@@ -1317,9 +1317,35 @@ module spectrum_top (
 			pc_arm  <= 1'b0;
 		end
 	end
+	// MEASUREMENT: T-states actually issued to the CPU per frame.
+	// Pentagon should be 71680 exactly, whose low 16 bits are 0x1800,
+	// so the display must read 1800 and never move. The border effects
+	// flick between two positions two T-states apart; if this number
+	// moves with them, the CPU is gaining or losing T-states and the
+	// demo's count from the interrupt drifts. If it stands still, the
+	// CPU timeline is solid and the flicker comes from when the
+	// interrupt is taken, or from the write reaching the screen.
+	reg [16:0] frame_t = 17'd0;
+	reg [16:0] frame_t_lat = 17'd0;
+	reg        prev_irq_n = 1'b1;
+	always @(posedge clock) begin
+		prev_irq_n <= vid_irq_n;
+		if (prev_irq_n == 1'b1 && vid_irq_n == 1'b0) begin
+			frame_t_lat <= frame_t;
+			frame_t     <= 17'd0;
+		end else if (cpu_clken == 1'b1) begin
+			frame_t <= frame_t + 17'd1;
+		end
+	end
+
 	// "3.5" for the CPU clock on the two left digits, then a blank, then
 	// the upper RAM page on the right. digit_scan 3 is the leftmost.
-	wire [3:0] nibble = (int_adj != 8'd0) ?
+	wire [3:0] nibble = (frame_t_lat[15:0] != 16'h1800 || int_adj != 8'd0) ?
+	                    ((digit_scan == 2'd3) ? frame_t_lat[15:12] :
+	                     (digit_scan == 2'd2) ? frame_t_lat[11:8]  :
+	                     (digit_scan == 2'd1) ? frame_t_lat[7:4]   :
+	                                            frame_t_lat[3:0]) :
+	                    (int_adj != 8'd0) ?
 	                    ((digit_scan == 2'd1) ? int_adj[7:4] :
 	                     (digit_scan == 2'd0) ? int_adj[3:0] :
 	                     (digit_scan == 2'd3) ? 4'd3 : 4'd5) :
