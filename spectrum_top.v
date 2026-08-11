@@ -1393,6 +1393,27 @@ module spectrum_top (
 		end
 	end
 
+	// How many times the CPU acknowledges an interrupt per frame. It has
+	// to be exactly one. Our interrupt is held for 32 T-states, and if
+	// the demo's routine is shorter than that and re-enables interrupts
+	// before it ends, the still-asserted line fires a second time - and
+	// the extra entry adds T-states that have nothing to do with the
+	// demo's own code, which would show up as the odd work length seen
+	// on the board.
+	reg [3:0] ack_cnt = 4'd0;
+	reg [3:0] ack_cnt_lat = 4'd0;
+	reg       prev_ack = 1'b0;
+	wire      int_ack = (cpu_m1_n == 1'b0) && (cpu_ioreq_n == 1'b0);
+	always @(posedge clock) begin
+		prev_ack <= int_ack;
+		if (prev_irq_n == 1'b1 && vid_irq_n == 1'b0) begin
+			ack_cnt_lat <= ack_cnt;
+			ack_cnt     <= 4'd0;
+		end else if (int_ack == 1'b1 && prev_ack == 1'b0) begin
+			ack_cnt <= ack_cnt + 4'd1;
+		end
+	end
+
 	reg halted_at_int = 1'b0;
 	always @(posedge clock) begin
 		if (prev_irq_n == 1'b1 && vid_irq_n == 1'b0) begin
@@ -1420,8 +1441,11 @@ module spectrum_top (
 	// stands still, and what it leaves when divided by 4, decides where
 	// the flicker comes from - see the comment on work_t above. The
 	// halted flag has already read 1 and no longer needs a digit.
+	// Leftmost digit: interrupts acknowledged in the frame, which has to
+	// be 1. The three beside it: the low bits of the work length, where
+	// the odd value showed up.
 	wire [3:0] nibble = show_diag ?
-	                    ((digit_scan == 2'd3) ? work_t_lat[15:12] :
+	                    ((digit_scan == 2'd3) ? ack_cnt_lat        :
 	                     (digit_scan == 2'd2) ? work_t_lat[11:8]  :
 	                     (digit_scan == 2'd1) ? work_t_lat[7:4]   :
 	                                            work_t_lat[3:0]) :
