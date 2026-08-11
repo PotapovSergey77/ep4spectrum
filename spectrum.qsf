@@ -76,14 +76,16 @@ set_location_assignment PIN_120 -to PS2_DATA
 # Onboard piezo buzzer, used as mono audio out
 set_location_assignment PIN_110 -to BEEP
 
-# SD card SPI - reusing the board's unused I2C header pins (SCL/SDA and
-# I2C_SCL/I2C_SDA). Not populated on the board itself; wire an SD card
-# breakout module here. Do not also use the onboard AT24C08 EEPROM or
-# LM75A sensor at the same time, they share this header.
-set_location_assignment PIN_112 -to SD_SCK
-set_location_assignment PIN_113 -to SD_MOSI
-set_location_assignment PIN_99  -to SD_CS
-set_location_assignment PIN_98  -to SD_MISO
+# SD card SPI - on the board's LCD1602/12864 header, which is not
+# populated. These are its data pins: D4 = 2, D5 = 10, D6 = 7, D7 = 11.
+# Do not drive an LCD from that header at the same time.
+#
+# Previously on the I2C header (SCK 112, MOSI 113, CS 99, MISO 98),
+# which is shared with the onboard AT24C08 EEPROM and LM75A sensor.
+set_location_assignment PIN_10 -to SD_SCK
+set_location_assignment PIN_7 -to SD_MOSI
+set_location_assignment PIN_2 -to SD_CS
+set_location_assignment PIN_11 -to SD_MISO
 
 # SDRAM - 64Mbit, 4M x16 x4 banks, 12-bit row / 8-bit column address
 set_location_assignment PIN_76 -to SDRAM_A[0]

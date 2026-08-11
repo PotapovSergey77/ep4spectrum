@@ -61,6 +61,11 @@ module sdram_model (
 
 	reg [21:0] a_full;
 
+	// SDRAM protocol violations - see the ACTIVE case below
+	reg [3:0] bank_open = 4'b0000;
+	integer prot_err = 0;
+	integer refresh_seen = 0;
+
 	always @(posedge clk) begin
 		// shift the CAS pipeline
 		rd_valid[3] <= rd_valid[2];
@@ -73,6 +78,19 @@ module sdram_model (
 
 		case (cmd)
 			CMD_ACTIVE: begin
+				// Protocol check: a bank must be precharged before it
+				// is activated again. The controller relies on the
+				// auto-precharge bit of the READ/WRITE that follows, so
+				// a cycle that opens a row and then issues no column
+				// command at all leaves the bank open - and the next
+				// ACTIVE to it reads or writes the wrong row.
+				if (bank_open[sd_ba] === 1'b1) begin
+					prot_err = prot_err + 1;
+					if (prot_err <= 8)
+						$display("[%0t] SDRAM PROTOCOL: ACTIVE on bank %0d with row %0h still open",
+							$time, sd_ba, active_row[sd_ba]);
+				end
+				bank_open[sd_ba] <= 1'b1;
 				active_row[sd_ba] <= sd_addr;
 			end
 
@@ -81,6 +99,7 @@ module sdram_model (
 				if (sd_dqm[0] == 1'b0) mem[a_full][7:0]  = sd_data[7:0];
 				if (sd_dqm[1] == 1'b0) mem[a_full][15:8] = sd_data[15:8];
 				writes_seen = writes_seen + 1;
+				if (sd_addr[10]) bank_open[sd_ba] <= 1'b0;
 			end
 
 			CMD_READ: begin
@@ -88,6 +107,16 @@ module sdram_model (
 				rd_data[0]  <= mem[a_full];
 				rd_valid[0] <= 1'b1;
 				reads_seen  = reads_seen + 1;
+				if (sd_addr[10]) bank_open[sd_ba] <= 1'b0;
+			end
+
+			CMD_AUTO_REFRESH: begin
+				refresh_seen = refresh_seen + 1;
+			end
+
+			CMD_PRECHARGE: begin
+				if (sd_addr[10]) bank_open <= 4'b0000;
+				else             bank_open[sd_ba] <= 1'b0;
 			end
 
 			default: ;

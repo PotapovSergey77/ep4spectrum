@@ -357,9 +357,6 @@ module tb_top;
 	end
 
 	integer vid_good = 0, vid_wrong = 0;
-	integer att_good = 0, att_wrong = 0;
-	reg [18:0] exp_att;
-	reg [7:0]  exp_att_byte;
 	reg [18:0] exp_a;
 	reg [7:0]  exp_byte;
 	always @(posedge dut.clock) begin
@@ -381,81 +378,10 @@ module tb_top;
 			end
 		end
 	end
-	// The attribute byte was never checked - only the pixel byte was.
-	always @(posedge dut.clock) begin
-		if (dut.reset_n === 1'b1 && dut.vid_clken === 1'b1
-		    && dut.vid.vpicture === 1'b1 && dut.vid.hcounter[0] === 1'b1
-		    && dut.vid.hcounter[9] === 1'b0 && dut.vid.hcounter[3] === 1'b0
-		    && dut.vid.hcounter[2] === 1'b1 && dut.vid.hcounter[1] === 1'b1) begin
-			exp_att = {6'b001010, 3'b110, dut.vid.vcounter[8:7],
-			           dut.vid.vcounter[6:4], dut.vid.hcounter[8:4]};
-			exp_att_byte = vpat({3'b000, exp_att});
-			if (dut.vid.attr_next === exp_att_byte)
-				att_good = att_good + 1;
-			else begin
-				att_wrong = att_wrong + 1;
-				if (att_wrong <= 8)
-					$display("[%0t] ATTR MISMATCH line=%0d group=%0d got=%02h want=%02h",
-						$time, dut.vid.vcounter[9:1], dut.vid.hcounter[8:4],
-						dut.vid.attr_next, exp_att_byte);
-			end
-		end
-	end
-
 	initial begin
 		#1_400_000;
-		$display("AUTO_REFRESH commands: %0d (needs ~90 per 1.4ms)", chip.refresh_seen);
 		$display("SDRAM protocol violations: %0d", chip.prot_err);
 		$display("Video pixel bytes: %0d correct, %0d wrong", vid_good, vid_wrong);
-		$display("Video attribute bytes: %0d correct, %0d wrong", att_good, att_wrong);
-	end
-
-	// Did the SDRAM cycle actually fetch the address the CPU asked for?
-	// The DivMMC ROM check above only covers the rom_addr path; RAM goes
-	// through ram_addr, which is registered on vid_clken and so lags
-	// cpu_a. If the arbiter captures it before it has caught up, the
-	// cycle reads or writes the previous address.
-	integer addr_ok = 0, addr_stale = 0;
-	always @(posedge dut.clock) begin
-		if (dut.reset_n === 1'b1 && dut.slot_tick_d2 === 1'b1
-		    && dut.prev_own === 2'd1 && dut.cpu_mem_active === 1'b1) begin
-			if (dut.cpu_addr_held === dut.cpu_addr)
-				addr_ok = addr_ok + 1;
-			else begin
-				addr_stale = addr_stale + 1;
-				if (addr_stale <= 8)
-					$display("[%0t] STALE ADDR: used %h, CPU wants %h (a=%h ram_en=%b)",
-						$time, dut.cpu_addr_held, dut.cpu_addr,
-						dut.cpu_a, dut.ram_enable);
-			end
-		end
-	end
-	initial begin
-		#1_400_000;
-		$display("CPU cycles on the right address: %0d, stale: %0d",
-			addr_ok, addr_stale);
-	end
-
-	// Bus contention: the chip driving read data while the design is
-	// driving write data. sdram_ep4ce.v holds sd_data driven for as long
-	// as `we` is asserted, and a read issued in the previous cycle is
-	// still coming back at the start of this one. The functional model
-	// resolves the clash silently; a real part and a real FPGA fight
-	// over the wire, which is the kind of fault that scales with bus
-	// traffic and never shows up in simulation.
-	integer dq_clash = 0;
-	always @(posedge dut.clk56) begin
-		if (dut.reset_n === 1'b1 && chip.rd_valid[3] === 1'b1
-		    && dut.sdr.we === 1'b1) begin
-			dq_clash = dq_clash + 1;
-			if (dq_clash <= 5)
-				$display("[%0t] DQ CONTENTION: chip driving read data while we=1",
-					$time);
-		end
-	end
-	initial begin
-		#1_450_000;
-		$display("SDRAM DQ contention clocks: %0d", dq_clash);
 	end
 
 endmodule

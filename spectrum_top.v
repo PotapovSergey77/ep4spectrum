@@ -882,6 +882,18 @@ module spectrum_top (
 	// byte - on the board that showed as the CPU fetching a constant
 	// wrong value and spinning on address 0000 forever, with opcode
 	// fetches still happening (so not a reset).
+	// Moved above the arbiter, which reads ram_write: Quartus
+	// accepts use-before-declaration, ModelSim does not.
+	wire divmmc_lo_write = 1'b0;
+	wire divmmc_hi_write = ~(divmmc_conmem & divmmc_mapram &
+		~divmmc_sram_page[3] & ~divmmc_sram_page[2] &
+		divmmc_sram_page[1] & divmmc_sram_page[0]);
+	wire divmmc_write = (~cpu_a[13] & divmmc_lo_write) |
+		(cpu_a[13] & divmmc_hi_write);
+	wire ext_ram_write = (rom_enable & esxdos_downloaded[1] & divmmc_paged_in & divmmc_write) & ~cpu_wr_n;
+	wire int_ram_write = ram_enable & ~cpu_wr_n;
+	wire ram_write = int_ram_write | ext_ram_write;
+
 	// ---------------------------------------------------------------
 	// CPU/video SDRAM arbiter, after zx-sizif-512's ram_arbiter
 	// (cpld/rtl/mem.sv).
@@ -917,6 +929,10 @@ module spectrum_top (
 	reg         cur_vid_step = 1'b0;
 	reg         prev_vid_step = 1'b0;
 	reg         cpu_served = 1'b0;
+	reg         cpu_inflight = 1'b0;
+	reg         cpu_oe_held = 1'b0;
+	reg         cpu_we_held = 1'b0;
+	reg  [7:0]  cpu_di_held = 8'd0;
 	reg         slot_tick_d = 1'b0;
 	reg         slot_tick_d2 = 1'b0;
 
@@ -926,7 +942,14 @@ module spectrum_top (
 	wire cpu_needs_sdram = ram_enable |
 		(rom_enable & divmmc_paged_in & esxdos_downloaded[1]);
 	wire cpu_mem_active  = (~cpu_mreq_n) & ((~cpu_rd_n) | (~cpu_wr_n)) & cpu_needs_sdram;
-	wire cpu_wants = cpu_mem_active & ~cpu_served;
+	// ~cpu_inflight as well as ~cpu_served: the answer only lands two
+	// clocks after the cycle ends, so without it the same request is
+	// granted a second cycle it does not need. That second cycle is
+	// actively harmful - the CPU is released part way through it and
+	// drops MREQ/RD/WR, so sdram_ep4ce.v opens a row at q==0 and then
+	// finds no read or write to issue at q==3. The row stays open with
+	// no auto-precharge, and the next ACTIVE to that bank corrupts it.
+	wire cpu_wants = cpu_mem_active & ~cpu_served & ~cpu_inflight;
 	wire vid_wants = ~vid_rd_n;
 
 	wire [1:0] next_own = cpu_wants ? OWN_CPU :
@@ -946,8 +969,19 @@ module spectrum_top (
 			// the row at the start and selects the column three clk56
 			// later, so an address that moves underneath it splits one
 			// transaction across two different locations.
-			if (next_own == OWN_CPU)
+			if (next_own == OWN_CPU) begin
 				cpu_addr_held <= cpu_addr;
+				// The control signals are held for the whole cycle for
+				// the same reason as the address: sdram_ep4ce.v opens
+				// the row at q==0 but issues the read or write at
+				// q==3, from whatever oe/we say at that moment. Live
+				// signals that change in between turn one transaction
+				// into half of two.
+				cpu_oe_held   <= (~cpu_mreq_n) & (~cpu_rd_n);
+				cpu_we_held   <= ram_write;
+				cpu_di_held   <= cpu_do;
+				cpu_inflight  <= 1'b1;
+			end
 			if (next_own == OWN_VID) begin
 				vid_addr_held <= vid_addr;
 				cur_vid_step  <= vid_req_step;
@@ -981,8 +1015,10 @@ module spectrum_top (
 
 		// The request going away retires its answer with it, so nothing
 		// is ever carried over into the next access.
-		if (cpu_mem_active == 1'b0)
-			cpu_served <= 1'b0;
+		if (cpu_mem_active == 1'b0) begin
+			cpu_served   <= 1'b0;
+			cpu_inflight <= 1'b0;
+		end
 	end
 
 	// The CPU runs at a steady 3.5MHz and is held only while its own
@@ -1310,15 +1346,6 @@ module spectrum_top (
 	assign VGA_VS = 1'b1;
 
 	// Synchronous outputs to SRAM
-	wire divmmc_lo_write = 1'b0;
-	wire divmmc_hi_write = ~(divmmc_conmem & divmmc_mapram &
-		~divmmc_sram_page[3] & ~divmmc_sram_page[2] &
-		divmmc_sram_page[1] & divmmc_sram_page[0]);
-	wire divmmc_write = (~cpu_a[13] & divmmc_lo_write) |
-		(cpu_a[13] & divmmc_hi_write);
-	wire ext_ram_write = (rom_enable & esxdos_downloaded[1] & divmmc_paged_in & divmmc_write) & ~cpu_wr_n;
-	wire int_ram_write = ram_enable & ~cpu_wr_n;
-	wire ram_write = int_ram_write | ext_ram_write;
 
 	always @(posedge clock) begin
 		// Register SRAM signals to outputs (clock must be at least 2x CPU clock)
@@ -1361,9 +1388,10 @@ module spectrum_top (
 			sdram_di = 8'h00;
 			sdram_addr = {4'b0000, 2'b11, 2'b01, boot_zero_addr[16:13], boot_zero_addr[12:0]};
 		end else if (cur_own == OWN_CPU) begin
-			sdram_oe = ~cpu_mreq_n & ~cpu_rd_n;  // any cpu read enables ram
-			sdram_we = ram_write;                // write only for memory used as ram
-			sdram_di = cpu_do;
+			// All held at the grant, see the arbiter above.
+			sdram_oe = cpu_oe_held;
+			sdram_we = cpu_we_held;
+			sdram_di = cpu_di_held;
 			// The held address, not the live one: the CPU may move on
 			// mid-cycle, and sdram_ep4ce.v needs one address for the
 			// whole RAS-to-CAS sequence.
