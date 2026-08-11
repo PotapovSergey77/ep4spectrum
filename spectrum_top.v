@@ -1317,138 +1317,10 @@ module spectrum_top (
 			pc_arm  <= 1'b0;
 		end
 	end
-	// MEASUREMENT: T-states actually issued to the CPU per frame.
-	// Pentagon should be 71680 exactly, whose low 16 bits are 0x1800,
-	// so the display must read 1800 and never move. The border effects
-	// flick between two positions two T-states apart; if this number
-	// moves with them, the CPU is gaining or losing T-states and the
-	// demo's count from the interrupt drifts. If it stands still, the
-	// CPU timeline is solid and the flicker comes from when the
-	// interrupt is taken, or from the write reaching the screen.
-	reg [16:0] frame_t = 17'd0;
-	reg [16:0] frame_t_lat = 17'd0;
-	reg        prev_irq_n = 1'b1;
-	always @(posedge clock) begin
-		prev_irq_n <= vid_irq_n;
-		if (prev_irq_n == 1'b1 && vid_irq_n == 1'b0) begin
-			frame_t_lat <= frame_t;
-			frame_t     <= 17'd0;
-		end else if (cpu_clken == 1'b1) begin
-			frame_t <= frame_t + 17'd1;
-		end
-	end
-
 	// "3.5" for the CPU clock on the two left digits, then a blank, then
-	// the upper RAM page on the right. digit_scan 3 is the leftmost.
-	// MEASUREMENT: T-states from the interrupt being asserted to the CPU
-	// acknowledging it. The frame count came back at 71680 and steady,
-	// so the CPU is not losing T-states and the demo's count from the
-	// interrupt does not drift - which leaves when the interrupt is
-	// actually taken. The Z80 finishes its current instruction first, so
-	// this is fixed only if whatever the demo is waiting in is fixed.
-	// Two values two apart would account exactly for a border picture
-	// flicking between positions four pixels apart.
-	reg [15:0] int_ack_t = 16'd0;
-	reg [15:0] int_ack_t_lat = 16'd0;
-	reg [15:0] int_ack_t_prev = 16'd0;
-	reg        int_counting = 1'b0;
-	// Was the CPU sitting in HALT when the interrupt arrived? Pentagon
-	// demos that draw in the border wait there precisely so that the
-	// interrupt is taken at a fixed T-state. If this reads 1 and the
-	// delay still moves, the fault is ours. If it reads 0, the demo is
-	// not waiting in HALT when the interrupt comes, and the delay is
-	// then whatever instruction it happened to be in - which is the
-	// jitter, and its cause is that the demo is not where it expects to
-	// be by that point in the frame.
-	// T-states from the interrupt being acknowledged to the CPU reaching
-	// HALT again - how long the demo's per-frame work takes.
-	//
-	// In HALT the CPU runs M1 cycles of 4 T-states and takes the
-	// interrupt at the end of the current one, so the phase of those
-	// cycles is set by when HALT was entered. That makes the acceptance
-	// phase evolve as (previous phase + this length) mod 4: a length
-	// divisible by 4 holds still, a length leaving 2 alternates between
-	// two positions every frame - which is exactly a border picture
-	// flicking four pixels. So this number decides it.
-	//
-	//   constant and divisible by 4 - the jitter is not from here
-	//   constant, remainder 2       - inherent to the demo's own length
-	//   varying                     - its work varies, and since the CPU
-	//                                 never waits, something it reads is
-	//                                 making it branch differently
-	reg [15:0] work_t = 16'd0;
-	reg [15:0] work_t_lat = 16'd0;
-	reg        work_counting = 1'b0;
-	always @(posedge clock) begin
-		if (int_counting == 1'b1 && cpu_m1_n == 1'b0 && cpu_ioreq_n == 1'b0) begin
-			work_t        <= 16'd0;
-			work_counting <= 1'b1;
-		end else if (work_counting == 1'b1) begin
-			if (cpu_halt_n == 1'b0) begin
-				work_counting <= 1'b0;
-				work_t_lat    <= work_t;
-			end else if (cpu_clken == 1'b1) begin
-				work_t <= work_t + 16'd1;
-			end
-		end
-	end
-
-	// How many times the CPU acknowledges an interrupt per frame. It has
-	// to be exactly one. Our interrupt is held for 32 T-states, and if
-	// the demo's routine is shorter than that and re-enables interrupts
-	// before it ends, the still-asserted line fires a second time - and
-	// the extra entry adds T-states that have nothing to do with the
-	// demo's own code, which would show up as the odd work length seen
-	// on the board.
-	reg [3:0] ack_cnt = 4'd0;
-	reg [3:0] ack_cnt_lat = 4'd0;
-	reg       prev_ack = 1'b0;
-	wire      int_ack = (cpu_m1_n == 1'b0) && (cpu_ioreq_n == 1'b0);
-	always @(posedge clock) begin
-		prev_ack <= int_ack;
-		if (prev_irq_n == 1'b1 && vid_irq_n == 1'b0) begin
-			ack_cnt_lat <= ack_cnt;
-			ack_cnt     <= 4'd0;
-		end else if (int_ack == 1'b1 && prev_ack == 1'b0) begin
-			ack_cnt <= ack_cnt + 4'd1;
-		end
-	end
-
-	reg halted_at_int = 1'b0;
-	always @(posedge clock) begin
-		if (prev_irq_n == 1'b1 && vid_irq_n == 1'b0) begin
-			int_ack_t     <= 16'd0;
-			int_counting  <= 1'b1;
-			halted_at_int <= ~cpu_halt_n;
-		end else if (int_counting == 1'b1) begin
-			if (cpu_m1_n == 1'b0 && cpu_ioreq_n == 1'b0) begin
-				int_counting   <= 1'b0;
-				int_ack_t_prev <= int_ack_t_lat;
-				int_ack_t_lat  <= int_ack_t;
-			end else if (cpu_clken == 1'b1) begin
-				int_ack_t <= int_ack_t + 16'd1;
-			end
-		end
-	end
-
-	wire show_diag = (frame_t_lat[15:0] != 16'h1800) || (int_adj != 8'd0)
-	                 || (int_ack_t_lat != int_ack_t_prev);
-	// In diagnostic mode the display carries the interrupt acceptance
-	// delay in T-states - the number that has to stand still. The frame
-	// count is already known good at 71680, so it no longer needs the
-	// digits.
-	// How long the demo's per-frame work takes, in T-states. Whether it
-	// stands still, and what it leaves when divided by 4, decides where
-	// the flicker comes from - see the comment on work_t above. The
-	// halted flag has already read 1 and no longer needs a digit.
-	// Leftmost digit: interrupts acknowledged in the frame, which has to
-	// be 1. The three beside it: the low bits of the work length, where
-	// the odd value showed up.
-	wire [3:0] nibble = show_diag ?
-	                    ((digit_scan == 2'd3) ? ack_cnt_lat        :
-	                     (digit_scan == 2'd2) ? work_t_lat[11:8]  :
-	                     (digit_scan == 2'd1) ? work_t_lat[7:4]   :
-	                                            work_t_lat[3:0]) :
+	// the upper RAM page on the right. While the interrupt trim is
+	// non-zero it takes over the right-hand pair.
+	wire [3:0] nibble =
 	                    (int_adj != 8'd0) ?
 	                    ((digit_scan == 2'd1) ? int_adj[7:4] :
 	                     (digit_scan == 2'd0) ? int_adj[3:0] :
@@ -1458,7 +1330,7 @@ module spectrum_top (
 	                    (digit_scan == 2'd1) ? 4'd0 :
 	                                           {1'b0, page_ram_sel};
 
-	wire digit_blank = show_diag ? 1'b0 : (digit_scan == 2'd1);
+	wire digit_blank = (int_adj == 8'd0) && (digit_scan == 2'd1);
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in
 	wire digit_dp    = (digit_scan == 2'd3) ||
