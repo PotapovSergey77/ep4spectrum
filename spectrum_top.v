@@ -1465,20 +1465,56 @@ module spectrum_top (
 	end
 
 	// "3.5" for the CPU clock on the two left digits, the page on the
+	// MEASUREMENT: the spread of the interrupt acceptance delay.
+	//
+	// With the CPU in HALT the interrupt is taken at the end of the
+	// current 4 T-state M1 cycle, and the phase of those cycles is set
+	// by when HALT was entered. So the acceptance delay cycles through
+	// as many values as the frame's work leaves when divided by four:
+	// a remainder of 2 gives two values two apart, which is a border
+	// picture alternating between two positions four pixels apart -
+	// exactly what the board shows.
+	//
+	// Left pair: the smallest delay seen. Right pair: the largest.
+	// Their difference says how many values the phase walks through,
+	// and the low bits of the work length say by how much - which is
+	// how many T-states our interrupt entry is out against a machine
+	// where this demo stands still.
+	reg [15:0] ack_t = 16'd0;
+	reg [7:0]  ack_min = 8'hFF;
+	reg [7:0]  ack_max = 8'h00;
+	reg        ack_run = 1'b0;
+	reg        pirq_n = 1'b1;
+	always @(posedge clock) begin
+		pirq_n <= vid_irq_n;
+		if (pirq_n == 1'b1 && vid_irq_n == 1'b0) begin
+			ack_t   <= 16'd0;
+			ack_run <= 1'b1;
+		end else if (ack_run == 1'b1) begin
+			if (cpu_m1_n == 1'b0 && cpu_ioreq_n == 1'b0) begin
+				ack_run <= 1'b0;
+				if (ack_t[7:0] < ack_min) ack_min <= ack_t[7:0];
+				if (ack_t[7:0] > ack_max) ack_max <= ack_t[7:0];
+			end else if (cpu_clken == 1'b1) begin
+				ack_t <= ack_t + 16'd1;
+			end
+		end
+		// F1 clears the min/max so a fresh run can be watched
+		if (key_f1 == 1'b1) begin
+			ack_min <= 8'hFF;
+			ack_max <= 8'h00;
+		end
+	end
+
 	// two right ones. While the interrupt trim is non-zero it takes over
 	// the right-hand pair.
 	wire [3:0] nibble =
-	                    (int_adj != 8'd0) ?
-	                    ((digit_scan == 2'd1) ? int_adj[7:4] :
-	                     (digit_scan == 2'd0) ? int_adj[3:0] :
-	                     (digit_scan == 2'd3) ? 4'd3 : 4'd5) :
-	                    (digit_scan == 2'd3) ? 4'd3 :
-	                    (digit_scan == 2'd2) ? 4'd5 :
-	                    (digit_scan == 2'd1) ? pg_tens :
-	                                           pg_units;
+	                    (digit_scan == 2'd3) ? ack_min[7:4] :
+	                    (digit_scan == 2'd2) ? ack_min[3:0] :
+	                    (digit_scan == 2'd1) ? ack_max[7:4] :
+	                                           ack_max[3:0];
 
-	wire digit_blank = (int_adj == 8'd0) && (digit_scan == 2'd1)
-	                   && (page_ram_sel < 6'd10);
+	wire digit_blank = 1'b0;
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in
 	wire digit_dp    = (digit_scan == 2'd3) ||
