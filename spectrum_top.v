@@ -639,7 +639,23 @@ module spectrum_top (
 	// VSYNC interrupt routed to CPU
 	// (tested disabling this entirely as a diagnostic - made no
 	// difference on real hardware, ruled out)
-	assign cpu_irq_n = vid_irq_n;
+	// Presented to the CPU only on its own clock edges, as zx-sizif-512
+	// does (cpld/rtl/cpu.sv: `else if (clkcpu_ck) n_int <= n_int_next`).
+	//
+	// nIRQ is generated in the video domain, on the 14MHz enable, so its
+	// edges land wherever they land inside a T-state - half the time in
+	// the middle of one. Demos that draw in the border count T-states
+	// from the interrupt, and that is exactly where a half-T-state of
+	// slack turns into a picture that will not stand still. Both
+	// zx-sizif-512 and the mist-board core run this demo without
+	// shimmer, and this is the difference between them and us that
+	// bears on when the interrupt is seen.
+	reg cpu_irq_n_sync = 1'b1;
+	always @(posedge clock) begin
+		if (cpu_clken == 1'b1)
+			cpu_irq_n_sync <= vid_irq_n;
+	end
+	assign cpu_irq_n = cpu_irq_n_sync;
 	// cpu_wait_n is driven by the arbiter further down.
 	// F12 (PS/2 keyboard) or board button S2 triggers a plain NMI directly -
 	// the T80 core only latches this on the falling edge internally
