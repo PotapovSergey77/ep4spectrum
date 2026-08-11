@@ -112,9 +112,15 @@ module tb_top;
 	// while video competes for the same chip.
 	// ------------------------------------------------------------
 	reg [7:0] esxinit [0:8191];
+	// Which image to run. Default is the real ESXDOS ROM; +ROM=ramtest.hex
+	// swaps in a small program that fills RAM, because ESXDOS itself does
+	// not write a single byte of RAM in the window simulated here - the
+	// CPU write path had no coverage at all.
+	reg [255:0] romfile, romfile2;
 	integer k;
 	initial begin
-		$readmemh("esxmmc_plain.hex", esxinit);
+		if (!$value$plusargs("ROM=%s", romfile)) romfile = "esxmmc_plain.hex";
+		$readmemh(romfile, esxinit);
 		for (k = 0; k < 8192; k = k + 1) begin
 			chip.mem[22'h180000 + k] = {esxinit[k], esxinit[k]};
 			chip.mem[22'h1A6000 + k] = {esxinit[k], esxinit[k]};
@@ -176,7 +182,10 @@ module tb_top;
 	// its instant behavioral memory, structurally could not show.
 	// ------------------------------------------------------------
 	reg [7:0] esxrom [0:8191];
-	initial $readmemh("esxmmc_plain.hex", esxrom);
+	initial begin
+		if (!$value$plusargs("ROM=%s", romfile2)) romfile2 = "esxmmc_plain.hex";
+		$readmemh(romfile2, esxrom);
+	end
 
 	integer bad_fetch = 0;
 	integer good_fetch = 0;
@@ -456,6 +465,62 @@ module tb_top;
 	initial begin
 		#1_450_000;
 		$display("SDRAM DQ contention clocks: %0d", dq_clash);
+	end
+
+	// Did every CPU write to RAM actually land, at the right address,
+	// with the right data? All the other checks here watch reads - the
+	// DivMMC ROM fetches and the video bytes - and the workload runs
+	// almost entirely out of ROM, so the write path was barely covered.
+	// "Large files fail, small ones work" on the board is the signature
+	// of writes going missing at a low rate.
+	//
+	// Expected byte address is built from the CPU's own address and the
+	// live page register, not from ram_addr, so a fault in the ram_addr
+	// pipeline shows up as a mismatch rather than being assumed away.
+	integer wr_ok = 0, wr_bad = 0;
+	reg [19:0] wr_addr;
+	reg [7:0]  wr_data;
+	reg        wr_pending = 1'b0;
+	reg        prev_mreq_w = 1'b1;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1) begin
+			if (!dut.cpu_mreq_n && !dut.cpu_wr_n && dut.ram_enable) begin
+				wr_addr    <= {3'b000, dut.ram_page, dut.cpu_a[13:0]};
+				wr_data    <= dut.cpu_do;
+				wr_pending <= 1'b1;
+			end
+			if (dut.cpu_mreq_n && !prev_mreq_w && wr_pending) begin
+				wr_pending <= 1'b0;
+				if (chip.mem[wr_addr][7:0] === wr_data)
+					wr_ok = wr_ok + 1;
+				else begin
+					wr_bad = wr_bad + 1;
+					if (wr_bad <= 10)
+						$display("[%0t] LOST WRITE addr=%05h wrote=%02h found=%02h",
+							$time, wr_addr, wr_data, chip.mem[wr_addr][7:0]);
+				end
+			end
+			prev_mreq_w <= dut.cpu_mreq_n;
+		end
+	end
+	initial begin
+		#1_450_000;
+		$display("CPU RAM writes: %0d landed, %0d lost or misplaced", wr_ok, wr_bad);
+	end
+
+	// Is the CPU clock enable ever unknown? It comes from a free-running
+	// counter, so its count should not change between builds at all.
+	integer ck1 = 0, ck0 = 0, ckx = 0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1) begin
+			if (dut.cpu_clken === 1'b1)      ck1 = ck1 + 1;
+			else if (dut.cpu_clken === 1'b0) ck0 = ck0 + 1;
+			else                             ckx = ckx + 1;
+		end
+	end
+	initial begin
+		#1_450_000;
+		$display("cpu_clken: %0d high, %0d low, %0d unknown", ck1, ck0, ckx);
 	end
 
 endmodule

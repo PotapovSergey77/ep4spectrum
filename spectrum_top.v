@@ -156,12 +156,20 @@ module spectrum_top (
 	wire    [18:0]  divmmc_hi_addr;
 	wire    [18:0]  divmmc_addr;
 	wire    [19:0]  rom_addr;
-	// Explicit power-up value, as for `clock` above. It matches what
-	// Cyclone IV configuration gives anyway, but the arbiter compares
-	// this address against the one it captured, and an X here makes the
-	// comparison - and with it WAIT_n - unknown, which stalls the CPU
-	// outright instead of merely reading a wrong byte.
-	reg     [19:0]  ram_addr = 20'd0;
+	// Combinational, so it always reflects the address the CPU is
+	// presenting right now.
+	//
+	// It used to be registered on vid_clken, i.e. re-sampled only every
+	// second clock, which left it lagging cpu_a by up to two clocks.
+	// That was harmless while the CPU had a fixed memory slot and the
+	// mux read the address live, part way through the slot - the value
+	// had caught up by then. The arbiter captures the address at the
+	// start of the cycle instead, so it captured the stale one whenever
+	// cpu_a had just moved. Stack traffic moves it every few T-states:
+	// simulation of a program that fills RAM showed exactly half of all
+	// writes landing at the previous address, which is the kind of
+	// sparse damage that lets small files load and large ones fail.
+	wire    [19:0]  ram_addr;   // assigned below, after ram_page/cpu_a
 	wire    [20:0]  cpu_addr;
 	wire    [18:0]  vid_addr;
 	wire    [7:0]   rom_do;
@@ -888,6 +896,8 @@ module spectrum_top (
 	// byte - on the board that showed as the CPU fetching a constant
 	// wrong value and spinning on address 0000 forever, with opcode
 	// fetches still happening (so not a reset).
+	assign ram_addr = {3'b000, ram_page, cpu_a[13:0]};
+
 	// Moved above the arbiter, which reads ram_write: Quartus
 	// accepts use-before-declaration, ModelSim does not.
 	wire divmmc_lo_write = 1'b0;
@@ -1007,6 +1017,14 @@ module spectrum_top (
 		if (slot_tick_d2 == 1'b1) begin
 			if (prev_own == OWN_CPU) begin
 				mem_do <= sdram_do;
+				// The cycle is over either way, so let another one be
+				// granted. Without this a cycle that came back for the
+				// wrong address left cpu_inflight stuck high: no new
+				// cycle could be granted, and the request could not
+				// retire either because WAIT_n was holding the CPU on
+				// it. Sizif re-issues on cpu_read_misaddress for the
+				// same reason.
+				cpu_inflight <= 1'b0;
 				// Sizif's cpu_read_misaddress: only answer the request
 				// if the CPU is still asking about the address the
 				// cycle actually fetched. Without this the answer can
@@ -1123,20 +1141,11 @@ module spectrum_top (
 	endgenerate
 
 	// first 1MB of sdram are used as ram, second 1MB sdram are used as rom
-	// rom_addr is registered on the same tick ram_addr is, so that the
-	// address presented to the SDRAM holds still for the whole of its
-	// RAS->CAS sequence.
-	//
-	// ram_addr has always been registered here; rom_addr was fed to the
-	// chip straight off cpu_a. That asymmetry did not matter while the
-	// ROM area was served from block RAM and SDRAM only ever carried
-	// data - but with DivMMC paged in the CPU fetches instructions out
-	// of SDRAM, and a combinational address can move between the cycle
-	// the row is opened and the cycle the column is read, so the byte
-	// that comes back belongs to neither. Confirmed on hardware: giving
-	// the CPU the chip to itself (video reads disabled) let the very
-	// same build boot ESXDOS through to the 48K ROM, while with video
-	// competing for the bus it ran off into RAM.
+	// Both halves are combinational now. Holding the address still for
+	// the whole of the SDRAM RAS->CAS sequence is the arbiter's job -
+	// it captures cpu_addr into cpu_addr_held when it grants the cycle -
+	// and doing it here as well only made the address the arbiter
+	// captured a stale one.
 	assign cpu_addr = (ram_enable == 1'b1) ? {1'b0, ram_addr} : {1'b1, rom_addr};
 
 	// Video from bank 7 (128K/+3)
@@ -1368,17 +1377,6 @@ module spectrum_top (
 	assign VGA_HS = vid_hcsync_n;
 	assign VGA_VS = 1'b1;
 
-	// Synchronous outputs to SRAM
-
-	always @(posedge clock) begin
-		// Register SRAM signals to outputs (clock must be at least 2x CPU clock)
-		if (vid_clken == 1'b1) begin
-			// Fetch data from previous CPU cycle
-			// Normal RAM access at 0x4000-0xffff
-			// 16-bit address
-			ram_addr <= {3'b000, ram_page, cpu_a[13:0]};
-		end
-	end
 
 	// share SDRAM between CPU and Video. This must stay combinational (not
 	// clocked): sdram_ep4ce.v's internal ACTIVE->CAS state machine runs on
