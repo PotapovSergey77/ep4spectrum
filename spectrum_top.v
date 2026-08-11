@@ -539,13 +539,13 @@ module spectrum_top (
 	if (MODEL == 0) begin : rom_inst_48k
 		rom48 rom (
 			.address(rom_addr[13:0]),
-			.clock(psg_clken),    // psg_clken is in the middle of a cpu cycle
+			.clock(clock),        // see note below on why not psg_clken
 			.q(rom_do)
 		);
 	end else begin : rom_inst_128k
 		rom128 rom (
 			.address(rom_addr[14:0]),
-			.clock(psg_clken),    // psg_clken is in the middle of a cpu cycle
+			.clock(clock),        // see note below on why not psg_clken
 			.q(rom_do)
 		);
 	end

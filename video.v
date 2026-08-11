@@ -275,7 +275,7 @@ module video (
 	// is zx-sizif-512's, converted; anything left over after that is
 	// what the board has to be asked.
 	wire [9:0] int_hpos_base =
-		(MACHINE == MACHINE_PENT) ? 10'd644 :
+		(MACHINE == MACHINE_PENT) ? 10'd652 :
 		lines228                  ? 10'd8   :
 		                            10'd0;
 	wire [9:0] int_hpos = int_hpos_base + {{2{INT_ADJ[7]}}, INT_ADJ};
@@ -337,6 +337,17 @@ module video (
 	// line's last fetch left behind, which is visible as artefacts down
 	// the left edge of the picture.
 	wire line_wrap = (hcounter[9:4] == hcount_last[9:4]);
+
+	// The line whose group 0 is being set up. Plain +1 is wrong at the
+	// end of the frame: the last line is 319 (or 311), and adding one to
+	// the low bits of that does not give line 0, so the very first group
+	// of the very first line was always fetched from the wrong address.
+	// That is the top-left character cell coming out wrong on every
+	// demo - and the single mismatch the video check had been reporting
+	// all along, at line 0 group 0, which I had put down to a startup
+	// artefact.
+	wire [8:0] next_line = (vcounter[9:1] == vline_last) ? 9'd0 :
+	                       (vcounter[9:1] + 1'b1);
 	// Only groups that are actually displayed need fetching. Vertical
 	// position is deliberately not checked: a wasted read in the top or
 	// bottom border costs nothing now that the CPU is served first.
@@ -359,7 +370,7 @@ module video (
 			attr_next   <= 8'b0;
 		end else begin
 			if (CLKEN == 1'b1 && fetch_start == 1'b1) begin
-				vaddr_r   <= line_wrap ? (vcounter[8:1] + 1'b1) : vcounter[8:1];
+				vaddr_r   <= line_wrap ? next_line[7:0] : vcounter[8:1];
 				haddr_r   <= line_wrap ? 5'b0 : (hcounter[8:4] + 1'b1);
 				read_step <= fetch_wanted ? 2'd0 : 2'd2;
 				fetch_gen <= ~fetch_gen;
