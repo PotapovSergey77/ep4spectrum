@@ -666,7 +666,21 @@ module spectrum_top (
 		.nRESET(reset_n),
 		.D_IN(cpu_do),
 		.D_OUT(ula_do),
-		.ENABLE(ula_enable & psg_clken),
+		// Not gated by psg_clken. That enable passes once every 16
+		// clocks - once every two T-states - so a border write landed
+		// on a two-T-state grid at best, and at worst was missed
+		// entirely depending on where the CPU's T-states fell. Border
+		// effects are written to this port at exact T-state positions,
+		// which is why they came out wrong while everything else in the
+		// frame was right. It is also the likely reason a reset
+		// sometimes left the border black: the ROM's OUT setting it
+		// white was simply dropped.
+		//
+		// The write is an idempotent register load, so letting it run
+		// for the whole bus cycle is harmless - the first load happens
+		// the moment IORQ and WR are both low, which is the exact
+		// T-state the program intended.
+		.ENABLE(ula_enable),
 		.nWR(cpu_wr_n),
 		.BORDER_OUT(ula_border),
 		.EAR_OUT(ula_ear_out),
