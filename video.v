@@ -60,9 +60,12 @@ module video (
 	// moment - the CPU has priority now, so a fetch can land in any
 	// cycle and only the strobe says when it has.
 	VID_REQ_STEP,
+	VID_REQ_GEN,
+	VID_STALE,
 	VID_REQ_ACK,
 	VID_DATA_VALID,
 	VID_DATA_STEP,
+	VID_DATA_GEN,
 
 	// IO interface
 	BORDER_IN,
@@ -101,9 +104,12 @@ module video (
 	output          nWAIT;
 
 	output          VID_REQ_STEP;
+	output          VID_REQ_GEN;
+	output          VID_STALE;
 	input           VID_REQ_ACK;
 	input           VID_DATA_VALID;
 	input           VID_DATA_STEP;
+	input           VID_DATA_GEN;
 
 	input   [2:0]   BORDER_IN;
 
@@ -281,10 +287,22 @@ module video (
 	reg     [8:4]   haddr_r;
 	// 0 = pixels, 1 = attribute, 2 = both done for this group
 	reg     [1:0]   read_step;
+	reg             fetch_gen = 1'b0;
 	reg     [7:0]   pixels_next;
 	reg     [7:0]   attr_next;
 
 	assign VID_REQ_STEP = read_step[0];
+	// Flips once per group. A fetch that is held up long enough to
+	// come back after the next group has already been set up would
+	// otherwise be filed under the new group - the step tag alone only
+	// says pixels or attribute, not which group it belongs to. That
+	// only happens when the CPU is busy enough to delay video, and the
+	// position of the damage drifts from frame to frame, which is what
+	// the moving artefacts on the board look like.
+	assign VID_REQ_GEN = fetch_gen;
+	// One pulse per discarded late byte, counted in spectrum_top.v and
+	// shown on the display so the board can say whether this ever fires.
+	assign VID_STALE = VID_DATA_VALID & (VID_DATA_GEN != fetch_gen);
 
 	assign VID_A = (read_step == 2'd0) ?
 		// Picture
@@ -327,6 +345,7 @@ module video (
 			vaddr_r     <= 8'b0;
 			haddr_r     <= 5'b0;
 			read_step   <= 2'd2;
+			fetch_gen   <= 1'b0;
 			pixels_next <= 8'b0;
 			attr_next   <= 8'b0;
 		end else begin
@@ -334,6 +353,7 @@ module video (
 				vaddr_r   <= line_wrap ? (vcounter[8:1] + 1'b1) : vcounter[8:1];
 				haddr_r   <= line_wrap ? 5'b0 : (hcounter[8:4] + 1'b1);
 				read_step <= fetch_wanted ? 2'd0 : 2'd2;
+				fetch_gen <= ~fetch_gen;
 			end else if (VID_REQ_ACK == 1'b1 && read_step != 2'd2) begin
 				read_step <= read_step + 1'b1;
 			end
@@ -341,7 +361,7 @@ module video (
 			// The step tag arrives with the data instead of being read
 			// from read_step, which by now has usually moved on to the
 			// next request.
-			if (VID_DATA_VALID == 1'b1) begin
+			if (VID_DATA_VALID == 1'b1 && VID_DATA_GEN == fetch_gen) begin
 				if (VID_DATA_STEP == 1'b0)
 					pixels_next <= VID_D_IN;
 				else

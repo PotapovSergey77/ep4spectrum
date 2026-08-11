@@ -242,11 +242,14 @@ module spectrum_top (
 	wire            slot_tick;
 	// which byte video is asking for right now: 0 = pixels, 1 = attribute
 	wire            vid_req_step;
+	wire            vid_req_gen;
+	wire            vid_stale;
 	// arbiter -> video handshake (driven in the arbiter block below,
 	// declared here because the video instance reads them first)
 	reg     [7:0]   vid_do = 8'd0;
 	reg             vid_data_valid = 1'b0;
 	reg             vid_data_step = 1'b0;
+	reg             vid_data_gen = 1'b0;
 	reg             vid_req_ack = 1'b0;
 
 	// Address decoding
@@ -688,6 +691,9 @@ module spectrum_top (
 		.VID_REQ_ACK(vid_req_ack),
 		.VID_DATA_VALID(vid_data_valid),
 		.VID_DATA_STEP(vid_data_step),
+		.VID_REQ_GEN(vid_req_gen),
+		.VID_DATA_GEN(vid_data_gen),
+		.VID_STALE(vid_stale),
 		.BORDER_IN(ula_border),
 		.R(vid_r_out),
 		.G(vid_g_out),
@@ -928,6 +934,8 @@ module spectrum_top (
 	reg  [18:0] vid_addr_held = 19'd0;
 	reg         cur_vid_step = 1'b0;
 	reg         prev_vid_step = 1'b0;
+	reg         cur_vid_gen = 1'b0;
+	reg         prev_vid_gen = 1'b0;
 	reg         cpu_served = 1'b0;
 	reg         cpu_inflight = 1'b0;
 	reg         cpu_oe_held = 1'b0;
@@ -964,6 +972,7 @@ module spectrum_top (
 		if (slot_tick == 1'b1) begin
 			prev_own      <= cur_own;
 			prev_vid_step <= cur_vid_step;
+			prev_vid_gen  <= cur_vid_gen;
 			cur_own       <= next_own;
 			// Hold the address for the whole cycle. sdram_ep4ce.v opens
 			// the row at the start and selects the column three clk56
@@ -985,6 +994,7 @@ module spectrum_top (
 			if (next_own == OWN_VID) begin
 				vid_addr_held <= vid_addr;
 				cur_vid_step  <= vid_req_step;
+				cur_vid_gen   <= vid_req_gen;
 				vid_req_ack   <= 1'b1;
 			end
 		end
@@ -1010,6 +1020,7 @@ module spectrum_top (
 				vid_do         <= sdram_do;
 				vid_data_valid <= 1'b1;
 				vid_data_step  <= prev_vid_step;
+				vid_data_gen   <= prev_vid_gen;
 			end
 		end
 
@@ -1253,7 +1264,19 @@ module spectrum_top (
 			pc_arm  <= 1'b0;
 		end
 	end
-	wire [15:0] tshow = tcount_lat[19:4];
+	// DIAGNOSTIC: how many video bytes came back too late and had to be
+	// discarded because they belonged to the previous group. If the
+	// moving artefacts are what this counter describes, it climbs while
+	// the CPU is busy and sits still while it is not. If it stays at
+	// 0000 through a run that shows artefacts, the cause is elsewhere
+	// and this whole line of reasoning is wrong.
+	reg [15:0] vid_stale_cnt = 16'd0;
+	always @(posedge clock) begin
+		if (vid_stale == 1'b1)
+			vid_stale_cnt <= vid_stale_cnt + 16'd1;
+	end
+
+	wire [15:0] tshow = vid_stale_cnt;
 	wire [3:0] nibble = (digit_scan == 2'd0) ? tshow[3:0]   :
 	                    (digit_scan == 2'd1) ? tshow[7:4]   :
 	                    (digit_scan == 2'd2) ? tshow[11:8]  :
