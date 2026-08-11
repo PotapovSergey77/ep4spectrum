@@ -226,6 +226,11 @@ module spectrum_top (
 	localparam MACHINE_S3   = 2'd2;
 	localparam MACHINE_PENT = 2'd3;
 	reg     [1:0]   machine = MACHINE_S48;
+	// Interrupt position trim, in hcounter counts. F1 and F2 step it by
+	// four - two pixels, the precision Pentagon border effects use.
+	reg     [7:0]   int_adj = 8'd0;
+	wire            key_f1;
+	wire            key_f2;
 
 	// Master clock - 28 MHz
 	wire            clk56;
@@ -573,6 +578,14 @@ module spectrum_top (
 
 	// KEY[0] = board button S1 -> computer reset (also see reset_cond)
 	// KEY[1] = board button S2 -> NMI (also see nmi_trigger)
+	// F1 and F2 trim the interrupt position by two pixels a press.
+	always @(posedge clock) begin
+		if (key_f1 == 1'b1)
+			int_adj <= int_adj - 8'd4;
+		else if (key_f2 == 1'b1)
+			int_adj <= int_adj + 8'd4;
+	end
+
 	// F5..F8 pick the machine. Switching deliberately does NOT reset,
 	// so the effect can be watched on a running program.
 	always @(posedge clock) begin
@@ -653,6 +666,8 @@ module spectrum_top (
 		.F11(key_f11),
 		.F8(key_f8),
 		.F12(key_f12),
+		.F1(key_f1),
+		.F2(key_f2),
 		.F5(key_f5),
 		.F6(key_f6),
 		.F7(key_f7),
@@ -702,6 +717,7 @@ module spectrum_top (
 		.nRESET(reset_n),
 		.VGA(1'b0),
 		.MACHINE(machine),
+		.INT_ADJ(int_adj),
 		.VID_A(vid_a),
 		// The registered byte the arbiter hands back, not the raw bus:
 		// video's cycle is no longer at a predictable moment, so there
@@ -1303,7 +1319,11 @@ module spectrum_top (
 	end
 	// "3.5" for the CPU clock on the two left digits, then a blank, then
 	// the upper RAM page on the right. digit_scan 3 is the leftmost.
-	wire [3:0] nibble = (digit_scan == 2'd3) ? 4'd3 :
+	wire [3:0] nibble = (int_adj != 8'd0) ?
+	                    ((digit_scan == 2'd1) ? int_adj[7:4] :
+	                     (digit_scan == 2'd0) ? int_adj[3:0] :
+	                     (digit_scan == 2'd3) ? 4'd3 : 4'd5) :
+	                    (digit_scan == 2'd3) ? 4'd3 :
 	                    (digit_scan == 2'd2) ? 4'd5 :
 	                    (digit_scan == 2'd1) ? 4'd0 :
 	                                           {1'b0, page_ram_sel};

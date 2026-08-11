@@ -49,6 +49,7 @@ module video (
 	VGA,
 	// Frame timing: which machine to be. See the geometry table below.
 	MACHINE,
+	INT_ADJ,
 
 	// Memory interface
 	VID_A,
@@ -91,6 +92,7 @@ module video (
 
 	input           VGA;
 	input   [1:0]   MACHINE;
+	input   [7:0]   INT_ADJ;
 
 	// Machine codes, shared with spectrum_top.v
 	localparam MACHINE_S48  = 2'd0;   // Sinclair 48K
@@ -266,10 +268,17 @@ module video (
 	// instead, raster bars come out visibly too high.
 	wire [8:0] int_line =
 		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd248;
-	wire [9:0] int_hpos =
+	// INT_ADJ shifts the interrupt, in hcounter counts. Pentagon border
+	// effects count T-states from the interrupt and place colour to a
+	// precision of two pixels, which is four counts here, so the whole
+	// picture drawn in the border moves with this value. The table entry
+	// is zx-sizif-512's, converted; anything left over after that is
+	// what the board has to be asked.
+	wire [9:0] int_hpos_base =
 		(MACHINE == MACHINE_PENT) ? 10'd644 :
 		lines228                  ? 10'd8   :
 		                            10'd0;
+	wire [9:0] int_hpos = int_hpos_base + {{2{INT_ADJ[7]}}, INT_ADJ};
 	wire [9:0] int_len =
 		lines228 ? 10'd144 : 10'd128;
 

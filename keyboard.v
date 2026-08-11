@@ -52,6 +52,8 @@ module keyboard (
 	F11,
 	F8,
 	F12,
+	F1,
+	F2,
 	F5,
 	F6,
 	F7,
@@ -71,6 +73,8 @@ module keyboard (
 	output reg      F11;
 	output reg      F8;
 	output reg      F12;
+	output reg      F1;
+	output reg      F2;
 	output reg      F5;
 	output reg      F6;
 	output reg      F7;
@@ -142,6 +146,8 @@ module keyboard (
 			F11 <= 1'b0;
 			F8 <= 1'b0;
 			F12 <= 1'b0;
+			F1  <= 1'b0;
+			F2  <= 1'b0;
 			F5  <= 1'b0;
 			F6  <= 1'b0;
 			F7  <= 1'b0;
@@ -312,6 +318,8 @@ module keyboard (
 						8'h78: F11 <= ~release_key; // F11 key -> computer reset
 						8'h0a: F8  <= ~release_key; // F8 key  -> Pentagon 128K timings
 						8'h07: F12 <= ~release_key; // F12 key -> NMI
+						8'h05: F1  <= ~release_key; // F1 -> INT position -2 pixels
+						8'h06: F2  <= ~release_key; // F2 -> INT position +2 pixels
 						8'h03: F5  <= ~release_key; // F5 key  -> Sinclair 48K timings
 						8'h0b: F6  <= ~release_key; // F6 key  -> Sinclair 128K timings
 						8'h83: F7  <= ~release_key; // F7 key  -> Sinclair +2A/+3 timings
