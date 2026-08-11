@@ -1340,11 +1340,44 @@ module spectrum_top (
 
 	// "3.5" for the CPU clock on the two left digits, then a blank, then
 	// the upper RAM page on the right. digit_scan 3 is the leftmost.
-	wire [3:0] nibble = (frame_t_lat[15:0] != 16'h1800 || int_adj != 8'd0) ?
-	                    ((digit_scan == 2'd3) ? frame_t_lat[15:12] :
-	                     (digit_scan == 2'd2) ? frame_t_lat[11:8]  :
-	                     (digit_scan == 2'd1) ? frame_t_lat[7:4]   :
-	                                            frame_t_lat[3:0]) :
+	// MEASUREMENT: T-states from the interrupt being asserted to the CPU
+	// acknowledging it. The frame count came back at 71680 and steady,
+	// so the CPU is not losing T-states and the demo's count from the
+	// interrupt does not drift - which leaves when the interrupt is
+	// actually taken. The Z80 finishes its current instruction first, so
+	// this is fixed only if whatever the demo is waiting in is fixed.
+	// Two values two apart would account exactly for a border picture
+	// flicking between positions four pixels apart.
+	reg [15:0] int_ack_t = 16'd0;
+	reg [15:0] int_ack_t_lat = 16'd0;
+	reg [15:0] int_ack_t_prev = 16'd0;
+	reg        int_counting = 1'b0;
+	always @(posedge clock) begin
+		if (prev_irq_n == 1'b1 && vid_irq_n == 1'b0) begin
+			int_ack_t    <= 16'd0;
+			int_counting <= 1'b1;
+		end else if (int_counting == 1'b1) begin
+			if (cpu_m1_n == 1'b0 && cpu_ioreq_n == 1'b0) begin
+				int_counting   <= 1'b0;
+				int_ack_t_prev <= int_ack_t_lat;
+				int_ack_t_lat  <= int_ack_t;
+			end else if (cpu_clken == 1'b1) begin
+				int_ack_t <= int_ack_t + 16'd1;
+			end
+		end
+	end
+
+	wire show_diag = (frame_t_lat[15:0] != 16'h1800) || (int_adj != 8'd0)
+	                 || (int_ack_t_lat != int_ack_t_prev);
+	// In diagnostic mode the display carries the interrupt acceptance
+	// delay in T-states - the number that has to stand still. The frame
+	// count is already known good at 71680, so it no longer needs the
+	// digits.
+	wire [3:0] nibble = show_diag ?
+	                    ((digit_scan == 2'd3) ? int_ack_t_lat[15:12] :
+	                     (digit_scan == 2'd2) ? int_ack_t_lat[11:8]  :
+	                     (digit_scan == 2'd1) ? int_ack_t_lat[7:4]   :
+	                                            int_ack_t_lat[3:0]) :
 	                    (int_adj != 8'd0) ?
 	                    ((digit_scan == 2'd1) ? int_adj[7:4] :
 	                     (digit_scan == 2'd0) ? int_adj[3:0] :
@@ -1354,7 +1387,7 @@ module spectrum_top (
 	                    (digit_scan == 2'd1) ? 4'd0 :
 	                                           {1'b0, page_ram_sel};
 
-	wire digit_blank = (digit_scan == 2'd1);
+	wire digit_blank = show_diag ? 1'b0 : (digit_scan == 2'd1);
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in
 	wire digit_dp    = (digit_scan == 2'd3) ||
