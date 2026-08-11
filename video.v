@@ -471,13 +471,17 @@ module video (
 				hcounter[0] <= 1'b1;
 			end else begin
 				// Counter wraps after 895 in PAL mode
+				// No longer waits for MEM_CYC. That made the line end
+				// only when the memory window came round, tying the
+				// video timebase to the memory schedule - which mattered
+				// when video had fixed slots to hit and is pointless now
+				// that it asks for cycles on demand. It also meant the
+				// line was not exactly hcount_last+1 counts long.
 				if (hcounter == hcount_last) begin
-					if (MEM_CYC == 1'b1) begin
-						hcounter <= 10'b0;
-						// Increment vertical counter by even values for PAL
-						vcounter <= vcounter + 2'b10;
-						vcounter[0] <= 1'b0;
-					end
+					hcounter <= 10'b0;
+					// Increment vertical counter by even values for PAL
+					vcounter <= vcounter + 2'b10;
+					vcounter[0] <= 1'b0;
 				end else begin
 					// Increment horizontal counter
 					// All values for PAL mode
