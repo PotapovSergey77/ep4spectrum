@@ -1352,10 +1352,20 @@ module spectrum_top (
 	reg [15:0] int_ack_t_lat = 16'd0;
 	reg [15:0] int_ack_t_prev = 16'd0;
 	reg        int_counting = 1'b0;
+	// Was the CPU sitting in HALT when the interrupt arrived? Pentagon
+	// demos that draw in the border wait there precisely so that the
+	// interrupt is taken at a fixed T-state. If this reads 1 and the
+	// delay still moves, the fault is ours. If it reads 0, the demo is
+	// not waiting in HALT when the interrupt comes, and the delay is
+	// then whatever instruction it happened to be in - which is the
+	// jitter, and its cause is that the demo is not where it expects to
+	// be by that point in the frame.
+	reg halted_at_int = 1'b0;
 	always @(posedge clock) begin
 		if (prev_irq_n == 1'b1 && vid_irq_n == 1'b0) begin
-			int_ack_t    <= 16'd0;
-			int_counting <= 1'b1;
+			int_ack_t     <= 16'd0;
+			int_counting  <= 1'b1;
+			halted_at_int <= ~cpu_halt_n;
 		end else if (int_counting == 1'b1) begin
 			if (cpu_m1_n == 1'b0 && cpu_ioreq_n == 1'b0) begin
 				int_counting   <= 1'b0;
@@ -1373,8 +1383,11 @@ module spectrum_top (
 	// delay in T-states - the number that has to stand still. The frame
 	// count is already known good at 71680, so it no longer needs the
 	// digits.
+	// Leftmost digit: 1 if the CPU was in HALT when the interrupt
+	// arrived. The three to its right: T-states from the interrupt to
+	// the CPU acknowledging it.
 	wire [3:0] nibble = show_diag ?
-	                    ((digit_scan == 2'd3) ? int_ack_t_lat[15:12] :
+	                    ((digit_scan == 2'd3) ? {3'b000, halted_at_int} :
 	                     (digit_scan == 2'd2) ? int_ack_t_lat[11:8]  :
 	                     (digit_scan == 2'd1) ? int_ack_t_lat[7:4]   :
 	                                            int_ack_t_lat[3:0]) :
