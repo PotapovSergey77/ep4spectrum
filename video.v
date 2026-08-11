@@ -159,6 +159,31 @@ module video (
 	assign picture = hpicture & vpicture;
 	assign blanking = hblanking | vblanking;
 
+	// The border colour is latched rather than taken straight off the
+	// port, following zx-sizif-512's video.sv:
+	//
+	//   border_update = (hc0[4:0] == 5'b10011) || (machine == PENT && ck7)
+	//
+	// - once per 8-pixel group on the Sinclair machines, every pixel
+	// tick on Pentagon. Using it combinationally, as this did, looks
+	// finer but is not what a ULA does: the edge then lands wherever
+	// inside a pixel the CPU happened to write, and where that is
+	// depends on the CPU's phase. That is a border edge that will not
+	// hold still to within a pixel or two.
+	//
+	// hcounter runs at twice the pixel rate here, so a pixel tick is
+	// hcounter[0] and an 8-pixel group is hcounter[3:0] == 4'b0011.
+	reg     [2:0]   border_latched = 3'b000;
+	wire            border_update = (MACHINE == MACHINE_PENT) ?
+	                                (hcounter[0] == 1'b1) :
+	                                (hcounter[3:0] == 4'b0011);
+	always @(posedge CLK or negedge nRESET) begin
+		if (nRESET == 1'b0)
+			border_latched <= 3'b000;
+		else if (CLKEN == 1'b1 && border_update == 1'b1)
+			border_latched <= BORDER_IN;
+	end
+
 	// Output syncs
 	// drive VSYNC to 1 in PAL mode for Minimig VGA cable
 	assign nVSYNC = ~vsync;
@@ -173,15 +198,15 @@ module video (
 	assign dot = pixels[9] ^ (flashcounter[4] & attr[7]); // Combine delayed pixel with FLASH attr and clock state
 	assign red = (picture == 1'b1 && dot == 1'b1) ? attr[1] :
 		(picture == 1'b1 && dot == 1'b0) ? attr[4] :
-		(blanking == 1'b0) ? BORDER_IN[1] :
+		(blanking == 1'b0) ? border_latched[1] :
 		1'b0;
 	assign green = (picture == 1'b1 && dot == 1'b1) ? attr[2] :
 		(picture == 1'b1 && dot == 1'b0) ? attr[5] :
-		(blanking == 1'b0) ? BORDER_IN[2] :
+		(blanking == 1'b0) ? border_latched[2] :
 		1'b0;
 	assign blue = (picture == 1'b1 && dot == 1'b1) ? attr[0] :
 		(picture == 1'b1 && dot == 1'b0) ? attr[3] :
-		(blanking == 1'b0) ? BORDER_IN[0] :
+		(blanking == 1'b0) ? border_latched[0] :
 		1'b0;
 	assign bright = (picture == 1'b1) ? attr[6] : 1'b0;
 

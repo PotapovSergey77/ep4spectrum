@@ -89,8 +89,8 @@ set_location_assignment PIN_110 -to BEEP
 # initialise the card either.
 set_location_assignment PIN_112 -to SD_SCK
 set_location_assignment PIN_113 -to SD_MOSI
-set_location_assignment PIN_99  -to SD_CS
-set_location_assignment PIN_98  -to SD_MISO
+set_location_assignment PIN_99 -to SD_CS
+set_location_assignment PIN_98 -to SD_MISO
 
 # SDRAM - 64Mbit, 4M x16 x4 banks, 12-bit row / 8-bit column address
 set_location_assignment PIN_76 -to SDRAM_A[0]
