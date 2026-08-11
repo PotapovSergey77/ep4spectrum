@@ -331,4 +331,56 @@ module tb_top;
 		$finish;
 	end
 
+	// --- video data correctness ---
+	// The screen area is filled with a known pattern so the bytes video
+	// displays can be checked against the address the original
+	// combinational formula would have produced for each group. This is
+	// the check that was missing while the arbiter was being written:
+	// the "denied" counter flags the known-good design and says nothing,
+	// and the late-fetch counter only proves a fetch finished, not that
+	// it went to the right place. Group 0 of each line in particular is
+	// only reached through the line-wrap path.
+	//
+	// sdram_model indexes its array by byte address (a_full = addr[21:0]
+	// with one byte per entry selected by DQM), so both halves get the
+	// same value, as the ESXDOS preload above does.
+	function [7:0] vpat;
+		input [21:0] byte_addr;
+		vpat = byte_addr[7:0] ^ byte_addr[15:8];
+	endfunction
+
+	integer w;
+	initial begin
+		// screen page: vid_addr = {6'b001010, 13 bits} -> 81920..90111
+		for (w = 81920; w < 90112; w = w + 1)
+			chip.mem[w] = {vpat(w), vpat(w)};
+	end
+
+	integer vid_good = 0, vid_wrong = 0;
+	reg [18:0] exp_a;
+	reg [7:0]  exp_byte;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1 && dut.vid_clken === 1'b1
+		    && dut.vid.vpicture === 1'b1 && dut.vid.hcounter[0] === 1'b1
+		    && dut.vid.hcounter[9] === 1'b0 && dut.vid.hcounter[3] === 1'b0
+		    && dut.vid.hcounter[2] === 1'b0 && dut.vid.hcounter[1] === 1'b1) begin
+			exp_a  = {6'b001010, dut.vid.vcounter[8:7], dut.vid.vcounter[3:1],
+			          dut.vid.vcounter[6:4], dut.vid.hcounter[8:4]};
+			exp_byte = vpat({3'b000, exp_a});
+			if (dut.vid.pixels_next === exp_byte)
+				vid_good = vid_good + 1;
+			else begin
+				vid_wrong = vid_wrong + 1;
+				if (vid_wrong <= 8)
+					$display("[%0t] VID MISMATCH line=%0d group=%0d got=%02h want=%02h",
+						$time, dut.vid.vcounter[9:1], dut.vid.hcounter[8:4],
+						dut.vid.pixels_next, exp_byte);
+			end
+		end
+	end
+	initial begin
+		#1_400_000;
+		$display("Video pixel bytes: %0d correct, %0d wrong", vid_good, vid_wrong);
+	end
+
 endmodule

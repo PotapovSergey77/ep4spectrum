@@ -230,6 +230,43 @@ module video (
 	// a LOAD/STORE pair, as the bus routing logic will disconnect the memory from
 	// the CPU during this time.
 
+	// First 192 lines are picture
+	//
+	// Frame geometry, taken from zx-sizif-512 (cpld/rtl/video.sv for the
+	// line and frame totals, cpld/rtl/cpu.sv for the interrupt). One
+	// T-state is four hcounter counts here - hcounter runs at 14MHz and
+	// the CPU at 3.5MHz - so a 224 T-state line is 896 counts and a 228
+	// T-state line is 912. Sizif counts horizontally in pixels (7MHz),
+	// which is half our rate, hence the doubling of its interrupt
+	// positions.
+	//
+	//   machine    T/line  lines   T/frame   INT line  INT pos  INT len
+	//   48K          224     312    69888      248        0       32 T
+	//   128K         228     311    70908      248        2 T     36 T
+	//   +2A/+3       228     311    70908      248        2 T     36 T
+	//   Pentagon     224     320    71680      239      161 T     32 T
+	//
+	// vcounter[9:1] is the real line number, so its limit is not doubled.
+	wire lines228 = (MACHINE == MACHINE_S128) | (MACHINE == MACHINE_S3);
+
+	wire [9:0] hcount_last = lines228 ? 10'd911 : 10'd895;
+	wire [8:0] vline_last  =
+		(MACHINE == MACHINE_PENT) ? 9'd319 :
+		lines228                  ? 9'd310 :
+		                            9'd311;
+
+	// Getting the horizontal position wrong shifts everything a demo
+	// draws relative to the interrupt - fired at the start of the line
+	// instead, raster bars come out visibly too high.
+	wire [8:0] int_line =
+		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd248;
+	wire [9:0] int_hpos =
+		(MACHINE == MACHINE_PENT) ? 10'd644 :
+		lines228                  ? 10'd8   :
+		                            10'd0;
+	wire [9:0] int_len =
+		lines228 ? 10'd144 : 10'd128;
+
 	// Fetch address registers, after zx-sizif-512's video.sv.
 	//
 	// The address used to be generated combinationally from the live
@@ -261,11 +298,18 @@ module video (
 	// schedule did, leaves under two cycles: fine when the slot was
 	// pre-aligned, not enough once a CPU access can get in front.
 	wire fetch_start = (hcounter[3:0] == 4'b1000);
-	// The group being set up is the one after the current one. At the
-	// very end of a line that is group 0 of the next line, so the line
-	// number has to be stepped as well - vcounter[0] is the half-line
-	// bit, so the line number is vcounter[8:1].
-	wire line_wrap = (hcounter[9:4] == 6'b111111);
+	// The group being set up is the one after the current one. In the
+	// last group of a line that is group 0 of the next line, so the
+	// line number has to be stepped as well - vcounter[0] is the
+	// half-line bit, so the line number is vcounter[8:1].
+	//
+	// Compared against hcount_last rather than a fixed 6'b111111: the
+	// counter only runs to 895 (or 911 on the 228 T-state machines), so
+	// it never reaches group 63 and the wrap case never fired at all.
+	// Group 0 of every line then kept whatever address the previous
+	// line's last fetch left behind, which is visible as artefacts down
+	// the left edge of the picture.
+	wire line_wrap = (hcounter[9:4] == hcount_last[9:4]);
 	// Only groups that are actually displayed need fetching. Vertical
 	// position is deliberately not checked: a wasted read in the top or
 	// bottom border costs nothing now that the CPU is served first.
@@ -308,43 +352,6 @@ module video (
 
 	// This timing model is completely uncontended.  CPU runs all the time.
 	assign nWAIT = 1'b1;
-
-	// First 192 lines are picture
-	//
-	// Frame geometry, taken from zx-sizif-512 (cpld/rtl/video.sv for the
-	// line and frame totals, cpld/rtl/cpu.sv for the interrupt). One
-	// T-state is four hcounter counts here - hcounter runs at 14MHz and
-	// the CPU at 3.5MHz - so a 224 T-state line is 896 counts and a 228
-	// T-state line is 912. Sizif counts horizontally in pixels (7MHz),
-	// which is half our rate, hence the doubling of its interrupt
-	// positions.
-	//
-	//   machine    T/line  lines   T/frame   INT line  INT pos  INT len
-	//   48K          224     312    69888      248        0       32 T
-	//   128K         228     311    70908      248        2 T     36 T
-	//   +2A/+3       228     311    70908      248        2 T     36 T
-	//   Pentagon     224     320    71680      239      161 T     32 T
-	//
-	// vcounter[9:1] is the real line number, so its limit is not doubled.
-	wire lines228 = (MACHINE == MACHINE_S128) | (MACHINE == MACHINE_S3);
-
-	wire [9:0] hcount_last = lines228 ? 10'd911 : 10'd895;
-	wire [8:0] vline_last  =
-		(MACHINE == MACHINE_PENT) ? 9'd319 :
-		lines228                  ? 9'd310 :
-		                            9'd311;
-
-	// Getting the horizontal position wrong shifts everything a demo
-	// draws relative to the interrupt - fired at the start of the line
-	// instead, raster bars come out visibly too high.
-	wire [8:0] int_line =
-		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd248;
-	wire [9:0] int_hpos =
-		(MACHINE == MACHINE_PENT) ? 10'd644 :
-		lines228                  ? 10'd8   :
-		                            10'd0;
-	wire [9:0] int_len =
-		lines228 ? 10'd144 : 10'd128;
 
 	assign vpicture = ~(vcounter[9] | (vcounter[8] & vcounter[7]));
 

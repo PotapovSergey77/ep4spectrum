@@ -30,14 +30,22 @@ module divmmc (
 
 reg m1_trigger;
 
+// Declared before use: Quartus accepts use-before-declaration,
+// ModelSim rejects it.
+reg [7:0] ctrl;
+
 assign sram_page = ctrl[3:0];
 assign mapram = ctrl[6];
 assign conmem = ctrl[7];
-reg [7:0] ctrl;
 
 // Control del modulo SPI
 reg spi_tx_strobe;
 reg spi_rx_strobe;
+
+// One SPI transfer per bus cycle, detected on the access starting
+// rather than on its level - see the comment at the strobe below.
+wire spi_acc = enable && (a[3:0] == 4'hb) && (!rd_n || !wr_n);
+reg  spi_acc_d = 1'b0;
 
 // (removed: an acc_cnt access counter clocked by `enable` and never read
 // by anything, kept alive only by a noprune attribute. Because `enable`
@@ -62,21 +70,24 @@ always @(posedge clk) begin
 		if(a[3:0]==4'h7 && enable && !wr_n)
 			sd_cs <= din[0];
 
-		// SPI read/write
+		// SPI read/write - exactly one transfer per Z80 IN/OUT.
 		//
-		// clken gates this: enable/a/wr_n stay stable for the CPU's
-		// entire IN/OUT bus cycle (many clk edges), and this block
-		// runs on every raw clk edge (clken was previously declared
-		// but never referenced anywhere in this module). Without the
-		// gate, a single Z80 IN/OUT to the SPI data port retriggers
-		// spi.v's transfer every time it goes idle mid-bus-cycle,
-		// silently shifting several real SPI bytes through for what
-		// the ROM code believes is one byte - desyncing the byte
-		// stream from the SD card and making response bytes
-		// unreadable (confirmed via simulation: a card-present
-		// behavioral SPI model would send a valid R1 response, but
-		// the ROM's poll loop only ever saw trailing 0xFF filler).
-		if(enable && a[3:0]==4'hb && clken) begin
+		// enable/a/wr_n stay stable for the CPU's entire IN/OUT bus
+		// cycle, which is many clk edges, so triggering on the level
+		// retriggers spi.v every time it goes idle mid-bus-cycle and
+		// shifts several real SPI bytes through for what the ROM
+		// believes is one byte, desyncing the stream from the card.
+		//
+		// This used to be gated by clken instead, which only worked by
+		// luck of phase: an IO cycle is about 20 clk long and clken
+		// fires every 16, so the number of strobes inside one bus
+		// cycle depended on where the CPU's T-states happened to sit.
+		// Moving CLKEN_CPU one clock (for the SDRAM arbiter) changed
+		// that alignment and the card stopped initialising - ESXDOS
+		// hung at "Selecting Device". Triggering on the start of the
+		// access instead makes it exactly one, whatever the phase.
+		spi_acc_d <= spi_acc;
+		if(spi_acc && !spi_acc_d) begin
 			if(wr_n) spi_rx_strobe = 1'b1;
 			else     spi_tx_strobe = 1'b1;
 		end
