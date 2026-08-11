@@ -1480,6 +1480,10 @@ module spectrum_top (
 	// and the low bits of the work length say by how much - which is
 	// how many T-states our interrupt entry is out against a machine
 	// where this demo stands still.
+	reg [7:0] resp_t = 8'd0;
+	reg [7:0] resp_lat = 8'd0;
+	reg       resp_run = 1'b0;
+	reg       resp_ack_d = 1'b0;
 	reg [15:0] ack_t = 16'd0;
 	reg [7:0]  ack_min = 8'hFF;
 	reg [7:0]  ack_max = 8'h00;
@@ -1506,13 +1510,39 @@ module spectrum_top (
 		end
 	end
 
+	// MEASUREMENT: how long the interrupt response takes - from the
+	// acknowledge cycle to the first opcode fetch of the routine.
+	//
+	// A real Z80 takes 13 T-states in IM1 and 19 in IM2. If T80 is two
+	// out, that accounts for the whole thing: Sizif runs a real Z80 and
+	// the picture stands still there, the mist-board core runs T80 but
+	// holds the CPU on every memory access so its frame is not 71680
+	// and the error cancels, and we run T80 with an exact frame so it
+	// shows.
+	wire      resp_ack = (cpu_m1_n == 1'b0) && (cpu_ioreq_n == 1'b0);
+	always @(posedge clock) begin
+		resp_ack_d <= resp_ack;
+		if (resp_ack == 1'b1 && resp_ack_d == 1'b0) begin
+			resp_t   <= 8'd0;
+			resp_run <= 1'b1;
+		end else if (resp_run == 1'b1) begin
+			// the routine's first fetch: M1 with IORQ high again
+			if (cpu_m1_n == 1'b0 && cpu_ioreq_n == 1'b1) begin
+				resp_run <= 1'b0;
+				resp_lat <= resp_t;
+			end else if (cpu_clken == 1'b1) begin
+				resp_t <= resp_t + 8'd1;
+			end
+		end
+	end
+
 	// two right ones. While the interrupt trim is non-zero it takes over
 	// the right-hand pair.
 	wire [3:0] nibble =
 	                    (digit_scan == 2'd3) ? ack_min[7:4] :
 	                    (digit_scan == 2'd2) ? ack_min[3:0] :
-	                    (digit_scan == 2'd1) ? ack_max[7:4] :
-	                                           ack_max[3:0];
+	                    (digit_scan == 2'd1) ? resp_lat[7:4] :
+	                                           resp_lat[3:0];
 
 	wire digit_blank = 1'b0;
 	// decimal point after the 3, and on the page digit while DivMMC is
