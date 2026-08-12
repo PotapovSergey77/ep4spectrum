@@ -230,12 +230,6 @@ module spectrum_top (
 	// three have 128K. Pentagon can additionally be given 1024K on F9.
 	wire            mem128 = (machine != MACHINE_S48);
 	reg             ext1024 = 1'b0;
-	// Interrupt position trim, in hcounter counts. F1 and F2 step it by
-	// two - one pixel. Two pixels a press could not reach the position
-	// the board says is one pixel out.
-	reg     [7:0]   int_adj = 8'd0;
-	wire            key_f1;
-	wire            key_f2;
 
 	// Master clock - 28 MHz
 	wire            clk56;
@@ -256,6 +250,11 @@ module spectrum_top (
 	wire            vid_clken;
 	wire            clk_ref;
 	wire            vid_mem_sync;
+	wire            vid_contention;
+	// The CPU's enable after the ULA has had its say - see the contention
+	// block further down. Declared here because the CPU instance is above
+	// it.
+	wire            cpu_clken_gated;
 	// one tick per SDRAM cycle boundary - the arbiter's decision point
 	wire            slot_tick;
 	// which byte video is asking for right now: 0 = pixels, 1 = attribute
@@ -598,24 +597,10 @@ module spectrum_top (
 	// held, and the 1024K toggle below settled wherever it happened to
 	// stop. Every position picked with the trim before this was
 	// measured with an instrument that did not work.
-	reg key_f1_d = 1'b0;
-	reg key_f2_d = 1'b0;
 	reg key_f9_d = 1'b0;
-	wire key_f1_press = key_f1 & ~key_f1_d;
-	wire key_f2_press = key_f2 & ~key_f2_d;
 	wire key_f9_press = key_f9 & ~key_f9_d;
 	always @(posedge clock) begin
-		key_f1_d <= key_f1;
-		key_f2_d <= key_f2;
 		key_f9_d <= key_f9;
-	end
-
-	// F1 and F2 trim the interrupt position by one pixel a press.
-	always @(posedge clock) begin
-		if (key_f1_press == 1'b1)
-			int_adj <= int_adj - 8'd2;
-		else if (key_f2_press == 1'b1)
-			int_adj <= int_adj + 8'd2;
 	end
 
 	// F5..F8 pick the machine. Switching deliberately does NOT reset,
@@ -655,7 +640,7 @@ module spectrum_top (
 	T80se cpu (
 		.RESET_n(reset_n),
 		.CLK_n(clock),
-		.CLKEN(cpu_clken),
+		.CLKEN(cpu_clken_gated),
 		.WAIT_n(cpu_wait_n),
 		.INT_n(cpu_irq_n),
 		.NMI_n(cpu_nmi_n),
@@ -692,6 +677,44 @@ module spectrum_top (
 			cpu_irq_n_sync <= vid_irq_n;
 	end
 	assign cpu_irq_n = cpu_irq_n_sync;
+	// ULA contention, after zx-sizif-512's cpu.sv.
+	//
+	// The ULA holds the CPU while it is fetching, but only when the CPU
+	// is touching something the ULA is also using: the contended RAM
+	// bank, or an even IO port. Pentagon has no contention at all, which
+	// is why its demos can count T-states in the first place.
+	//
+	// Contended RAM is 0x4000-0x7FFF on every machine, plus the banked
+	// window at 0xC000 when the bank paged there is a contended one -
+	// odd banks on a 128K, banks 4..7 on a +2A/+3.
+	wire cont_page = (machine == MACHINE_S3) ? page_ram_sel[2] : page_ram_sel[0];
+	wire cont_addr = cpu_a[14] & (~cpu_a[15] | cont_page);
+	// The +2A/+3 does not contend IO at all; the others contend every
+	// even port, and the two floating-bus ports besides.
+	wire iorq_cont = (~cpu_ioreq_n)
+	                 & (~cpu_a[0] | (cpu_a == 16'hBF3B) | (cpu_a == 16'hFF3B))
+	                 & (machine != MACHINE_S3);
+
+	// Delayed by one CPU tick so an access is contended once, at its
+	// start, rather than for as long as it is on the bus.
+	reg mreq_cont_d = 1'b0;
+	reg iorq_cont_d = 1'b0;
+	always @(posedge clock) begin
+		if (cpu_clken_gated == 1'b1) begin
+			mreq_cont_d <= ~cpu_mreq_n;
+			iorq_cont_d <= iorq_cont;
+		end
+	end
+
+	wire cont_mem = ~iorq_cont & ~mreq_cont_d & cont_addr;
+	wire contention = vid_contention & ~iorq_cont_d
+	                  & (cont_mem | iorq_cont)
+	                  & (machine != MACHINE_PENT);
+
+	// Holding the CPU means withholding its clock enable here, which is
+	// what Sizif does by holding clkcpu.
+	assign cpu_clken_gated = cpu_clken & ~contention;
+
 	// cpu_wait_n is driven by the arbiter further down.
 	// F12 (PS/2 keyboard) or board button S2 triggers a plain NMI directly -
 	// the T80 core only latches this on the falling edge internally
@@ -718,8 +741,6 @@ module spectrum_top (
 		.F11(key_f11),
 		.F8(key_f8),
 		.F12(key_f12),
-		.F1(key_f1),
-		.F2(key_f2),
 		.F5(key_f5),
 		.F6(key_f6),
 		.F7(key_f7),
@@ -769,7 +790,7 @@ module spectrum_top (
 		.nRESET(reset_n),
 		.VGA(1'b0),
 		.MACHINE(machine),
-		.INT_ADJ(int_adj),
+		.CONTENTION(vid_contention),
 		.VID_A(vid_a),
 		// The registered byte the arbiter hands back, not the raw bus:
 		// video's cycle is no longer at a predictable moment, so there
@@ -1486,115 +1507,17 @@ module spectrum_top (
 		end
 	end
 
-	// "3.5" for the CPU clock on the two left digits, the page on the
-	// MEASUREMENT: the spread of the interrupt acceptance delay.
-	//
-	// With the CPU in HALT the interrupt is taken at the end of the
-	// current 4 T-state M1 cycle, and the phase of those cycles is set
-	// by when HALT was entered. So the acceptance delay cycles through
-	// as many values as the frame's work leaves when divided by four:
-	// a remainder of 2 gives two values two apart, which is a border
-	// picture alternating between two positions four pixels apart -
-	// exactly what the board shows.
-	//
-	// Left pair: the smallest delay seen. Right pair: the largest.
-	// Their difference says how many values the phase walks through,
-	// and the low bits of the work length say by how much - which is
-	// how many T-states our interrupt entry is out against a machine
-	// where this demo stands still.
-	reg [7:0] resp_t = 8'd0;
-	reg [7:0] resp_lat = 8'd0;
-	reg       resp_run = 1'b0;
-	reg       resp_ack_d = 1'b0;
-
-	// CALIBRATION: the M1 period while halted, which the Z80 fixes at
-	// four T-states. The response measurement reads 20 where a real Z80
-	// takes 19 in IM2, and one T-state of that could be the counter
-	// rather than the core - the endpoints are detected a clock apart
-	// from where they nominally are. If this reads 4 the counter is
-	// honest and the response really is 20; if it reads 5 the counter
-	// runs one long and the response is 19, which is correct, and the
-	// two T-states are somewhere else entirely.
-	//
-	// Worth doing because a good part of this session has been spent
-	// believing measurements that turned out to be measuring something
-	// else.
-	reg [7:0] halt_t = 8'd0;
-	reg [7:0] halt_lat = 8'd0;
-	reg       halt_m1_d = 1'b1;
-	always @(posedge clock) begin
-		halt_m1_d <= cpu_m1_n;
-		if (cpu_halt_n == 1'b0 && halt_m1_d == 1'b1 && cpu_m1_n == 1'b0) begin
-			halt_lat <= halt_t;
-			halt_t   <= 8'd0;
-		end else if (cpu_clken == 1'b1 && halt_t != 8'hFF) begin
-			halt_t <= halt_t + 8'd1;
-		end
-	end
-	reg [15:0] ack_t = 16'd0;
-	reg [7:0]  ack_min = 8'hFF;
-	reg [7:0]  ack_max = 8'h00;
-	reg        ack_run = 1'b0;
-	reg        pirq_n = 1'b1;
-	always @(posedge clock) begin
-		pirq_n <= vid_irq_n;
-		if (pirq_n == 1'b1 && vid_irq_n == 1'b0) begin
-			ack_t   <= 16'd0;
-			ack_run <= 1'b1;
-		end else if (ack_run == 1'b1) begin
-			if (cpu_m1_n == 1'b0 && cpu_ioreq_n == 1'b0) begin
-				ack_run <= 1'b0;
-				if (ack_t[7:0] < ack_min) ack_min <= ack_t[7:0];
-				if (ack_t[7:0] > ack_max) ack_max <= ack_t[7:0];
-			end else if (cpu_clken == 1'b1) begin
-				ack_t <= ack_t + 16'd1;
-			end
-		end
-		// F1 clears the min/max so a fresh run can be watched
-		if (key_f1 == 1'b1) begin
-			ack_min <= 8'hFF;
-			ack_max <= 8'h00;
-		end
-	end
-
-	// MEASUREMENT: how long the interrupt response takes - from the
-	// acknowledge cycle to the first opcode fetch of the routine.
-	//
-	// A real Z80 takes 13 T-states in IM1 and 19 in IM2. If T80 is two
-	// out, that accounts for the whole thing: Sizif runs a real Z80 and
-	// the picture stands still there, the mist-board core runs T80 but
-	// holds the CPU on every memory access so its frame is not 71680
-	// and the error cancels, and we run T80 with an exact frame so it
-	// shows.
-	wire      resp_ack = (cpu_m1_n == 1'b0) && (cpu_ioreq_n == 1'b0);
-	always @(posedge clock) begin
-		resp_ack_d <= resp_ack;
-		if (resp_ack == 1'b1 && resp_ack_d == 1'b0) begin
-			resp_t   <= 8'd0;
-			resp_run <= 1'b1;
-		end else if (resp_run == 1'b1) begin
-			// the routine's first fetch: M1 with IORQ high again
-			if (cpu_m1_n == 1'b0 && cpu_ioreq_n == 1'b1) begin
-				resp_run <= 1'b0;
-				resp_lat <= resp_t;
-			end else if (cpu_clken == 1'b1) begin
-				resp_t <= resp_t + 8'd1;
-			end
-		end
-	end
-
-	// two right ones. While the interrupt trim is non-zero it takes over
-	// the right-hand pair.
-	// Left pair: the interrupt trim, as a signed count of hcounter
-	// steps - FE is -2, FC is -4, 02 is +2 and so on. Right pair: the
-	// page, as usual.
+	// "3.5" for the CPU clock on the two left digits, the upper RAM page
+	// in decimal on the two right ones - two digits because Pentagon
+	// 1024 pages run to 63, with the tens blanked below ten so a 128K
+	// machine still reads as a single figure.
 	wire [3:0] nibble =
-	                    (digit_scan == 2'd3) ? int_adj[7:4] :
-	                    (digit_scan == 2'd2) ? int_adj[3:0] :
+	                    (digit_scan == 2'd3) ? 4'd3 :
+	                    (digit_scan == 2'd2) ? 4'd5 :
 	                    (digit_scan == 2'd1) ? pg_tens :
 	                                           pg_units;
 
-	wire digit_blank = 1'b0;
+	wire digit_blank = (digit_scan == 2'd1) && (page_ram_sel < 6'd10);
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in
 	wire digit_dp    = (digit_scan == 2'd3) ||

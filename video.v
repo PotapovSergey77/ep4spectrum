@@ -49,7 +49,7 @@ module video (
 	VGA,
 	// Frame timing: which machine to be. See the geometry table below.
 	MACHINE,
-	INT_ADJ,
+	CONTENTION,
 
 	// Memory interface
 	VID_A,
@@ -92,7 +92,7 @@ module video (
 
 	input           VGA;
 	input   [1:0]   MACHINE;
-	input   [7:0]   INT_ADJ;
+	output          CONTENTION;
 
 	// Machine codes, shared with spectrum_top.v
 	localparam MACHINE_S48  = 2'd0;   // Sinclair 48K
@@ -158,6 +158,23 @@ module video (
 	// The first 256 pixels of each line are valid picture
 	assign picture = hpicture & vpicture;
 	assign blanking = hblanking | vblanking;
+
+	// ULA contention, from zx-sizif-512's video.sv:
+	//
+	//   contention = (vc < V_AREA) && (hc < H_AREA) && (hc[2] || hc[3])
+	//
+	// which holds the CPU for six T-states out of every eight while the
+	// ULA is fetching, over the 192 display lines and 256 columns. That
+	// is the pattern the comment further down this file describes and
+	// which this design has never actually had - the CPU ran at full
+	// speed on every machine, which is right for Pentagon and wrong for
+	// the Sinclairs.
+	//
+	// hcounter runs at twice the pixel rate here, so Sizif's hc[2] and
+	// hc[3] are hcounter[3] and hcounter[4], and hc < 256 is
+	// hcounter[9] == 0.
+	assign CONTENTION = vpicture & ~hcounter[9]
+	                    & (hcounter[3] | hcounter[4]);
 
 	// The border colour is latched rather than taken straight off the
 	// port, following zx-sizif-512's video.sv:
@@ -305,17 +322,13 @@ module video (
 	// instead, raster bars come out visibly too high.
 	wire [8:0] int_line =
 		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd248;
-	// INT_ADJ shifts the interrupt, in hcounter counts. Pentagon border
-	// effects count T-states from the interrupt and place colour to a
-	// precision of two pixels, which is four counts here, so the whole
-	// picture drawn in the border moves with this value. The table entry
-	// is zx-sizif-512's, converted; anything left over after that is
-	// what the board has to be asked.
-	wire [9:0] int_hpos_base =
+	// Interrupt position. The table entry is zx-sizif-512's converted;
+	// Pentagon's was then set on the board, where the picture drawn in
+	// the border shows it directly.
+	wire [9:0] int_hpos =
 		(MACHINE == MACHINE_PENT) ? 10'd622 :
 		lines228                  ? 10'd8   :
 		                            10'd0;
-	wire [9:0] int_hpos = int_hpos_base + {{2{INT_ADJ[7]}}, INT_ADJ};
 	wire [9:0] int_len =
 		lines228 ? 10'd144 : 10'd128;
 
