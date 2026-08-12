@@ -1550,9 +1550,6 @@ module spectrum_top (
 	// Left pair: which keyboard rows have something held - 00 with
 	// nothing touched, and a bit that will not clear is a stuck key.
 	// Right pair: the low byte of the last IO port.
-	// Left pair: the byte port 0xFE last returned. With nothing held a
-	// real machine gives BF, or FF once bit 4 has been written high.
-	// Right pair: the low byte of the last IO port.
 	reg [7:0] last_ula_do = 8'd0;
 	always @(posedge clock) begin
 		if (prev_ioreq_n == 1'b1 && cpu_ioreq_n == 1'b0 && cpu_m1_n == 1'b1
@@ -1561,10 +1558,10 @@ module spectrum_top (
 	end
 
 	wire [3:0] nibble_io =
-	                    (digit_scan == 2'd3) ? last_ula_do[7:4] :
-	                    (digit_scan == 2'd2) ? last_ula_do[3:0] :
-	                    (digit_scan == 2'd1) ? last_io[7:4]   :
-	                                           last_io[3:0];
+	                    (digit_scan == 2'd3) ? last_pc[15:12] :
+	                    (digit_scan == 2'd2) ? last_pc[11:8]  :
+	                    (digit_scan == 2'd1) ? last_pc[7:4]   :
+	                                           last_pc[3:0];
 
 	// "3.5" for the CPU clock on the two left digits, the upper RAM page
 	// in decimal on the two right ones - two digits because Pentagon
@@ -1590,8 +1587,9 @@ module spectrum_top (
 	                   ((digit_scan == 2'd1) && (page_ram_sel < 6'd10));
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in
-	wire digit_dp    = (digit_scan == 2'd3) ||
-	                   (divmmc_paged_in && (digit_scan == 2'd0));
+	wire digit_dp    = show_io ? ((digit_scan == 2'd0) && (cpu_halt_n == 1'b0)) :
+	                   ((digit_scan == 2'd3) ||
+	                    (divmmc_paged_in && (digit_scan == 2'd0)));
 
 	reg [6:0] seg_gfedcba;
 	always @* begin
