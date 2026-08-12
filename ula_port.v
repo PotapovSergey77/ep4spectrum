@@ -83,11 +83,22 @@ module ula_port (
 			D_OUT <= 8'h00;
 		end else begin
 			// Register inputs
-			// 7 = N/C
-			// 6 = EAR
-			// 5 = N/C
+			// 7   = 1
+			// 6   = EAR
+			// 5   = 1
 			// 4-0 = Keyboard
-			D_OUT <= {1'b0, EAR_IN, 1'b0, KEYB_IN};
+			//
+			// Bits 7 and 5 read high on a real machine, so a read with
+			// no key held gives 0xBF or 0xFF. They were returned as
+			// zeros here, making it 0x40, and Test 4.3 sat forever on
+			// port 0xFE waiting for a value it could never see - which
+			// is why pressing keys made no difference to it.
+			//
+			// Bit 6 follows the last value written to bit 4 rather than
+			// sitting high. That is what a machine with nothing plugged
+			// into the tape socket does, and what software testing the
+			// port expects to find.
+			D_OUT <= {1'b1, EAR_OUT & EAR_IN, 1'b1, KEYB_IN};
 
 			if (ENABLE == 1'b1 && nWR == 1'b0) begin
 				// Latch input data to output register
