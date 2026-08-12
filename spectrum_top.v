@@ -197,6 +197,12 @@ module spectrum_top (
 	wire            key_f7;
 	wire            key_f9;
 	wire            key_f10;
+	// Interrupt position trim, two counts - one pixel - a press on F1/F2
+	reg     [7:0]   int_adj = 8'd0;
+	wire            key_f1;
+	wire            key_f2;
+	reg             key_f1_d = 1'b0;
+	reg             key_f2_d = 1'b0;
 	// Per-row 'a key is held here', for spotting a stuck bit
 	wire    [7:0]   kb_row_any;
 
@@ -607,6 +613,17 @@ module spectrum_top (
 		key_f9_d <= key_f9;
 	end
 
+	// F1 and F2 trim the interrupt position of whichever machine is
+	// selected, one pixel a press, acting on the press and not the hold.
+	always @(posedge clock) begin
+		key_f1_d <= key_f1;
+		key_f2_d <= key_f2;
+		if (key_f1 == 1'b1 && key_f1_d == 1'b0)
+			int_adj <= int_adj - 8'd2;
+		else if (key_f2 == 1'b1 && key_f2_d == 1'b0)
+			int_adj <= int_adj + 8'd2;
+	end
+
 	// F5..F8 pick the machine. Switching deliberately does NOT reset,
 	// so the effect can be watched on a running program.
 	always @(posedge clock) begin
@@ -749,6 +766,8 @@ module spectrum_top (
 		.F6(key_f6),
 		.F7(key_f7),
 		.F9(key_f9),
+		.F1(key_f1),
+		.F2(key_f2),
 		.F10(key_f10),
 		.ROW_ANY(kb_row_any)
 	);
@@ -796,6 +815,7 @@ module spectrum_top (
 		.VGA(1'b0),
 		.MACHINE(machine),
 		.CONTENTION(vid_contention),
+		.INT_ADJ(int_adj),
 		.PORT_FF_ACTIVE(vid_port_ff_active),
 		.PORT_FF_DATA(vid_port_ff_data),
 		.VID_A(vid_a),
@@ -1687,7 +1707,12 @@ module spectrum_top (
 	always @(posedge clock) begin
 		if (key_f9_press == 1'b1) show_io <= ~show_io;
 	end
-	wire [3:0] nibble = show_io ? nibble_io : nibble_normal;
+	wire [3:0] nibble = show_io ? nibble_io :
+	                    (int_adj != 8'd0) ?
+	                    ((digit_scan == 2'd3) ? int_adj[7:4] :
+	                     (digit_scan == 2'd2) ? int_adj[3:0] :
+	                     (digit_scan == 2'd1) ? pg_tens : pg_units) :
+	                    nibble_normal;
 
 	wire digit_blank = show_io ? 1'b0 :
 	                   ((digit_scan == 2'd1) && (page_ram_sel < 6'd10));

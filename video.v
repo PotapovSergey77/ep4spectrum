@@ -50,6 +50,7 @@ module video (
 	// Frame timing: which machine to be. See the geometry table below.
 	MACHINE,
 	CONTENTION,
+	INT_ADJ,
 	PORT_FF_ACTIVE,
 	PORT_FF_DATA,
 
@@ -95,6 +96,7 @@ module video (
 	input           VGA;
 	input   [1:0]   MACHINE;
 	output          CONTENTION;
+	input   [7:0]   INT_ADJ;
 	output          PORT_FF_ACTIVE;
 	output  [7:0]   PORT_FF_DATA;
 
@@ -330,10 +332,15 @@ module video (
 	// Interrupt position. The table entry is zx-sizif-512's converted;
 	// Pentagon's was then set on the board, where the picture drawn in
 	// the border shows it directly.
-	wire [9:0] int_hpos =
+	// INT_ADJ trims the position, two counts - one pixel - a step. Only
+	// Pentagon's entry has been set against a real machine; the others
+	// are zx-sizif-512's converted and have never been checked on the
+	// board, which is what the trim is back for.
+	wire [9:0] int_hpos_base =
 		(MACHINE == MACHINE_PENT) ? 10'd622 :
 		lines228                  ? 10'd8   :
 		                            10'd0;
+	wire [9:0] int_hpos = int_hpos_base + {{2{INT_ADJ[7]}}, INT_ADJ};
 	wire [9:0] int_len =
 		lines228 ? 10'd144 : 10'd128;
 
