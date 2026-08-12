@@ -99,7 +99,7 @@ module video (
 	input   [1:0]   MACHINE;
 	output          CONTENTION;
 	input   [7:0]   INT_ADJ;
-	input   [4:0]   INT_VADJ;
+	input   [7:0]   INT_VADJ;
 	input   [4:0]   CONT_ADJ;
 	output          PORT_FF_ACTIVE;
 	output  [7:0]   PORT_FF_DATA;
@@ -355,7 +355,7 @@ module video (
 	// Getting the horizontal position wrong shifts everything a demo
 	// draws relative to the interrupt - fired at the start of the line
 	// instead, raster bars come out visibly too high.
-	// INT_VADJ trims the line, one line a step. Which line the
+	// INT_VADJ trims the line, one eighth of a line a step. Which line the
 	// interrupt falls on sets where in the frame everything a program
 	// draws from it lands, so an entry that is out shows as border
 	// effects sitting above or below where they belong.
@@ -365,7 +365,6 @@ module video (
 	// +2A/+3 share the entry and have not been looked at.
 	wire [8:0] int_line_base =
 		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd245;
-	wire [8:0] int_line = int_line_base + {{4{INT_VADJ[4]}}, INT_VADJ};
 	// Interrupt position. The table entry is zx-sizif-512's converted;
 	// Pentagon's was then set on the board, where the picture drawn in
 	// the border shows it directly.
@@ -389,13 +388,43 @@ module video (
 	// and the machine stopped dead. That is what trimming left did on
 	// the board - and left is exactly where the right position appears
 	// to be, so it could not be reached.
-	wire signed [11:0] int_hpos_raw =
-		{2'b00, int_hpos_base} + {{4{INT_ADJ[7]}}, INT_ADJ};
-	wire signed [11:0] hline = {2'b00, hcount_last} + 12'sd1;
-	wire [9:0] int_hpos =
-		(int_hpos_raw < 0)      ? (int_hpos_raw + hline) :
-		(int_hpos_raw >= hline) ? (int_hpos_raw - hline) :
-		                           int_hpos_raw;
+	wire signed [12:0] hline = {3'b000, hcount_last} + 13'sd1;
+	// One eighth of a line. Every line length here is a multiple of
+	// eight counts - 896 for 224 T-states, 912 for 228 - so the step is
+	// exact and eight of them come to a whole line.
+	wire signed [12:0] heighth = hline >>> 3;
+
+	// The vertical trim is in eighths, so it splits into whole lines and
+	// a part of a line that has to be carried into the position. A whole
+	// line a step was too coarse to place the interrupt on the board:
+	// two was a little short and three already too far.
+	//
+	// Shifting right rounds towards minus infinity, which is what makes
+	// the low three bits the remainder for negative values too - -1 is
+	// -1 line plus seven eighths.
+	wire signed [8:0] vadj_lines = $signed(INT_VADJ) >>> 3;
+	wire       [2:0]  vadj_frac  = INT_VADJ[2:0];
+
+	wire signed [12:0] int_hpos_raw =
+		{3'b000, int_hpos_base} + {{5{INT_ADJ[7]}}, INT_ADJ}
+		+ $signed({1'b0, vadj_frac}) * heighth;
+
+	// The fraction can push the position past the end of the line, and
+	// then the interrupt belongs on the next line - so the wrap counts
+	// how many lines it carried rather than just folding the position.
+	wire cy1 = (int_hpos_raw >= hline);
+	wire signed [12:0] hp1 = cy1 ? (int_hpos_raw - hline) : int_hpos_raw;
+	wire cy2 = (hp1 >= hline);
+	wire signed [12:0] hp2 = cy2 ? (hp1 - hline) : hp1;
+	wire bw1 = (hp2 < 0);
+	wire signed [12:0] hp3 = bw1 ? (hp2 + hline) : hp2;
+	wire [9:0] int_hpos = hp3[9:0];
+
+	wire signed [9:0] int_line_s = $signed({1'b0, int_line_base})
+		+ {{1{vadj_lines[8]}}, vadj_lines}
+		+ (cy1 ? 10'sd1 : 10'sd0) + (cy2 ? 10'sd1 : 10'sd0)
+		- (bw1 ? 10'sd1 : 10'sd0);
+	wire [8:0] int_line = int_line_s[8:0];
 	wire [9:0] int_len =
 		lines228 ? 10'd144 : 10'd128;
 

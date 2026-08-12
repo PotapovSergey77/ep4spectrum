@@ -199,8 +199,10 @@ module spectrum_top (
 	wire            key_f10;
 	// Interrupt position trim, two counts - one pixel - a press on F1/F2
 	reg     [7:0]   int_adj = 8'd0;
-	// Vertical trim, one line a press on F3/F4
-	reg     [4:0]   int_vadj = 5'd0;
+	// Vertical trim, one eighth of a line a press on F3/F4. A whole line
+	// a press could not place the interrupt: on the board two lines came
+	// out a little short and three already too far.
+	reg     [7:0]   int_vadj = 8'd0;
 	// F10 toggles the ULA contention model
 	// 0 = no contention, 1 = memory only, 2 = memory and IO.
 	// With it full on the stripes spread downward, with it off they
@@ -657,9 +659,9 @@ module spectrum_top (
 		key_f3_d <= key_f3;
 		key_f4_d <= key_f4;
 		if (key_f3 == 1'b1 && key_f3_d == 1'b0)
-			int_vadj <= int_vadj - 5'd1;
+			int_vadj <= int_vadj - 8'd1;
 		else if (key_f4 == 1'b1 && key_f4_d == 1'b0)
-			int_vadj <= int_vadj + 5'd1;
+			int_vadj <= int_vadj + 8'd1;
 	end
 
 	// F5..F8 pick the machine. Switching deliberately does NOT reset,
@@ -1641,23 +1643,24 @@ module spectrum_top (
 
 	// While either trim is non-zero the display carries them: the left
 	// pair is the horizontal trim in pixels, signed, and the right pair
-	// the vertical trim in lines. Otherwise "3.5" and the page.
+	// the vertical trim in eighths of a line, both hex and signed.
+	// Otherwise "3.5" and the page.
 	wire [3:0] nibble = (cont_adj != 5'd0) ?
 	                    ((digit_scan == 2'd3) ? 4'd12 :
 	                     (digit_scan == 2'd2) ? 4'd0  :
 	                     (digit_scan == 2'd1) ? {3'b000, cont_adj[4]} :
 	                                            cont_adj[3:0]) :
-	                    ((int_adj != 8'd0) || (int_vadj != 5'd0)) ?
+	                    ((int_adj != 8'd0) || (int_vadj != 8'd0)) ?
 	                    ((digit_scan == 2'd3) ? int_adj[7:4] :
 	                     (digit_scan == 2'd2) ? int_adj[3:0] :
-	                     (digit_scan == 2'd1) ? {3'b000, int_vadj[4]} :
+	                     (digit_scan == 2'd1) ? int_vadj[7:4] :
 	                                            int_vadj[3:0]) :
 	                    (digit_scan == 2'd3) ? 4'd3 :
 	                    (digit_scan == 2'd2) ? 4'd5 :
 	                    (digit_scan == 2'd1) ? pg_tens :
 	                                           pg_units;
 
-	wire digit_blank = ((int_adj != 8'd0) || (int_vadj != 5'd0) || (cont_adj != 5'd0)) ? 1'b0 :
+	wire digit_blank = ((int_adj != 8'd0) || (int_vadj != 8'd0) || (cont_adj != 5'd0)) ? 1'b0 :
 	                   ((digit_scan == 2'd1) && (page_ram_sel < 6'd10));
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in
