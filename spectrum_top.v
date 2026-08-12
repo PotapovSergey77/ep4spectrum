@@ -754,26 +754,43 @@ module spectrum_top (
 	                 & (~cpu_a[0] | (cpu_a == 16'hBF3B) | (cpu_a == 16'hFF3B))
 	                 & (machine != MACHINE_S3);
 
-	// Delayed by one CPU tick so an access is contended once, at its
-	// start, rather than for as long as it is on the bus.
-	reg mreq_cont_d = 1'b0;
-	reg iorq_cont_d = 1'b0;
+	// A machine cycle is charged the delay once, at its start, and then
+	// runs to its end untouched. These flags remember that this cycle
+	// has already paid: they set on the tick the access is finally let
+	// through, and clear when the cycle ends and the strobe goes high.
+	//
+	// The one-tick delay line that used to stand here was not enough.
+	// A memory cycle is three T-states and an opcode fetch four, so the
+	// mask expired inside the cycle and the CPU was charged again, and
+	// again, for the same access. Measured with a loop running out of
+	// contended RAM, that cost 98% of every clock enable inside the
+	// contention window - the CPU very nearly stopped there, where the
+	// published table says it should lose about 44%. That is what made
+	// the music drag and the border stripes come out dim.
+	//
+	// Nothing updates while the CPU is held, since these are clocked by
+	// the gated enable, so a hold stays a hold until the window frees.
+	reg mreq_paid = 1'b0;
+	reg iorq_paid = 1'b0;
 	always @(posedge clock) begin
 		if (cpu_clken_gated == 1'b1) begin
-			mreq_cont_d <= ~cpu_mreq_n;
-			iorq_cont_d <= iorq_cont;
+			if (cpu_mreq_n == 1'b1)  mreq_paid <= 1'b0;
+			else                     mreq_paid <= 1'b1;
+			if (cpu_ioreq_n == 1'b1) iorq_paid <= 1'b0;
+			else                     iorq_paid <= 1'b1;
 		end
 	end
 
-	wire cont_mem = ~iorq_cont & ~mreq_cont_d & cont_addr;
+	// The MREQ term is not optional either. Without it the address bus
+	// alone asks for contention, and a Z80 leaves the last address on
+	// the bus through the internal T-states that follow an access.
+	wire cont_mem = ~iorq_cont & ~cpu_mreq_n & ~mreq_paid & cont_addr;
+	wire cont_io  = iorq_cont & ~iorq_paid;
 	// F10 turns contention off, to tell whether the model is what makes
 	// border stripes spread out from the middle of the screen: a demo's
 	// loop taking longer than it should stretches everything it draws.
-	// IO contention is the likeliest culprit - a stripe loop is nothing
-	// but OUTs to 0xFE, and each one is held here for the whole window
-	// where a real ULA delays it more finely.
-	wire contention = vid_contention & ~iorq_cont_d
-	                  & (cont_mem | iorq_cont)
+	wire contention = vid_contention
+	                  & (cont_mem | cont_io)
 	                  & (machine != MACHINE_PENT)
 	                  & ((cont_mode == 2'd2) ? 1'b1 :
 	                     (cont_mode == 2'd1) ? ~iorq_cont : 1'b0);
