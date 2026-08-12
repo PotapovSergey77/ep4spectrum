@@ -1238,7 +1238,14 @@ module spectrum_top (
 				// be credited to a later access - after a write to X,
 				// a read of X straight afterwards took the write
 				// cycle's leftovers.
-				if (cpu_addr_held == cpu_addr)
+				// Overdue accepts the answer whatever the address says.
+				// Granting alone was not enough: serving is only
+				// credited on an address match, so if that match never
+				// comes the request waits for ever however many cycles
+				// it is given - which is what the board shows, a CPU
+				// executing nothing with the interrupt arriving at its
+				// own pin and no way to take it.
+				if (cpu_addr_held == cpu_addr || cpu_overdue == 1'b1)
 					cpu_served <= 1'b1;
 			end
 			if (prev_own == OWN_VID) begin
