@@ -933,15 +933,33 @@ module T80_MCode (
 					Set_Addr_To <= aSP;
 					Set_BusB_To <= 4'b1101;
 				end
+				// The two stack writes are three T-states, not four.
+				//
+				// A Z80 answers IM2 in 19 T-states: 7 for the
+				// acknowledge, then 3 each to push PC high and low and
+				// 3 each to read the vector. With four here the core
+				// took 21, measured in simulation, and RST in this same
+				// file uses 3 for the identical stack writes.
+				//
+				// Those two T-states are what made Pentagon border
+				// pictures shimmer. Demos count T-states from the
+				// interrupt, so an entry two long leaves the frame's
+				// work with a remainder of 2 rather than 0, and the
+				// HALT phase then alternates between two positions four
+				// pixels apart. The mist-board core does not show it
+				// because its CPU is held on every memory access, so
+				// its frame is not 71680 T-states and the error
+				// cancels; zx-sizif-512 runs a real Z80 and never had
+				// it.
 				2: begin
-					TStates <= 3'b100;
+					TStates <= 3'b011;
 					Write <= 1'b1;
 					IncDec_16 <= 4'b1111;
 					Set_Addr_To <= aSP;
 					Set_BusB_To <= 4'b1100;
 				end
 				3: begin
-					TStates <= 3'b100;
+					TStates <= 3'b011;
 					Write <= 1'b1;
 				end
 				4: begin
