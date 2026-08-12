@@ -177,11 +177,23 @@ module video (
 	wire            border_update = (MACHINE == MACHINE_PENT) ?
 	                                (hcounter[0] == 1'b1) :
 	                                (hcounter[3:0] == 4'b0011);
+	// One further pixel of delay before it reaches the screen.
+	//
+	// With the interrupt at its authentic position the picture drawn in
+	// the border still sat one pixel left of where a real Pentagon puts
+	// it. That last pixel belongs to the border path rather than to the
+	// interrupt - it is the same place the real machine's own
+	// adjustment acts - so it is corrected here instead of by moving
+	// the interrupt off the position that is otherwise right.
+	reg     [2:0]   border_out = 3'b000;
 	always @(posedge CLK or negedge nRESET) begin
-		if (nRESET == 1'b0)
+		if (nRESET == 1'b0) begin
 			border_latched <= 3'b000;
-		else if (CLKEN == 1'b1 && border_update == 1'b1)
+			border_out     <= 3'b000;
+		end else if (CLKEN == 1'b1 && border_update == 1'b1) begin
 			border_latched <= BORDER_IN;
+			border_out     <= border_latched;
+		end
 	end
 
 	// Output syncs
@@ -198,15 +210,15 @@ module video (
 	assign dot = pixels[9] ^ (flashcounter[4] & attr[7]); // Combine delayed pixel with FLASH attr and clock state
 	assign red = (picture == 1'b1 && dot == 1'b1) ? attr[1] :
 		(picture == 1'b1 && dot == 1'b0) ? attr[4] :
-		(blanking == 1'b0) ? border_latched[1] :
+		(blanking == 1'b0) ? border_out[1] :
 		1'b0;
 	assign green = (picture == 1'b1 && dot == 1'b1) ? attr[2] :
 		(picture == 1'b1 && dot == 1'b0) ? attr[5] :
-		(blanking == 1'b0) ? border_latched[2] :
+		(blanking == 1'b0) ? border_out[2] :
 		1'b0;
 	assign blue = (picture == 1'b1 && dot == 1'b1) ? attr[0] :
 		(picture == 1'b1 && dot == 1'b0) ? attr[3] :
-		(blanking == 1'b0) ? border_latched[0] :
+		(blanking == 1'b0) ? border_out[0] :
 		1'b0;
 	assign bright = (picture == 1'b1) ? attr[6] : 1'b0;
 
