@@ -1602,14 +1602,22 @@ module spectrum_top (
 	// persistence and reads as 8 - which is what "888" meant, not the
 	// value 0x88. Every reading taken from those digits was therefore
 	// meaningless.
+	// A free-running reference beside the measurement. It must change
+	// on every reading; if it does not, the latch or the display is at
+	// fault rather than the thing being measured. Twice today a reading
+	// was believed that turned out to be the instrument.
+	//
+	// Left pair: reference, always moving.
+	// Right pair: T-states the CPU has taken - frozen means the CPU
+	// really is getting no clock.
+	reg [7:0]  ref_cnt = 8'd0;
 	reg [15:0] diag_lat = 16'd0;
 	reg [23:0] diag_div = 24'd0;
 	always @(posedge clock) begin
 		diag_div <= diag_div + 24'd1;
+		ref_cnt  <= ref_cnt + 8'd1;
 		if (diag_div == 24'd0)
-			diag_lat <= {step_cnt,
-			             contention, vid_contention, cpu_wait_n, cpu_mem_active,
-			             2'b00, cpu_halt_n, cpu_irq_n};
+			diag_lat <= {ref_cnt, step_cnt};
 	end
 
 
