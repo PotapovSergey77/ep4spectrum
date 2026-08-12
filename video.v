@@ -192,9 +192,23 @@ module video (
 	// depends on each design's own counter origin and has never been
 	// checked here. The amount of delay and its shape stay as they are;
 	// only the alignment moves.
+	// Written from the published delay table rather than copied.
+	//
+	// A contended access beginning at T-state offset 0..7 of the window
+	// is delayed 6,5,4,3,2,1,0,0 - so the free pair is at the end of the
+	// eight, and an access is held until the window's sixth T-state.
+	// Holding while the offset is below 6 gives exactly that: an access
+	// at offset k waits 6-k, and offsets 6 and 7 pass straight through.
+	//
+	// zx-sizif-512's `hc[2] || hc[3]` put the free pair at the start
+	// instead, which is the same shape rotated by two T-states. Measured
+	// here before the change, the table came out 0,0,6,5,4,3,2,1.
+	//
+	// A T-state is four hcounter counts and the window is thirty-two, so
+	// hcounter[4:2] is the offset.
 	wire [9:0] hc_cont = hcounter + {5'b00000, CONT_ADJ};
 	assign CONTENTION = vpicture & ~hcounter[9]
-	                    & (hc_cont[3] | hc_cont[4]);
+	                    & (hc_cont[4:2] < 3'd6);
 
 
 	// The border colour is latched rather than taken straight off the
