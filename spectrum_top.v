@@ -1514,17 +1514,54 @@ module spectrum_top (
 		end
 	end
 
+	// MEASUREMENT: the address of the last IO port the CPU touched.
+	//
+	// Test 4.3 stops after "Cmos Clock:" on 48K and at the 0x7FFD port
+	// test on the others, and the keyboard fix did not change that, so
+	// it is not waiting for a keypress. A test that stops while polling
+	// a port leaves that port's address here, which says directly what
+	// it is waiting for - rather than guessing at which of the ports we
+	// do not decode it might be.
+	//
+	// The floating bus was the obvious guess and it is wrong:
+	// zx-sizif-512 gives that only to port 0xFF, so a real machine
+	// answers the clock ports exactly as this one does.
+	reg [15:0] last_io = 16'd0;
+	reg        prev_ioreq_n = 1'b1;
+	always @(posedge clock) begin
+		prev_ioreq_n <= cpu_ioreq_n;
+		if (prev_ioreq_n == 1'b1 && cpu_ioreq_n == 1'b0 && cpu_m1_n == 1'b1)
+			last_io <= cpu_a;
+	end
+
+	wire [3:0] nibble_io =
+	                    (digit_scan == 2'd3) ? last_io[15:12] :
+	                    (digit_scan == 2'd2) ? last_io[11:8]  :
+	                    (digit_scan == 2'd1) ? last_io[7:4]   :
+	                                           last_io[3:0];
+
 	// "3.5" for the CPU clock on the two left digits, the upper RAM page
 	// in decimal on the two right ones - two digits because Pentagon
 	// 1024 pages run to 63, with the tens blanked below ten so a 128K
 	// machine still reads as a single figure.
-	wire [3:0] nibble =
+	wire [3:0] nibble_normal =
 	                    (digit_scan == 2'd3) ? 4'd3 :
 	                    (digit_scan == 2'd2) ? 4'd5 :
 	                    (digit_scan == 2'd1) ? pg_tens :
 	                                           pg_units;
 
-	wire digit_blank = (digit_scan == 2'd1) && (page_ram_sel < 6'd10);
+	// F9 swaps the display between the normal reading and the last IO
+	// port, so the port can be read off at the moment the test stops.
+	// On Pentagon F9 also toggles the 1024K extension, which is harmless
+	// while this measurement is in.
+	reg  show_io = 1'b0;
+	always @(posedge clock) begin
+		if (key_f9_press == 1'b1) show_io <= ~show_io;
+	end
+	wire [3:0] nibble = show_io ? nibble_io : nibble_normal;
+
+	wire digit_blank = show_io ? 1'b0 :
+	                   ((digit_scan == 2'd1) && (page_ram_sel < 6'd10));
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in
 	wire digit_dp    = (digit_scan == 2'd3) ||
