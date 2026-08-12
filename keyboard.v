@@ -56,7 +56,8 @@ module keyboard (
 	F6,
 	F7,
 	F9,
-	F10
+	F10,
+	ROW_ANY
 );
 
 	input           CLK;
@@ -76,6 +77,8 @@ module keyboard (
 	output reg      F7;
 	output reg      F9;
 	output reg      F10;
+	// Per-row 'something is held in this row', for finding a stuck bit
+	output  [7:0]   ROW_ANY;
 
 	// Interface to PS/2 block
 	wire    [7:0]   keyb_data;
@@ -92,6 +95,9 @@ module keyboard (
 	// which several other combo keys also drive for their own fixed
 	// CAPS SHIFT combos (EDIT is on its own dedicated key, see Esc below).
 	reg             pc_shift;
+
+	assign ROW_ANY = {~&keys[7], ~&keys[6], ~&keys[5], ~&keys[4],
+	                  ~&keys[3], ~&keys[2], ~&keys[1], ~&keys[0]};
 
 	ps2_intf ps2 (
 		.CLK(CLK),
@@ -192,6 +198,11 @@ module keyboard (
 							if (pc_shift) begin
 								keys[0][0] <= 1'b1; // cancel the CAPS SHIFT the Shift key asserted
 								keys[7][1] <= release_key; // SYMBOL SHIFT
+							end else if (release_key == 1'b1) begin
+								// Shift may already be up by the time the digit
+								// is released, and then the branch above never
+								// runs - leaving SYMBOL SHIFT held for good.
+								keys[7][1] <= 1'b1;
 							end
 							keys[3][0] <= release_key;
 						end
@@ -199,6 +210,8 @@ module keyboard (
 							if (pc_shift) begin
 								keys[0][0] <= 1'b1;
 								keys[7][1] <= release_key;
+							end else if (release_key == 1'b1) begin
+								keys[7][1] <= 1'b1;
 							end
 							keys[3][1] <= release_key;
 						end
@@ -206,6 +219,8 @@ module keyboard (
 							if (pc_shift) begin
 								keys[0][0] <= 1'b1;
 								keys[7][1] <= release_key;
+							end else if (release_key == 1'b1) begin
+								keys[7][1] <= 1'b1;
 							end
 							keys[3][2] <= release_key;
 						end

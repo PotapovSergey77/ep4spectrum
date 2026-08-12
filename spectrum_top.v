@@ -197,6 +197,8 @@ module spectrum_top (
 	wire            key_f7;
 	wire            key_f9;
 	wire            key_f10;
+	// Per-row 'a key is held here', for spotting a stuck bit
+	wire    [7:0]   kb_row_any;
 
 	// Memory size select: F9 gives 48K, F10 gives 128K. 128K is the
 	// default. This only gates the paging register's effect - the 0x7FFD
@@ -251,6 +253,8 @@ module spectrum_top (
 	wire            clk_ref;
 	wire            vid_mem_sync;
 	wire            vid_contention;
+	wire            vid_port_ff_active;
+	wire    [7:0]   vid_port_ff_data;
 	// The CPU's enable after the ULA has had its say - see the contention
 	// block further down. Declared here because the CPU instance is above
 	// it.
@@ -745,7 +749,8 @@ module spectrum_top (
 		.F6(key_f6),
 		.F7(key_f7),
 		.F9(key_f9),
-		.F10(key_f10)
+		.F10(key_f10),
+		.ROW_ANY(kb_row_any)
 	);
 
 	// ULA port
@@ -791,6 +796,8 @@ module spectrum_top (
 		.VGA(1'b0),
 		.MACHINE(machine),
 		.CONTENTION(vid_contention),
+		.PORT_FF_ACTIVE(vid_port_ff_active),
+		.PORT_FF_DATA(vid_port_ff_data),
 		.VID_A(vid_a),
 		// The registered byte the arbiter hands back, not the raw bus:
 		// video's cycle is no longer at a predictable moment, so there
@@ -1256,6 +1263,12 @@ module spectrum_top (
 		(divmmc_enable == 1'b1) ? divmmc_do :
 		// map kempston joystick port - no joystick hardware on this board, idle
 		(kempston_enable == 1'b1) ? 8'b00000000 :
+		// The floating bus on port 0xFF. A read of an unattached port
+		// picks up whatever the ULA is fetching, which programs use to
+		// find where the raster is. zx-sizif-512 gives this to port
+		// 0xFF alone and not on the +2A/+3, and so does this.
+		((~cpu_ioreq_n) && (cpu_m1_n == 1'b1) && (cpu_a[7:0] == 8'hFF)
+		 && (vid_port_ff_active == 1'b1) && (machine != MACHINE_S3)) ? vid_port_ff_data :
 		// Idle bus
 		8'b11111111;
 
@@ -1534,9 +1547,12 @@ module spectrum_top (
 			last_io <= cpu_a;
 	end
 
+	// Left pair: which keyboard rows have something held - 00 with
+	// nothing touched, and a bit that will not clear is a stuck key.
+	// Right pair: the low byte of the last IO port.
 	wire [3:0] nibble_io =
-	                    (digit_scan == 2'd3) ? last_io[15:12] :
-	                    (digit_scan == 2'd2) ? last_io[11:8]  :
+	                    (digit_scan == 2'd3) ? kb_row_any[7:4] :
+	                    (digit_scan == 2'd2) ? kb_row_any[3:0] :
 	                    (digit_scan == 2'd1) ? last_io[7:4]   :
 	                                           last_io[3:0];
 

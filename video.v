@@ -50,6 +50,8 @@ module video (
 	// Frame timing: which machine to be. See the geometry table below.
 	MACHINE,
 	CONTENTION,
+	PORT_FF_ACTIVE,
+	PORT_FF_DATA,
 
 	// Memory interface
 	VID_A,
@@ -93,6 +95,8 @@ module video (
 	input           VGA;
 	input   [1:0]   MACHINE;
 	output          CONTENTION;
+	output          PORT_FF_ACTIVE;
+	output  [7:0]   PORT_FF_DATA;
 
 	// Machine codes, shared with spectrum_top.v
 	localparam MACHINE_S48  = 2'd0;   // Sinclair 48K
@@ -175,6 +179,7 @@ module video (
 	// hcounter[9] == 0.
 	assign CONTENTION = vpicture & ~hcounter[9]
 	                    & (hcounter[3] | hcounter[4]);
+
 
 	// The border colour is latched rather than taken straight off the
 	// port, following zx-sizif-512's video.sv:
@@ -349,6 +354,30 @@ module video (
 	reg             fetch_gen = 1'b0;
 	reg     [7:0]   pixels_next;
 	reg     [7:0]   attr_next;
+	// The floating bus on port 0xFF, from zx-sizif-512's video.sv:
+	//
+	//   port_ff_attr   = (machine == PENT) || hc[3:1] == 6 || hc[3:1] == 0
+	//   port_ff_bitmap = hc[3] && hc[1]
+	//   port_ff_active = screen_read && (attr || bitmap)
+	//   port_ff_data   = attr ? attr_next : bitmap ? bitmap_next : FF
+	//
+	// Reading an unattached port on a real machine picks up whatever
+	// the ULA is fetching at that moment, and programs use it to find
+	// where the raster is. Pentagon always gives the attribute; the
+	// Sinclairs give the attribute or the bitmap depending on where in
+	// the fetch they are caught, and 0xFF elsewhere.
+	//
+	// Sizif's hc runs at the pixel rate, so its hc[3:1] is hcounter[4:2]
+	// here and hc[3], hc[1] are hcounter[4], hcounter[2].
+	wire port_ff_attr   = (MACHINE == MACHINE_PENT)
+	                      | (hcounter[4:2] == 3'd6)
+	                      | (hcounter[4:2] == 3'd0);
+	wire port_ff_bitmap = hcounter[4] & hcounter[2];
+	assign PORT_FF_ACTIVE = vpicture & ~hcounter[9]
+	                        & (port_ff_attr | port_ff_bitmap);
+	assign PORT_FF_DATA = port_ff_attr   ? attr_next   :
+	                      port_ff_bitmap ? pixels_next :
+	                                       8'hFF;
 
 	assign VID_REQ_STEP = read_step[0];
 	// Flips once per group. A fetch that is held up long enough to
