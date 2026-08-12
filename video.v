@@ -135,6 +135,9 @@ module video (
 	output          SCANLINE;
 
 	output reg      nIRQ;
+	// Interrupt pulse, counted out from its start position
+	reg     [9:0]   int_cnt = 10'd0;
+	reg             int_armed = 1'b1;
 
 	reg     [9:0]   pixels;
 	reg     [7:0]   attr;
@@ -581,6 +584,8 @@ module video (
 			hsync <= 1'b0;
 			vsync <= 1'b0;
 			nIRQ <= 1'b1;
+			int_cnt <= 10'd0;
+			int_armed <= 1'b1;
 
 			pixels <= 10'b0;
 			attr <= 8'b0;
@@ -700,11 +705,37 @@ module video (
 			// This replaces a cruder pair of rules that asserted for
 			// four whole lines and cleared on hcounter[7], which held
 			// the interrupt for the wrong length on every machine.
-			if (vcounter[9:1] == int_line &&
-			    hcounter >= int_hpos && hcounter < (int_hpos + int_len))
+			// Started at the position and then counted out, rather than
+			// matched as a window inside the line.
+			//
+			// As a window it could not outlive the line it began on. The
+			// 48K position is 824 counts and a line is 896, so trimming
+			// the position right clipped the interrupt against the end
+			// of the line: at 824+58 what was meant to be 128 counts -
+			// the 32 T-states a real machine holds - came out as 14, and
+			// two counts further as 12. The CPU then caught it or missed
+			// it by luck, which showed on the board as one press of the
+			// trim leaving an artefact and the next hanging the demo.
+			// Counting it out lets it run past the end of the line, and
+			// past the end of the frame, which is what it must do.
+			if (hcounter == 10'd0)
+				int_armed <= 1'b1;
+
+			if (int_cnt != 10'd0) begin
+				int_cnt <= int_cnt - 10'd1;
 				nIRQ <= 1'b0;
-			else
+			end else
 				nIRQ <= 1'b1;
+
+			// Fires on the first count at or past the position, so it
+			// does not depend on hitting it exactly - the counter steps
+			// by two in VGA mode.
+			if (int_armed == 1'b1 && vcounter[9:1] == int_line &&
+			    hcounter >= int_hpos) begin
+				int_armed <= 1'b0;
+				int_cnt   <= int_len - 10'd1;
+				nIRQ      <= 1'b0;
+			end
 
 			//----------------
 			// VERTICAL
