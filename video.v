@@ -186,15 +186,17 @@ module video (
 	// hcounter runs at twice the pixel rate here, so Sizif's hc[2] and
 	// hc[3] are hcounter[3] and hcounter[4], and hc < 256 is
 	// hcounter[9] == 0.
-	// CONT_ADJ shifts the eight-T-state pattern within the display
-	// area, two counts - one pixel - a step, wrapping every 32.
+	// CONT_ADJ shifts the whole window - both its edges and the pattern
+	// inside it - one CPU T-state a step, signed.
 	//
-	// The area and the pattern are Sizif's exactly, and Sizif runs the
-	// same demo better than this does, so what differs is most likely
-	// where the pattern sits relative to the start of a line - which
-	// depends on each design's own counter origin and has never been
-	// checked here. The amount of delay and its shape stay as they are;
-	// only the alignment moves.
+	// It used to move only the pattern, leaving the edges pinned to
+	// hcounter: the window ran counts 0..511 while the picture runs
+	// 7..518, an offset of seven counts that nothing had ever checked.
+	// On the board a demo's border stripes break at the same place on
+	// every line, at the right-hand edge of the picture, which is where
+	// this window ends - and with only the pattern movable there was no
+	// way to test that. The amount of delay and its shape do not change;
+	// only where the window sits in the line.
 	// Written from the published delay table rather than copied.
 	//
 	// A contended access beginning at T-state offset 0..7 of the window
@@ -209,8 +211,16 @@ module video (
 	//
 	// A T-state is four hcounter counts and the window is thirty-two, so
 	// hcounter[4:2] is the offset.
-	wire [9:0] hc_cont = hcounter + {5'b00000, CONT_ADJ};
-	assign CONTENTION = vpicture & ~hcounter[9]
+	// Wrapped into the line, so a negative trim near the start of a line
+	// lands at its end rather than turning into a huge unsigned count -
+	// the same trap the interrupt position fell into.
+	wire signed [12:0] hc_sum =
+		{3'b000, hcounter} + {{6{CONT_ADJ[4]}}, CONT_ADJ, 2'b00};
+	wire signed [12:0] hc_wrap =
+		(hc_sum < 0)      ? (hc_sum + hline) :
+		(hc_sum >= hline) ? (hc_sum - hline) : hc_sum;
+	wire [9:0] hc_cont = hc_wrap[9:0];
+	assign CONTENTION = vpicture & ~hc_cont[9]
 	                    & (hc_cont[4:2] < 3'd6);
 
 

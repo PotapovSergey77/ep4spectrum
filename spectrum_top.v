@@ -212,9 +212,11 @@ module spectrum_top (
 	// The lamps read the mode inverted, so mode 2 is the state with all
 	// of them dark.
 	reg     [1:0]   cont_mode = 2'd2;
-	// Phase of the contention pattern, two counts - one pixel - a step,
-	// wrapping every 32. Stepped by the board's spare buttons KEY3 and
-	// KEY4, sampled slowly so contact bounce does not run it on.
+	// Position of the whole contention window in the line, edges and
+	// pattern together, one CPU T-state a step and signed - so 1F is one
+	// T-state early, not thirty-one late. Stepped by the board's spare
+	// buttons KEY3 and KEY4, sampled slowly so contact bounce does not
+	// run it on.
 	reg     [4:0]   cont_adj = 5'd0;
 	reg     [16:0]  btn_div = 17'd0;
 	reg     [1:0]   btn_prev = 2'b11;
@@ -652,9 +654,9 @@ module spectrum_top (
 		if (btn_div == 17'd0) begin
 			btn_prev <= KEY[3:2];
 			if (btn_prev[0] == 1'b1 && KEY[2] == 1'b0)
-				cont_adj <= cont_adj - 5'd2;
+				cont_adj <= cont_adj - 5'd1;
 			else if (btn_prev[1] == 1'b1 && KEY[3] == 1'b0)
-				cont_adj <= cont_adj + 5'd2;
+				cont_adj <= cont_adj + 5'd1;
 		end
 		key_f10_d <= key_f10;
 		if (key_f10 == 1'b1 && key_f10_d == 1'b0)
