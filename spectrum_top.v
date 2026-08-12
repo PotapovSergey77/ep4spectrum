@@ -1265,7 +1265,25 @@ module spectrum_top (
 
 	// The CPU runs at a steady 3.5MHz and is held only while its own
 	// data is genuinely outstanding.
-	assign cpu_wait_n = ~(cpu_mem_active & ~cpu_served);
+	// The CPU is never held for memory, as in
+	// sorgelig/ZX_Spectrum-128K_MIST - the core that runs this
+	// diagnostic - where the Z80's WAIT_n is simply tied high and the
+	// memory is required to keep up instead.
+	//
+	// It keeps up here too, with room to spare. The CPU has absolute
+	// priority, so a request is granted at the next cycle boundary at
+	// worst four clocks away, the cycle itself takes four, and the byte
+	// lands two later: about ten clocks of the twenty-four a memory
+	// cycle gets. Simulation has always agreed - not one clock enable
+	// was ever lost to WAIT in any measured run.
+	//
+	// So WAIT was doing no work, and it was the only way this design
+	// could stop dead: if serving was never credited the CPU waited for
+	// ever. The board showed exactly that - a CPU executing nothing,
+	// the frame interrupt arriving at its own pin, and no way to take
+	// it. Nothing is gained by keeping a mechanism whose only observed
+	// effect is a deadlock.
+	assign cpu_wait_n = 1'b1;
 
 	// CPU data bus mux
 	assign cpu_di =
