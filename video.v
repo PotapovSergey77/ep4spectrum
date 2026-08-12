@@ -333,8 +333,12 @@ module video (
 	// interrupt falls on sets where in the frame everything a program
 	// draws from it lands, so an entry that is out shows as border
 	// effects sitting above or below where they belong.
+	// 245 rather than Sizif's 248 on the Sinclair machines: on the board
+	// the border effects sat three lines low, and three presses of the
+	// vertical trim brought them into place. Checked on 48K; 128K and
+	// +2A/+3 share the entry and have not been looked at.
 	wire [8:0] int_line_base =
-		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd248;
+		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd245;
 	wire [8:0] int_line = int_line_base + {{4{INT_VADJ[4]}}, INT_VADJ};
 	// Interrupt position. The table entry is zx-sizif-512's converted;
 	// Pentagon's was then set on the board, where the picture drawn in

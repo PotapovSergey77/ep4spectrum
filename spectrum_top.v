@@ -1587,156 +1587,25 @@ module spectrum_top (
 		end
 	end
 
-	// MEASUREMENT: the address of the last IO port the CPU touched.
-	//
-	// Test 4.3 stops after "Cmos Clock:" on 48K and at the 0x7FFD port
-	// test on the others, and the keyboard fix did not change that, so
-	// it is not waiting for a keypress. A test that stops while polling
-	// a port leaves that port's address here, which says directly what
-	// it is waiting for - rather than guessing at which of the ports we
-	// do not decode it might be.
-	//
-	// The floating bus was the obvious guess and it is wrong:
-	// zx-sizif-512 gives that only to port 0xFF, so a real machine
-	// answers the clock ports exactly as this one does.
-	reg [15:0] last_io = 16'd0;
-	reg        prev_ioreq_n = 1'b1;
-	always @(posedge clock) begin
-		prev_ioreq_n <= cpu_ioreq_n;
-		if (prev_ioreq_n == 1'b1 && cpu_ioreq_n == 1'b0 && cpu_m1_n == 1'b1)
-			last_io <= cpu_a;
-	end
-
-	// Left pair: which keyboard rows have something held - 00 with
-	// nothing touched, and a bit that will not clear is a stuck key.
-	// Right pair: the low byte of the last IO port.
-	reg [7:0] last_ula_do = 8'd0;
-	always @(posedge clock) begin
-		if (prev_ioreq_n == 1'b1 && cpu_ioreq_n == 1'b0 && cpu_m1_n == 1'b1
-		    && cpu_rd_n == 1'b0 && ula_enable == 1'b1)
-			last_ula_do <= ula_do;
-	end
-
-	// The CPU sits in HALT at the stop, so the question is whether
-	// interrupts are still reaching it. Left pair: interrupts asserted.
-	// Right pair: interrupts the CPU acknowledged. Both should climb
-	// together, fifty times a second.
-	//
-	//   both climbing   - the CPU is being interrupted and going back
-	//                     to HALT, so the fault is in what the handler
-	//                     does, not in the interrupt
-	//   left only       - the line is asserted but not taken
-	//   neither         - no interrupt is being generated at all
-	reg [7:0] int_cnt_a = 8'd0;
-	reg [7:0] int_cnt_b = 8'd0;
-	reg       pirq2_n = 1'b1;
-	reg       pack2 = 1'b0;
-	wire      iack2 = (cpu_m1_n == 1'b0) && (cpu_ioreq_n == 1'b0);
-	always @(posedge clock) begin
-		pirq2_n <= vid_irq_n;
-		pack2   <= iack2;
-		if (pirq2_n == 1'b1 && vid_irq_n == 1'b0) int_cnt_a <= int_cnt_a + 8'd1;
-		if (pack2 == 1'b0 && iack2 == 1'b1)       int_cnt_b <= int_cnt_b + 8'd1;
-	end
-
-	// Interrupts are asserted but never taken, and a Z80 in HALT must
-	// take one - so either they are disabled in the CPU, or the CPU is
-	// not running at all. WAIT_n from the arbiter can freeze it: if a
-	// request is never served, the CPU sits mid-cycle for good.
-	//
-	// Left pair: T-states the CPU has actually taken, climbing while it
-	// is alive and stopping dead if it is frozen.
-	// Digit 1: contention, vid_contention, WAIT_n, mem_active. The
-	// arbiter is not holding the CPU - WAIT_n reads high - so if the
-	// step counter is frozen the only thing left that can withhold its
-	// clock is the ULA contention added today.
-	// Digit 0: 0, 0, HALT_n, INT_n.
-	reg [7:0] step_cnt = 8'd0;
-	always @(posedge clock) begin
-		if (cpu_clken_gated == 1'b1 && cpu_wait_n == 1'b1)
-			step_cnt <= step_cnt + 8'd1;
-	end
-
-	// Latched a few times a second. Read live, a value that changes
-	// millions of times a second lights every segment over the display's
-	// persistence and reads as 8 - which is what "888" meant, not the
-	// value 0x88. Every reading taken from those digits was therefore
-	// meaningless.
-	// A free-running reference beside the measurement. It must change
-	// on every reading; if it does not, the latch or the display is at
-	// fault rather than the thing being measured. Twice today a reading
-	// was believed that turned out to be the instrument.
-	//
-	// Left pair: reference, always moving.
-	// Right pair: T-states the CPU has taken - frozen means the CPU
-	// really is getting no clock.
-	// Counts assertions of the interrupt as the CPU sees it, after the
-	// synchroniser, rather than as video produces it. Video's assertions
-	// climb and the CPU's acknowledgements do not, and the CPU sits in a
-	// ROM PAUSE waiting for a frame - so the question is whether the
-	// line is reaching it at all. Synchronising it to the CPU clock was
-	// my change; this says whether that change eats it.
-	reg [7:0]  irq_cpu_cnt = 8'd0;
-	reg        pirq3_n = 1'b1;
-	reg [7:0]  ref_cnt = 8'd0;
-	reg [15:0] diag_lat = 16'd0;
-	reg [23:0] diag_div = 24'd0;
-	always @(posedge clock) begin
-		diag_div <= diag_div + 24'd1;
-		pirq3_n <= cpu_irq_n;
-		if (pirq3_n == 1'b1 && cpu_irq_n == 1'b0)
-			irq_cpu_cnt <= irq_cpu_cnt + 8'd1;
-		if (diag_div == 24'd0) begin
-			diag_lat <= {irq_cpu_cnt, step_cnt};
-			// Counts the latches themselves. Counting clocks instead
-			// was useless: the latch period is a multiple of 256, so
-			// an 8-bit clock counter reads zero at every latch by
-			// construction - it was not frozen, it could not have
-			// shown anything else.
-			ref_cnt  <= ref_cnt + 8'd1;
-		end
-	end
-
-
-	wire [3:0] nibble_io =
-	                    (digit_scan == 2'd3) ? diag_lat[15:12] :
-	                    (digit_scan == 2'd2) ? diag_lat[11:8]  :
-	                    (digit_scan == 2'd1) ? diag_lat[7:4]   :
-	                                           diag_lat[3:0];
-
-	// "3.5" for the CPU clock on the two left digits, the upper RAM page
-	// in decimal on the two right ones - two digits because Pentagon
-	// 1024 pages run to 63, with the tens blanked below ten so a 128K
-	// machine still reads as a single figure.
-	wire [3:0] nibble_normal =
+	// While either trim is non-zero the display carries them: the left
+	// pair is the horizontal trim in pixels, signed, and the right pair
+	// the vertical trim in lines. Otherwise "3.5" and the page.
+	wire [3:0] nibble = ((int_adj != 8'd0) || (int_vadj != 5'd0)) ?
+	                    ((digit_scan == 2'd3) ? int_adj[7:4] :
+	                     (digit_scan == 2'd2) ? int_adj[3:0] :
+	                     (digit_scan == 2'd1) ? {3'b000, int_vadj[4]} :
+	                                            int_vadj[3:0]) :
 	                    (digit_scan == 2'd3) ? 4'd3 :
 	                    (digit_scan == 2'd2) ? 4'd5 :
 	                    (digit_scan == 2'd1) ? pg_tens :
 	                                           pg_units;
 
-	// F9 swaps the display between the normal reading and the last IO
-	// port, so the port can be read off at the moment the test stops.
-	// On Pentagon F9 also toggles the 1024K extension, which is harmless
-	// while this measurement is in.
-	reg  show_io = 1'b0;
-	always @(posedge clock) begin
-		if (key_f9_press == 1'b1) show_io <= ~show_io;
-	end
-	wire [3:0] nibble = show_io ? nibble_io :
-	                    ((int_adj != 8'd0) || (int_vadj != 5'd0)) ?
-	                    ((digit_scan == 2'd3) ? int_adj[7:4] :
-	                     (digit_scan == 2'd2) ? int_adj[3:0] :
-	                     (digit_scan == 2'd1) ? {3'b000, int_vadj[4]} :
-	                                            int_vadj[3:0]) :
-	                    nibble_normal;
-
-	wire digit_blank = show_io ? 1'b0 :
+	wire digit_blank = ((int_adj != 8'd0) || (int_vadj != 5'd0)) ? 1'b0 :
 	                   ((digit_scan == 2'd1) && (page_ram_sel < 6'd10));
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in
-	wire digit_dp    = show_io ? ((digit_scan == 2'd0) && (cpu_halt_n == 1'b0)) :
-	                   ((digit_scan == 2'd3) ||
-	                    (divmmc_paged_in && (digit_scan == 2'd0)));
+	wire digit_dp    = (digit_scan == 2'd3) ||
+	                   (divmmc_paged_in && (digit_scan == 2'd0));
 
 	reg [6:0] seg_gfedcba;
 	always @* begin
