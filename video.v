@@ -351,7 +351,21 @@ module video (
 		(MACHINE == MACHINE_PENT) ? 10'd622 :
 		lines228                  ? 10'd8   :
 		                            10'd0;
-	wire [9:0] int_hpos = int_hpos_base + {{2{INT_ADJ[7]}}, INT_ADJ};
+	// Wrapped into the line rather than added raw.
+	//
+	// The 48K entry is 0, so any negative trim took the position below
+	// zero, where a ten-bit counter turns it into a huge number: the
+	// window then matched nothing, no interrupt was generated at all
+	// and the machine stopped dead. That is what trimming left did on
+	// the board - and left is exactly where the right position appears
+	// to be, so it could not be reached.
+	wire signed [11:0] int_hpos_raw =
+		{2'b00, int_hpos_base} + {{4{INT_ADJ[7]}}, INT_ADJ};
+	wire signed [11:0] hline = {2'b00, hcount_last} + 12'sd1;
+	wire [9:0] int_hpos =
+		(int_hpos_raw < 0)      ? (int_hpos_raw + hline) :
+		(int_hpos_raw >= hline) ? (int_hpos_raw - hline) :
+		                           int_hpos_raw;
 	wire [9:0] int_len =
 		lines228 ? 10'd144 : 10'd128;
 

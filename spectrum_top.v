@@ -201,6 +201,9 @@ module spectrum_top (
 	reg     [7:0]   int_adj = 8'd0;
 	// Vertical trim, one line a press on F3/F4
 	reg     [4:0]   int_vadj = 5'd0;
+	// F10 toggles the ULA contention model
+	reg             cont_enable = 1'b1;
+	reg             key_f10_d = 1'b0;
 	wire            key_f3;
 	wire            key_f4;
 	reg             key_f3_d = 1'b0;
@@ -595,7 +598,7 @@ module spectrum_top (
 	//   LED4, rightmost - Pentagon 1024K extension on
 	//   LED2, LED3      - unused
 	assign LED[3] = divmmc_cs;
-	assign LED[2] = 1'b1;
+	assign LED[2] = cont_enable;   // lit while contention is off
 	assign LED[1] = 1'b1;
 	assign LED[0] = ~ext1024;
 
@@ -628,6 +631,9 @@ module spectrum_top (
 			int_adj <= int_adj - 8'd2;
 		else if (key_f2 == 1'b1 && key_f2_d == 1'b0)
 			int_adj <= int_adj + 8'd2;
+		key_f10_d <= key_f10;
+		if (key_f10 == 1'b1 && key_f10_d == 1'b0)
+			cont_enable <= ~cont_enable;
 		key_f3_d <= key_f3;
 		key_f4_d <= key_f4;
 		if (key_f3 == 1'b1 && key_f3_d == 1'b0)
@@ -740,9 +746,16 @@ module spectrum_top (
 	end
 
 	wire cont_mem = ~iorq_cont & ~mreq_cont_d & cont_addr;
+	// F10 turns contention off, to tell whether the model is what makes
+	// border stripes spread out from the middle of the screen: a demo's
+	// loop taking longer than it should stretches everything it draws.
+	// IO contention is the likeliest culprit - a stripe loop is nothing
+	// but OUTs to 0xFE, and each one is held here for the whole window
+	// where a real ULA delays it more finely.
 	wire contention = vid_contention & ~iorq_cont_d
 	                  & (cont_mem | iorq_cont)
-	                  & (machine != MACHINE_PENT);
+	                  & (machine != MACHINE_PENT)
+	                  & cont_enable;
 
 	// Holding the CPU means withholding its clock enable here, which is
 	// what Sizif does by holding clkcpu.
