@@ -52,6 +52,7 @@ module video (
 	CONTENTION,
 	INT_ADJ,
 	INT_VADJ,
+	CONT_ADJ,
 	PORT_FF_ACTIVE,
 	PORT_FF_DATA,
 
@@ -99,6 +100,7 @@ module video (
 	output          CONTENTION;
 	input   [7:0]   INT_ADJ;
 	input   [4:0]   INT_VADJ;
+	input   [4:0]   CONT_ADJ;
 	output          PORT_FF_ACTIVE;
 	output  [7:0]   PORT_FF_DATA;
 
@@ -181,8 +183,18 @@ module video (
 	// hcounter runs at twice the pixel rate here, so Sizif's hc[2] and
 	// hc[3] are hcounter[3] and hcounter[4], and hc < 256 is
 	// hcounter[9] == 0.
+	// CONT_ADJ shifts the eight-T-state pattern within the display
+	// area, two counts - one pixel - a step, wrapping every 32.
+	//
+	// The area and the pattern are Sizif's exactly, and Sizif runs the
+	// same demo better than this does, so what differs is most likely
+	// where the pattern sits relative to the start of a line - which
+	// depends on each design's own counter origin and has never been
+	// checked here. The amount of delay and its shape stay as they are;
+	// only the alignment moves.
+	wire [9:0] hc_cont = hcounter + {5'b00000, CONT_ADJ};
 	assign CONTENTION = vpicture & ~hcounter[9]
-	                    & (hcounter[3] | hcounter[4]);
+	                    & (hc_cont[3] | hc_cont[4]);
 
 
 	// The border colour is latched rather than taken straight off the

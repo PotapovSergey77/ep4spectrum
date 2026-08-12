@@ -207,6 +207,12 @@ module spectrum_top (
 	// spread upward - so the amount is wrong rather than its presence,
 	// and IO is where a stripe loop spends its time.
 	reg     [1:0]   cont_mode = 2'd2;
+	// Phase of the contention pattern, two counts - one pixel - a step,
+	// wrapping every 32. Stepped by the board's spare buttons KEY3 and
+	// KEY4, sampled slowly so contact bounce does not run it on.
+	reg     [4:0]   cont_adj = 5'd0;
+	reg     [16:0]  btn_div = 17'd0;
+	reg     [1:0]   btn_prev = 2'b11;
 	reg             key_f10_d = 1'b0;
 	wire            key_f3;
 	wire            key_f4;
@@ -637,6 +643,14 @@ module spectrum_top (
 			int_adj <= int_adj - 8'd2;
 		else if (key_f2 == 1'b1 && key_f2_d == 1'b0)
 			int_adj <= int_adj + 8'd2;
+		btn_div <= btn_div + 17'd1;
+		if (btn_div == 17'd0) begin
+			btn_prev <= KEY[3:2];
+			if (btn_prev[0] == 1'b1 && KEY[2] == 1'b0)
+				cont_adj <= cont_adj - 5'd2;
+			else if (btn_prev[1] == 1'b1 && KEY[3] == 1'b0)
+				cont_adj <= cont_adj + 5'd2;
+		end
 		key_f10_d <= key_f10;
 		if (key_f10 == 1'b1 && key_f10_d == 1'b0)
 			cont_mode <= (cont_mode == 2'd2) ? 2'd0 : (cont_mode + 2'd1);
@@ -851,6 +865,7 @@ module spectrum_top (
 		.CONTENTION(vid_contention),
 		.INT_ADJ(int_adj),
 		.INT_VADJ(int_vadj),
+		.CONT_ADJ(cont_adj),
 		.PORT_FF_ACTIVE(vid_port_ff_active),
 		.PORT_FF_DATA(vid_port_ff_data),
 		.VID_A(vid_a),
@@ -1610,7 +1625,12 @@ module spectrum_top (
 	// While either trim is non-zero the display carries them: the left
 	// pair is the horizontal trim in pixels, signed, and the right pair
 	// the vertical trim in lines. Otherwise "3.5" and the page.
-	wire [3:0] nibble = ((int_adj != 8'd0) || (int_vadj != 5'd0)) ?
+	wire [3:0] nibble = (cont_adj != 5'd0) ?
+	                    ((digit_scan == 2'd3) ? 4'd12 :
+	                     (digit_scan == 2'd2) ? 4'd0  :
+	                     (digit_scan == 2'd1) ? {3'b000, cont_adj[4]} :
+	                                            cont_adj[3:0]) :
+	                    ((int_adj != 8'd0) || (int_vadj != 5'd0)) ?
 	                    ((digit_scan == 2'd3) ? int_adj[7:4] :
 	                     (digit_scan == 2'd2) ? int_adj[3:0] :
 	                     (digit_scan == 2'd1) ? {3'b000, int_vadj[4]} :
@@ -1620,7 +1640,7 @@ module spectrum_top (
 	                    (digit_scan == 2'd1) ? pg_tens :
 	                                           pg_units;
 
-	wire digit_blank = ((int_adj != 8'd0) || (int_vadj != 5'd0)) ? 1'b0 :
+	wire digit_blank = ((int_adj != 8'd0) || (int_vadj != 5'd0) || (cont_adj != 5'd0)) ? 1'b0 :
 	                   ((digit_scan == 2'd1) && (page_ram_sel < 6'd10));
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in
