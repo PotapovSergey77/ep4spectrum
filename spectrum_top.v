@@ -1628,13 +1628,24 @@ module spectrum_top (
 	// Left pair: reference, always moving.
 	// Right pair: T-states the CPU has taken - frozen means the CPU
 	// really is getting no clock.
+	// Counts assertions of the interrupt as the CPU sees it, after the
+	// synchroniser, rather than as video produces it. Video's assertions
+	// climb and the CPU's acknowledgements do not, and the CPU sits in a
+	// ROM PAUSE waiting for a frame - so the question is whether the
+	// line is reaching it at all. Synchronising it to the CPU clock was
+	// my change; this says whether that change eats it.
+	reg [7:0]  irq_cpu_cnt = 8'd0;
+	reg        pirq3_n = 1'b1;
 	reg [7:0]  ref_cnt = 8'd0;
 	reg [15:0] diag_lat = 16'd0;
 	reg [23:0] diag_div = 24'd0;
 	always @(posedge clock) begin
 		diag_div <= diag_div + 24'd1;
+		pirq3_n <= cpu_irq_n;
+		if (pirq3_n == 1'b1 && cpu_irq_n == 1'b0)
+			irq_cpu_cnt <= irq_cpu_cnt + 8'd1;
 		if (diag_div == 24'd0) begin
-			diag_lat <= {ref_cnt, step_cnt};
+			diag_lat <= {irq_cpu_cnt, step_cnt};
 			// Counts the latches themselves. Counting clocks instead
 			// was useless: the latch period is a multiple of 256, so
 			// an 8-bit clock counter reads zero at every latch by
