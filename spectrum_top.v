@@ -1597,12 +1597,27 @@ module spectrum_top (
 			step_cnt <= step_cnt + 8'd1;
 	end
 
+	// Latched a few times a second. Read live, a value that changes
+	// millions of times a second lights every segment over the display's
+	// persistence and reads as 8 - which is what "888" meant, not the
+	// value 0x88. Every reading taken from those digits was therefore
+	// meaningless.
+	reg [15:0] diag_lat = 16'd0;
+	reg [23:0] diag_div = 24'd0;
+	always @(posedge clock) begin
+		diag_div <= diag_div + 24'd1;
+		if (diag_div == 24'd0)
+			diag_lat <= {step_cnt,
+			             contention, vid_contention, cpu_wait_n, cpu_mem_active,
+			             2'b00, cpu_halt_n, cpu_irq_n};
+	end
+
+
 	wire [3:0] nibble_io =
-	                    (digit_scan == 2'd3) ? step_cnt[7:4] :
-	                    (digit_scan == 2'd2) ? step_cnt[3:0] :
-	                    (digit_scan == 2'd1) ? {contention, vid_contention,
-	                                            cpu_wait_n, cpu_mem_active} :
-	                                           {2'b00, cpu_halt_n, cpu_irq_n};
+	                    (digit_scan == 2'd3) ? diag_lat[15:12] :
+	                    (digit_scan == 2'd2) ? diag_lat[11:8]  :
+	                    (digit_scan == 2'd1) ? diag_lat[7:4]   :
+	                                           diag_lat[3:0];
 
 	// "3.5" for the CPU clock on the two left digits, the upper RAM page
 	// in decimal on the two right ones - two digits because Pentagon
