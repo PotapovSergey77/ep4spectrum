@@ -589,11 +589,32 @@ module spectrum_top (
 
 	// KEY[0] = board button S1 -> computer reset (also see reset_cond)
 	// KEY[1] = board button S2 -> NMI (also see nmi_trigger)
-	// F1 and F2 trim the interrupt position by two pixels a press.
+	// Keys that step or toggle something have to act on the press, not
+	// on the level.
+	//
+	// The key signals stay high for as long as the key is held, and
+	// these blocks run at 28MHz, so a level test fires millions of times
+	// per press: the trim jumped to a value set by how long the key was
+	// held, and the 1024K toggle below settled wherever it happened to
+	// stop. Every position picked with the trim before this was
+	// measured with an instrument that did not work.
+	reg key_f1_d = 1'b0;
+	reg key_f2_d = 1'b0;
+	reg key_f9_d = 1'b0;
+	wire key_f1_press = key_f1 & ~key_f1_d;
+	wire key_f2_press = key_f2 & ~key_f2_d;
+	wire key_f9_press = key_f9 & ~key_f9_d;
 	always @(posedge clock) begin
-		if (key_f1 == 1'b1)
+		key_f1_d <= key_f1;
+		key_f2_d <= key_f2;
+		key_f9_d <= key_f9;
+	end
+
+	// F1 and F2 trim the interrupt position by one pixel a press.
+	always @(posedge clock) begin
+		if (key_f1_press == 1'b1)
 			int_adj <= int_adj - 8'd2;
-		else if (key_f2 == 1'b1)
+		else if (key_f2_press == 1'b1)
 			int_adj <= int_adj + 8'd2;
 	end
 
@@ -623,7 +644,7 @@ module spectrum_top (
 		mem128_d <= mem128;
 		if (machine != MACHINE_PENT)
 			ext1024 <= 1'b0;
-		else if (key_f9 == 1'b1)
+		else if (key_f9_press == 1'b1)
 			ext1024 <= ~ext1024;
 	end
 	wire mem128_changed = (mem128 != mem128_d);
