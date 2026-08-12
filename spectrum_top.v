@@ -206,7 +206,7 @@ module spectrum_top (
 	// With it full on the stripes spread downward, with it off they
 	// spread upward - so the amount is wrong rather than its presence,
 	// and IO is where a stripe loop spends its time.
-	reg     [1:0]   cont_mode = 2'd2;
+	reg     [1:0]   cont_mode = 2'd0;
 	// Phase of the contention pattern, two counts - one pixel - a step,
 	// wrapping every 32. Stepped by the board's spare buttons KEY3 and
 	// KEY4, sampled slowly so contact bounce does not run it on.
