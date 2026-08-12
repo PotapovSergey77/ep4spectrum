@@ -753,11 +753,23 @@ module spectrum_top (
 	// odd banks on a 128K, banks 4..7 on a +2A/+3.
 	wire cont_page = (machine == MACHINE_S3) ? page_ram_sel[2] : page_ram_sel[0];
 	wire cont_addr = cpu_a[14] & (~cpu_a[15] | cont_page);
-	// The +2A/+3 does not contend IO at all; the others contend every
-	// even port, and the two floating-bus ports besides.
-	wire iorq_cont = (~cpu_ioreq_n)
-	                 & (~cpu_a[0] | (cpu_a == 16'hBF3B) | (cpu_a == 16'hFF3B))
-	                 & (machine != MACHINE_S3);
+	// The +2A/+3 does not contend IO at all. On the others an IO cycle
+	// is charged from the published four-case table, which keys on the
+	// port's high byte and on A0:
+	//
+	//   high byte 0x40..0x7F, A0=0 : C:1, C:3       - two delays
+	//   high byte 0x40..0x7F, A0=1 : C:1 four times - four delays
+	//   any other high byte,  A0=0 : N:1, C:3       - one delay
+	//   any other high byte,  A0=1 : N:4            - none
+	//
+	// What stood here charged one delay for every even port and nothing
+	// for odd ones, which is right for 0xFE - other high byte, A0 zero,
+	// one delay - and wrong everywhere else. 0x7FFD is the case it got
+	// most wrong: high byte 0x7F is contended and A0 is one, so it is
+	// due four delays and was given none, and a 128K demo writes it
+	// every frame.
+	wire io_cyc     = (~cpu_ioreq_n) & cpu_m1_n & (machine != MACHINE_S3);
+	wire io_hi_cont = (cpu_a[15:14] == 2'b01);
 
 	// A machine cycle is charged the delay once, at its start, and then
 	// runs to its end untouched. These flags remember that this cycle
@@ -776,21 +788,64 @@ module spectrum_top (
 	// Nothing updates while the CPU is held, since these are clocked by
 	// the gated enable, so a hold stays a hold until the window frees.
 	reg mreq_paid = 1'b0;
-	reg iorq_paid = 1'b0;
 	always @(posedge clock) begin
 		if (cpu_clken_gated == 1'b1) begin
 			if (cpu_mreq_n == 1'b1)  mreq_paid <= 1'b0;
 			else                     mreq_paid <= 1'b1;
-			if (cpu_ioreq_n == 1'b1) iorq_paid <= 1'b0;
-			else                     iorq_paid <= 1'b1;
 		end
 	end
+
+	// An IO cycle walks its delays one T-state at a time rather than
+	// taking one hold like a memory access, because the table gives it
+	// as many as four of them and they are separate: each waits for the
+	// window afresh, so two delays cost more than one twice as long.
+	//
+	// The walk starts where IORQ is first seen, which is a T-state after
+	// the machine cycle really begins - nothing marks that boundary on
+	// the bus. The delays therefore sit one T-state later than the table
+	// puts them, but there are exactly as many, which is what decides
+	// what an OUT costs.
+	//
+	// The port is latched at the start: A0 and the high byte have to
+	// keep their values through a walk that outlives IORQ itself in the
+	// four-delay case.
+	reg [2:0] io_seq  = 3'd0;       // 0 = idle, else the delay's index
+	reg       io_done = 1'b0;       // this cycle's walk is finished
+	reg       io_a0   = 1'b0;
+	reg       io_hic  = 1'b0;
+	wire      io_start = io_cyc & ~io_done & (io_seq == 3'd0);
+
+	always @(posedge clock) begin
+		if (cpu_clken_gated == 1'b1) begin
+			if (io_start == 1'b1) begin
+				io_seq <= 3'd1;
+				io_a0  <= cpu_a[0];
+				io_hic <= io_hi_cont;
+			end else if (io_seq == 3'd3) begin
+				io_seq  <= 3'd0;
+				io_done <= 1'b1;
+			end else if (io_seq != 3'd0)
+				io_seq <= io_seq + 3'd1;
+
+			if (io_cyc == 1'b0)
+				io_done <= 1'b0;
+		end
+	end
+
+	wire [2:0] io_idx = io_start ? 3'd0 : io_seq;
+	wire       io_ha0 = io_start ? cpu_a[0]   : io_a0;
+	wire       io_hh  = io_start ? io_hi_cont : io_hic;
+	// Delay count by case: one when A0 is zero, plus one more when the
+	// high byte is contended, plus two more when both hold.
+	wire       io_point = (io_idx == 3'd0) ? (io_hh | ~io_ha0) :
+	                      (io_idx == 3'd1) ? io_hh :
+	                                         (io_hh & io_ha0);
 
 	// The MREQ term is not optional either. Without it the address bus
 	// alone asks for contention, and a Z80 leaves the last address on
 	// the bus through the internal T-states that follow an access.
-	wire cont_mem = ~iorq_cont & ~cpu_mreq_n & ~mreq_paid & cont_addr;
-	wire cont_io  = iorq_cont & ~iorq_paid;
+	wire cont_mem = ~io_cyc & ~cpu_mreq_n & ~mreq_paid & cont_addr;
+	wire cont_io  = (io_start | (io_seq != 3'd0)) & io_point;
 	// F10 turns contention off, to tell whether the model is what makes
 	// border stripes spread out from the middle of the screen: a demo's
 	// loop taking longer than it should stretches everything it draws.
@@ -798,7 +853,7 @@ module spectrum_top (
 	                  & (cont_mem | cont_io)
 	                  & (machine != MACHINE_PENT)
 	                  & ((cont_mode == 2'd2) ? 1'b1 :
-	                     (cont_mode == 2'd1) ? ~iorq_cont : 1'b0);
+	                     (cont_mode == 2'd1) ? ~cont_io : 1'b0);
 
 	// Holding the CPU means withholding its clock enable here, which is
 	// what Sizif does by holding clkcpu.
