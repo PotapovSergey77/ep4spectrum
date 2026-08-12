@@ -1550,9 +1550,19 @@ module spectrum_top (
 	// Left pair: which keyboard rows have something held - 00 with
 	// nothing touched, and a bit that will not clear is a stuck key.
 	// Right pair: the low byte of the last IO port.
+	// Left pair: the byte port 0xFE last returned. With nothing held a
+	// real machine gives BF, or FF once bit 4 has been written high.
+	// Right pair: the low byte of the last IO port.
+	reg [7:0] last_ula_do = 8'd0;
+	always @(posedge clock) begin
+		if (prev_ioreq_n == 1'b1 && cpu_ioreq_n == 1'b0 && cpu_m1_n == 1'b1
+		    && cpu_rd_n == 1'b0 && ula_enable == 1'b1)
+			last_ula_do <= ula_do;
+	end
+
 	wire [3:0] nibble_io =
-	                    (digit_scan == 2'd3) ? kb_row_any[7:4] :
-	                    (digit_scan == 2'd2) ? kb_row_any[3:0] :
+	                    (digit_scan == 2'd3) ? last_ula_do[7:4] :
+	                    (digit_scan == 2'd2) ? last_ula_do[3:0] :
 	                    (digit_scan == 2'd1) ? last_io[7:4]   :
 	                                           last_io[3:0];
 
