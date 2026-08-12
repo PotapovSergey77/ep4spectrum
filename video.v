@@ -300,7 +300,7 @@ module video (
 	// is zx-sizif-512's, converted; anything left over after that is
 	// what the board has to be asked.
 	wire [9:0] int_hpos_base =
-		(MACHINE == MACHINE_PENT) ? 10'd640 :
+		(MACHINE == MACHINE_PENT) ? 10'd622 :
 		lines228                  ? 10'd8   :
 		                            10'd0;
 	wire [9:0] int_hpos = int_hpos_base + {{2{INT_ADJ[7]}}, INT_ADJ};
