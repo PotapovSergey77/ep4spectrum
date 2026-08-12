@@ -203,12 +203,15 @@ module spectrum_top (
 	// a press could not place the interrupt: on the board two lines came
 	// out a little short and three already too far.
 	reg     [7:0]   int_vadj = 8'd0;
-	// F10 toggles the ULA contention model
+	// F10 cycles the ULA contention model
 	// 0 = no contention, 1 = memory only, 2 = memory and IO.
-	// With it full on the stripes spread downward, with it off they
-	// spread upward - so the amount is wrong rather than its presence,
-	// and IO is where a stripe loop spends its time.
-	reg     [1:0]   cont_mode = 2'd0;
+	//
+	// Full on at power-up, which is what a real machine does. Judged on
+	// the board with a demo that draws border stripes: with memory and
+	// IO both contended the stripes line up and run at the right speed.
+	// The lamps read the mode inverted, so mode 2 is the state with all
+	// of them dark.
+	reg     [1:0]   cont_mode = 2'd2;
 	// Phase of the contention pattern, two counts - one pixel - a step,
 	// wrapping every 32. Stepped by the board's spare buttons KEY3 and
 	// KEY4, sampled slowly so contact bounce does not run it on.

@@ -389,21 +389,24 @@ module video (
 	// the board - and left is exactly where the right position appears
 	// to be, so it could not be reached.
 	wire signed [12:0] hline = {3'b000, hcount_last} + 13'sd1;
-	// One eighth of a line. Every line length here is a multiple of
-	// eight counts - 896 for 224 T-states, 912 for 228 - so the step is
-	// exact and eight of them come to a whole line.
-	wire signed [12:0] heighth = hline >>> 3;
+	// One sixteenth of a line. Both line lengths here divide by sixteen
+	// exactly - 896 counts for 224 T-states gives 56, and 912 for 228
+	// gives 57 - so sixteen steps come to precisely one line. Thirty-two
+	// would not: 912 does not divide by it.
+	wire signed [12:0] heighth = hline >>> 4;
 
-	// The vertical trim is in eighths, so it splits into whole lines and
-	// a part of a line that has to be carried into the position. A whole
-	// line a step was too coarse to place the interrupt on the board:
-	// two was a little short and three already too far.
+	// The vertical trim is in sixteenths, so it splits into whole lines
+	// and a part of a line that has to be carried into the position.
+	// A whole line a step could not place the interrupt on the board -
+	// two was short, three too far - and an eighth still could not:
+	// eleven eighths left an artefact at the right edge and twelve moved
+	// it to the left.
 	//
 	// Shifting right rounds towards minus infinity, which is what makes
-	// the low three bits the remainder for negative values too - -1 is
-	// -1 line plus seven eighths.
-	wire signed [8:0] vadj_lines = $signed(INT_VADJ) >>> 3;
-	wire       [2:0]  vadj_frac  = INT_VADJ[2:0];
+	// the low four bits the remainder for negative values too - -1 is
+	// -1 line plus fifteen sixteenths.
+	wire signed [8:0] vadj_lines = $signed(INT_VADJ) >>> 4;
+	wire       [3:0]  vadj_frac  = INT_VADJ[3:0];
 
 	wire signed [12:0] int_hpos_raw =
 		{3'b000, int_hpos_base} + {{5{INT_ADJ[7]}}, INT_ADJ}
