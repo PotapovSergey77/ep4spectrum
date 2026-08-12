@@ -1557,11 +1557,33 @@ module spectrum_top (
 			last_ula_do <= ula_do;
 	end
 
+	// The CPU sits in HALT at the stop, so the question is whether
+	// interrupts are still reaching it. Left pair: interrupts asserted.
+	// Right pair: interrupts the CPU acknowledged. Both should climb
+	// together, fifty times a second.
+	//
+	//   both climbing   - the CPU is being interrupted and going back
+	//                     to HALT, so the fault is in what the handler
+	//                     does, not in the interrupt
+	//   left only       - the line is asserted but not taken
+	//   neither         - no interrupt is being generated at all
+	reg [7:0] int_cnt_a = 8'd0;
+	reg [7:0] int_cnt_b = 8'd0;
+	reg       pirq2_n = 1'b1;
+	reg       pack2 = 1'b0;
+	wire      iack2 = (cpu_m1_n == 1'b0) && (cpu_ioreq_n == 1'b0);
+	always @(posedge clock) begin
+		pirq2_n <= vid_irq_n;
+		pack2   <= iack2;
+		if (pirq2_n == 1'b1 && vid_irq_n == 1'b0) int_cnt_a <= int_cnt_a + 8'd1;
+		if (pack2 == 1'b0 && iack2 == 1'b1)       int_cnt_b <= int_cnt_b + 8'd1;
+	end
+
 	wire [3:0] nibble_io =
-	                    (digit_scan == 2'd3) ? last_pc[15:12] :
-	                    (digit_scan == 2'd2) ? last_pc[11:8]  :
-	                    (digit_scan == 2'd1) ? last_pc[7:4]   :
-	                                           last_pc[3:0];
+	                    (digit_scan == 2'd3) ? int_cnt_a[7:4] :
+	                    (digit_scan == 2'd2) ? int_cnt_a[3:0] :
+	                    (digit_scan == 2'd1) ? int_cnt_b[7:4] :
+	                                           int_cnt_b[3:0];
 
 	// "3.5" for the CPU clock on the two left digits, the upper RAM page
 	// in decimal on the two right ones - two digits because Pentagon
