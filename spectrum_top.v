@@ -1579,11 +1579,27 @@ module spectrum_top (
 		if (pack2 == 1'b0 && iack2 == 1'b1)       int_cnt_b <= int_cnt_b + 8'd1;
 	end
 
+	// Interrupts are asserted but never taken, and a Z80 in HALT must
+	// take one - so either they are disabled in the CPU, or the CPU is
+	// not running at all. WAIT_n from the arbiter can freeze it: if a
+	// request is never served, the CPU sits mid-cycle for good.
+	//
+	// Left pair: T-states the CPU has actually taken, climbing while it
+	// is alive and stopping dead if it is frozen.
+	// Digit 1: WAIT_n, served, inflight, mem_active.
+	// Digit 0: 0, 0, HALT_n, INT_n.
+	reg [7:0] step_cnt = 8'd0;
+	always @(posedge clock) begin
+		if (cpu_clken_gated == 1'b1 && cpu_wait_n == 1'b1)
+			step_cnt <= step_cnt + 8'd1;
+	end
+
 	wire [3:0] nibble_io =
-	                    (digit_scan == 2'd3) ? int_cnt_a[7:4] :
-	                    (digit_scan == 2'd2) ? int_cnt_a[3:0] :
-	                    (digit_scan == 2'd1) ? int_cnt_b[7:4] :
-	                                           int_cnt_b[3:0];
+	                    (digit_scan == 2'd3) ? step_cnt[7:4] :
+	                    (digit_scan == 2'd2) ? step_cnt[3:0] :
+	                    (digit_scan == 2'd1) ? {cpu_wait_n, cpu_served,
+	                                            cpu_inflight, cpu_mem_active} :
+	                                           {2'b00, cpu_halt_n, cpu_irq_n};
 
 	// "3.5" for the CPU clock on the two left digits, the upper RAM page
 	// in decimal on the two right ones - two digits because Pentagon
