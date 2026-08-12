@@ -215,23 +215,32 @@ module video (
 
 
 	// The border colour is latched rather than taken straight off the
-	// port, following zx-sizif-512's video.sv:
+	// port. zx-sizif-512's video.sv has:
 	//
 	//   border_update = (hc0[4:0] == 5'b10011) || (machine == PENT && ck7)
 	//
 	// - once per 8-pixel group on the Sinclair machines, every pixel
-	// tick on Pentagon. Using it combinationally, as this did, looks
+	// tick on Pentagon. The group is the part not kept here; see below.
+	// Latching at all matters though. Using it combinationally, as this did, looks
 	// finer but is not what a ULA does: the edge then lands wherever
 	// inside a pixel the CPU happened to write, and where that is
 	// depends on the CPU's phase. That is a border edge that will not
 	// hold still to within a pixel or two.
 	//
 	// hcounter runs at twice the pixel rate here, so a pixel tick is
-	// hcounter[0] and an 8-pixel group is hcounter[3:0] == 4'b0011.
+	// hcounter[0].
+	//
+	// Every machine samples at the pixel rate. The Sinclair machines
+	// used to sample once per 8-pixel group instead, on the assumption
+	// that the border follows the character grid the way the screen
+	// fetch does. It does not: a ULA drives the border straight from the
+	// port latch, with no character-cell boundary in the way, which is
+	// why the pixel rate is what came out right for Pentagon on the
+	// board. The group cost every border change up to eight pixels, and
+	// on the board a demo drawing text in the border sat exactly that
+	// far right of where it belongs.
 	reg     [2:0]   border_latched = 3'b000;
-	wire            border_update = (MACHINE == MACHINE_PENT) ?
-	                                (hcounter[0] == 1'b1) :
-	                                (hcounter[3:0] == 4'b0011);
+	wire            border_update = (hcounter[0] == 1'b1);
 	// One further pixel of delay before it reaches the screen.
 	//
 	// With the interrupt at its authentic position the picture drawn in
@@ -242,14 +251,10 @@ module video (
 	// the interrupt off the position that is otherwise right.
 	//
 	// It has to be clocked at the pixel rate to cost a pixel. Both
-	// stages used to share border_update, which is the pixel rate only
+	// stages used to share border_update, which was the pixel rate only
 	// on Pentagon - where this was measured. On the Sinclair machines
-	// that enable arrives once every eight pixels, so the stage meant to
-	// cost one pixel cost a whole character cell, and the border there
-	// came out eight pixels right of where it belongs.
-	//
-	// The eight-pixel quantisation of the first stage is not a fault:
-	// a real ULA latches the border colour on character boundaries.
+	// that enable arrived once every eight pixels, so the stage meant to
+	// cost one pixel cost a whole character cell.
 	reg     [2:0]   border_out = 3'b000;
 	always @(posedge CLK or negedge nRESET) begin
 		if (nRESET == 1'b0) begin
