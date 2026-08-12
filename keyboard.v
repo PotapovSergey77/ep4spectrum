@@ -57,6 +57,8 @@ module keyboard (
 	F7,
 	F1,
 	F2,
+	F3,
+	F4,
 	F9,
 	F10,
 	ROW_ANY
@@ -80,6 +82,8 @@ module keyboard (
 	output reg      F9;
 	output reg      F1;
 	output reg      F2;
+	output reg      F3;
+	output reg      F4;
 	output reg      F10;
 	// Per-row 'something is held in this row', for finding a stuck bit
 	output  [7:0]   ROW_ANY;
@@ -160,6 +164,8 @@ module keyboard (
 			F9  <= 1'b0;
 			F1  <= 1'b0;
 			F2  <= 1'b0;
+			F3  <= 1'b0;
+			F4  <= 1'b0;
 			F10 <= 1'b0;
 		end else begin
 			if (keyb_valid == 1'b1) begin
@@ -337,6 +343,8 @@ module keyboard (
 						8'h07: F12 <= ~release_key; // F12 key -> NMI
 						8'h05: F1  <= ~release_key; // F1 -> INT position -1 pixel
 						8'h06: F2  <= ~release_key; // F2 -> INT position +1 pixel
+						8'h04: F3  <= ~release_key; // F3 -> INT line -1
+						8'h0c: F4  <= ~release_key; // F4 -> INT line +1
 						8'h03: F5  <= ~release_key; // F5 key  -> Sinclair 48K timings
 						8'h0b: F6  <= ~release_key; // F6 key  -> Sinclair 128K timings
 						8'h83: F7  <= ~release_key; // F7 key  -> Sinclair +2A/+3 timings

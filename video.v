@@ -51,6 +51,7 @@ module video (
 	MACHINE,
 	CONTENTION,
 	INT_ADJ,
+	INT_VADJ,
 	PORT_FF_ACTIVE,
 	PORT_FF_DATA,
 
@@ -97,6 +98,7 @@ module video (
 	input   [1:0]   MACHINE;
 	output          CONTENTION;
 	input   [7:0]   INT_ADJ;
+	input   [4:0]   INT_VADJ;
 	output          PORT_FF_ACTIVE;
 	output  [7:0]   PORT_FF_DATA;
 
@@ -327,8 +329,13 @@ module video (
 	// Getting the horizontal position wrong shifts everything a demo
 	// draws relative to the interrupt - fired at the start of the line
 	// instead, raster bars come out visibly too high.
-	wire [8:0] int_line =
+	// INT_VADJ trims the line, one line a step. Which line the
+	// interrupt falls on sets where in the frame everything a program
+	// draws from it lands, so an entry that is out shows as border
+	// effects sitting above or below where they belong.
+	wire [8:0] int_line_base =
 		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd248;
+	wire [8:0] int_line = int_line_base + {{4{INT_VADJ[4]}}, INT_VADJ};
 	// Interrupt position. The table entry is zx-sizif-512's converted;
 	// Pentagon's was then set on the board, where the picture drawn in
 	// the border shows it directly.

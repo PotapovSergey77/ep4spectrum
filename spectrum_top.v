@@ -199,6 +199,12 @@ module spectrum_top (
 	wire            key_f10;
 	// Interrupt position trim, two counts - one pixel - a press on F1/F2
 	reg     [7:0]   int_adj = 8'd0;
+	// Vertical trim, one line a press on F3/F4
+	reg     [4:0]   int_vadj = 5'd0;
+	wire            key_f3;
+	wire            key_f4;
+	reg             key_f3_d = 1'b0;
+	reg             key_f4_d = 1'b0;
 	wire            key_f1;
 	wire            key_f2;
 	reg             key_f1_d = 1'b0;
@@ -622,6 +628,12 @@ module spectrum_top (
 			int_adj <= int_adj - 8'd2;
 		else if (key_f2 == 1'b1 && key_f2_d == 1'b0)
 			int_adj <= int_adj + 8'd2;
+		key_f3_d <= key_f3;
+		key_f4_d <= key_f4;
+		if (key_f3 == 1'b1 && key_f3_d == 1'b0)
+			int_vadj <= int_vadj - 5'd1;
+		else if (key_f4 == 1'b1 && key_f4_d == 1'b0)
+			int_vadj <= int_vadj + 5'd1;
 	end
 
 	// F5..F8 pick the machine. Switching deliberately does NOT reset,
@@ -768,6 +780,8 @@ module spectrum_top (
 		.F9(key_f9),
 		.F1(key_f1),
 		.F2(key_f2),
+		.F3(key_f3),
+		.F4(key_f4),
 		.F10(key_f10),
 		.ROW_ANY(kb_row_any)
 	);
@@ -816,6 +830,7 @@ module spectrum_top (
 		.MACHINE(machine),
 		.CONTENTION(vid_contention),
 		.INT_ADJ(int_adj),
+		.INT_VADJ(int_vadj),
 		.PORT_FF_ACTIVE(vid_port_ff_active),
 		.PORT_FF_DATA(vid_port_ff_data),
 		.VID_A(vid_a),
@@ -1708,10 +1723,11 @@ module spectrum_top (
 		if (key_f9_press == 1'b1) show_io <= ~show_io;
 	end
 	wire [3:0] nibble = show_io ? nibble_io :
-	                    (int_adj != 8'd0) ?
+	                    ((int_adj != 8'd0) || (int_vadj != 5'd0)) ?
 	                    ((digit_scan == 2'd3) ? int_adj[7:4] :
 	                     (digit_scan == 2'd2) ? int_adj[3:0] :
-	                     (digit_scan == 2'd1) ? pg_tens : pg_units) :
+	                     (digit_scan == 2'd1) ? {3'b000, int_vadj[4]} :
+	                                            int_vadj[3:0]) :
 	                    nibble_normal;
 
 	wire digit_blank = show_io ? 1'b0 :
