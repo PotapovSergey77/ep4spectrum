@@ -240,14 +240,26 @@ module video (
 	// interrupt - it is the same place the real machine's own
 	// adjustment acts - so it is corrected here instead of by moving
 	// the interrupt off the position that is otherwise right.
+	//
+	// It has to be clocked at the pixel rate to cost a pixel. Both
+	// stages used to share border_update, which is the pixel rate only
+	// on Pentagon - where this was measured. On the Sinclair machines
+	// that enable arrives once every eight pixels, so the stage meant to
+	// cost one pixel cost a whole character cell, and the border there
+	// came out eight pixels right of where it belongs.
+	//
+	// The eight-pixel quantisation of the first stage is not a fault:
+	// a real ULA latches the border colour on character boundaries.
 	reg     [2:0]   border_out = 3'b000;
 	always @(posedge CLK or negedge nRESET) begin
 		if (nRESET == 1'b0) begin
 			border_latched <= 3'b000;
 			border_out     <= 3'b000;
-		end else if (CLKEN == 1'b1 && border_update == 1'b1) begin
-			border_latched <= BORDER_IN;
-			border_out     <= border_latched;
+		end else if (CLKEN == 1'b1) begin
+			if (border_update == 1'b1)
+				border_latched <= BORDER_IN;
+			if (hcounter[0] == 1'b1)
+				border_out <= border_latched;
 		end
 	end
 
