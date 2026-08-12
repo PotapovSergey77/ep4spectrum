@@ -231,7 +231,8 @@ module spectrum_top (
 	wire            mem128 = (machine != MACHINE_S48);
 	reg             ext1024 = 1'b0;
 	// Interrupt position trim, in hcounter counts. F1 and F2 step it by
-	// four - two pixels, the precision Pentagon border effects use.
+	// two - one pixel. Two pixels a press could not reach the position
+	// the board says is one pixel out.
 	reg     [7:0]   int_adj = 8'd0;
 	wire            key_f1;
 	wire            key_f2;
@@ -591,9 +592,9 @@ module spectrum_top (
 	// F1 and F2 trim the interrupt position by two pixels a press.
 	always @(posedge clock) begin
 		if (key_f1 == 1'b1)
-			int_adj <= int_adj - 8'd4;
+			int_adj <= int_adj - 8'd2;
 		else if (key_f2 == 1'b1)
-			int_adj <= int_adj + 8'd4;
+			int_adj <= int_adj + 8'd2;
 	end
 
 	// F5..F8 pick the machine. Switching deliberately does NOT reset,
@@ -1563,11 +1564,14 @@ module spectrum_top (
 
 	// two right ones. While the interrupt trim is non-zero it takes over
 	// the right-hand pair.
+	// Left pair: the interrupt trim, as a signed count of hcounter
+	// steps - FE is -2, FC is -4, 02 is +2 and so on. Right pair: the
+	// page, as usual.
 	wire [3:0] nibble =
-	                    (digit_scan == 2'd3) ? halt_lat[7:4] :
-	                    (digit_scan == 2'd2) ? halt_lat[3:0] :
-	                    (digit_scan == 2'd1) ? resp_lat[7:4] :
-	                                           resp_lat[3:0];
+	                    (digit_scan == 2'd3) ? int_adj[7:4] :
+	                    (digit_scan == 2'd2) ? int_adj[3:0] :
+	                    (digit_scan == 2'd1) ? pg_tens :
+	                                           pg_units;
 
 	wire digit_blank = 1'b0;
 	// decimal point after the 3, and on the page digit while DivMMC is
