@@ -358,16 +358,23 @@ module video (
 	// Getting the horizontal position wrong shifts everything a demo
 	// draws relative to the interrupt - fired at the start of the line
 	// instead, raster bars come out visibly too high.
-	// INT_VADJ trims the line, one eighth of a line a step. Which line the
-	// interrupt falls on sets where in the frame everything a program
+	// INT_VADJ trims the line, one sixteenth of a line a step. Which line
+	// the interrupt falls on sets where in the frame everything a program
 	// draws from it lands, so an entry that is out shows as border
 	// effects sitting above or below where they belong.
-	// 245 rather than Sizif's 248 on the Sinclair machines: on the board
-	// the border effects sat three lines low, and three presses of the
-	// vertical trim brought them into place. Checked on 48K; 128K and
-	// +2A/+3 share the entry and have not been looked at.
+	//
+	// 48K's 247 is 245 with the board's trim of 0x21 - thirty-three
+	// sixteenths, two lines and a sixteenth - folded in, the sixteenth
+	// going to the position below. Set with a demo drawing border
+	// stripes: 0x21 placed them best, and moving off it either way put
+	// misplaced stripes somewhere else in the raster.
+	//
+	// 245 was Sizif's 248 less three lines, also measured here. 128K and
+	// +2A/+3 keep it: the trim above was set on 48K, and folding it into
+	// an entry those two share would move machines nobody has checked.
 	wire [8:0] int_line_base =
-		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd245;
+		(MACHINE == MACHINE_PENT) ? 9'd239 :
+		(MACHINE == MACHINE_S48)  ? 9'd247 : 9'd245;
 	// Interrupt position. The table entry is zx-sizif-512's converted;
 	// Pentagon's was then set on the board, where the picture drawn in
 	// the border shows it directly.
@@ -375,12 +382,14 @@ module video (
 	// Pentagon's entry has been set against a real machine; the others
 	// are zx-sizif-512's converted and have never been checked on the
 	// board, which is what the trim is back for.
-	// 48K's 824 is Sizif's 0 with the board's trim of -72 counts folded
-		// in, wrapped into the line. Pentagon's 622 was set the same way.
+	// 48K's 880 is Sizif's 0 with the board's trims folded in, wrapped
+	// into the line: -72 counts first, then the sixteenth of a line left
+	// over from the vertical trim above, which is 56 counts.
+	// Pentagon's 622 was set the same way.
 	// 128K and +2A/+3 are still Sizif's untouched.
 	wire [9:0] int_hpos_base =
 		(MACHINE == MACHINE_PENT) ? 10'd622 :
-		(MACHINE == MACHINE_S48)  ? 10'd824 :
+		(MACHINE == MACHINE_S48)  ? 10'd880 :
 		lines228                  ? 10'd8   :
 		                            10'd0;
 	// Wrapped into the line rather than added raw.
