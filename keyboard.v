@@ -103,26 +103,28 @@ module keyboard (
 		.ERROR(keyb_error)
 	);
 
-	// Output addressed row to ULA
+	// Output the addressed rows to the ULA.
+	//
+	// Every row whose address line is low is selected, and all of them
+	// are combined - a key held in any selected row pulls its column
+	// low. Programs commonly read the whole keyboard at once by putting
+	// zero in the address high byte, which selects all eight.
+	//
+	// This used to be a priority chain of else-ifs, so a read of all
+	// rows returned row 0 alone - CAPS SHIFT, Z, X, C, V - and every
+	// other key was invisible to that kind of scan. It is why the
+	// welcome screen of Test 4.3 would move on for X but not for SPACE,
+	// which lives in row 7.
 	always @(*) begin
-		if (A[8] == 1'b0)
-			KEYB = keys[0];
-		else if (A[9] == 1'b0)
-			KEYB = keys[1];
-		else if (A[10] == 1'b0)
-			KEYB = keys[2];
-		else if (A[11] == 1'b0)
-			KEYB = keys[3];
-		else if (A[12] == 1'b0)
-			KEYB = keys[4];
-		else if (A[13] == 1'b0)
-			KEYB = keys[5];
-		else if (A[14] == 1'b0)
-			KEYB = keys[6];
-		else if (A[15] == 1'b0)
-			KEYB = keys[7];
-		else
-			KEYB = 5'b11111;
+		KEYB = 5'b11111;
+		if (A[8]  == 1'b0) KEYB = KEYB & keys[0];
+		if (A[9]  == 1'b0) KEYB = KEYB & keys[1];
+		if (A[10] == 1'b0) KEYB = KEYB & keys[2];
+		if (A[11] == 1'b0) KEYB = KEYB & keys[3];
+		if (A[12] == 1'b0) KEYB = KEYB & keys[4];
+		if (A[13] == 1'b0) KEYB = KEYB & keys[5];
+		if (A[14] == 1'b0) KEYB = KEYB & keys[6];
+		if (A[15] == 1'b0) KEYB = KEYB & keys[7];
 	end
 
 	always @(posedge CLK or negedge nRESET) begin

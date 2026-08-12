@@ -1245,7 +1245,14 @@ module spectrum_top (
 		(rom_enable == 1'b1) ? rom_do :
 		// IO ports
 		(ula_enable == 1'b1) ? ula_do :
-		(psg_enable == 1'b1) ? psg_do :
+		// Only 0xFFFD reads back. The AY drives the bus when BC1 is
+		// high with BDIR low, which is A14 set - port 0xFFFD, the
+		// register read. At 0xBFFD, A14 clear, both are low and the
+		// chip is inactive, so a read there gets the idle bus and not
+		// the selected register. psg_enable alone does not tell the two
+		// apart, so this returned register data for both and Test 4.3
+		// reported the port wrong.
+		((psg_enable == 1'b1) && (cpu_a[14] == 1'b1)) ? psg_do :
 		(divmmc_enable == 1'b1) ? divmmc_do :
 		// map kempston joystick port - no joystick hardware on this board, idle
 		(kempston_enable == 1'b1) ? 8'b00000000 :
