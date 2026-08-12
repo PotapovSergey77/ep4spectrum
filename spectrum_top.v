@@ -1135,7 +1135,6 @@ module spectrum_top (
 	reg         cur_vid_gen = 1'b0;
 	reg         prev_vid_gen = 1'b0;
 	reg         cpu_served = 1'b0;
-	reg         cpu_inflight = 1'b0;
 	reg         cpu_oe_held = 1'b0;
 	reg         cpu_we_held = 1'b0;
 	reg  [7:0]  cpu_di_held = 8'd0;
@@ -1148,14 +1147,43 @@ module spectrum_top (
 	wire cpu_needs_sdram = ram_enable |
 		(rom_enable & divmmc_paged_in & esxdos_downloaded[1]);
 	wire cpu_mem_active  = (~cpu_mreq_n) & ((~cpu_rd_n) | (~cpu_wr_n)) & cpu_needs_sdram;
-	// ~cpu_inflight as well as ~cpu_served: the answer only lands two
-	// clocks after the cycle ends, so without it the same request is
-	// granted a second cycle it does not need. That second cycle is
-	// actively harmful - the CPU is released part way through it and
-	// drops MREQ/RD/WR, so sdram_ep4ce.v opens a row at q==0 and then
-	// finds no read or write to issue at q==3. The row stays open with
-	// no auto-precharge, and the next ACTIVE to that bank corrupts it.
-	wire cpu_wants = cpu_mem_active & ~cpu_served & ~cpu_inflight;
+	// A CPU cycle is in flight while either the cycle running now or
+	// the one that just ended belongs to the CPU - its answer only
+	// lands two clocks after that cycle finishes.
+	//
+	// This was a separate flag, set at the grant and cleared when
+	// prev_own said CPU. prev_own is the previous cycle's owner, so two
+	// CPU cycles back to back cleared the flag two clocks after it was
+	// set, while its own cycle was still running: the CPU could then be
+	// granted again on top of an unfinished cycle, overwriting the held
+	// address, and the answer was never credited. The request stayed up
+	// with WAIT_n low and the CPU stopped for good - which is what the
+	// board showed, 2511: waiting, with a request active and nothing
+	// else holding it.
+	wire cpu_inflight = (cur_own == OWN_CPU) | (prev_own == OWN_CPU);
+	// A watchdog on top of that.
+	//
+	// The board still shows a request left outstanding with WAIT_n low
+	// and the CPU stopped for good, so a way to deadlock remains that I
+	// have not found by reading, and simulation does not reach it - the
+	// workload there is far too thin. Rather than keep guessing on
+	// hardware, a request that has waited more than sixteen cycle
+	// boundaries is granted regardless.
+	//
+	// This is a backstop, not an explanation: it costs nothing when
+	// things are healthy - a request is normally served within two
+	// boundaries - and it keeps the machine running while the cause is
+	// found.
+	reg [4:0] cpu_stall_cnt = 5'd0;
+	always @(posedge clock) begin
+		if (cpu_mem_active == 1'b0 || cpu_served == 1'b1)
+			cpu_stall_cnt <= 5'd0;
+		else if (slot_tick == 1'b1 && cpu_stall_cnt != 5'd31)
+			cpu_stall_cnt <= cpu_stall_cnt + 5'd1;
+	end
+	wire cpu_overdue = (cpu_stall_cnt >= 5'd16);
+
+	wire cpu_wants = cpu_mem_active & ~cpu_served & (~cpu_inflight | cpu_overdue);
 	wire vid_wants = ~vid_rd_n;
 
 	wire [1:0] next_own = cpu_wants ? OWN_CPU :
@@ -1187,7 +1215,6 @@ module spectrum_top (
 				cpu_oe_held   <= (~cpu_mreq_n) & (~cpu_rd_n);
 				cpu_we_held   <= ram_write;
 				cpu_di_held   <= cpu_do;
-				cpu_inflight  <= 1'b1;
 			end
 			if (next_own == OWN_VID) begin
 				vid_addr_held <= vid_addr;
@@ -1205,14 +1232,6 @@ module spectrum_top (
 		if (slot_tick_d2 == 1'b1) begin
 			if (prev_own == OWN_CPU) begin
 				mem_do <= sdram_do;
-				// The cycle is over either way, so let another one be
-				// granted. Without this a cycle that came back for the
-				// wrong address left cpu_inflight stuck high: no new
-				// cycle could be granted, and the request could not
-				// retire either because WAIT_n was holding the CPU on
-				// it. Sizif re-issues on cpu_read_misaddress for the
-				// same reason.
-				cpu_inflight <= 1'b0;
 				// Sizif's cpu_read_misaddress: only answer the request
 				// if the CPU is still asking about the address the
 				// cycle actually fetched. Without this the answer can
@@ -1234,7 +1253,6 @@ module spectrum_top (
 		// is ever carried over into the next access.
 		if (cpu_mem_active == 1'b0) begin
 			cpu_served   <= 1'b0;
-			cpu_inflight <= 1'b0;
 		end
 	end
 
@@ -1615,9 +1633,15 @@ module spectrum_top (
 	reg [23:0] diag_div = 24'd0;
 	always @(posedge clock) begin
 		diag_div <= diag_div + 24'd1;
-		ref_cnt  <= ref_cnt + 8'd1;
-		if (diag_div == 24'd0)
+		if (diag_div == 24'd0) begin
 			diag_lat <= {ref_cnt, step_cnt};
+			// Counts the latches themselves. Counting clocks instead
+			// was useless: the latch period is a multiple of 256, so
+			// an 8-bit clock counter reads zero at every latch by
+			// construction - it was not frozen, it could not have
+			// shown anything else.
+			ref_cnt  <= ref_cnt + 8'd1;
+		end
 	end
 
 
