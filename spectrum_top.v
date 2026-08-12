@@ -1701,26 +1701,57 @@ module spectrum_top (
 		end
 	end
 
-	// While either trim is non-zero the display carries them: the left
-	// pair is the horizontal trim in pixels, signed, and the right pair
-	// the vertical trim in eighths of a line, both hex and signed.
-	// Otherwise "3.5" and the page.
-	wire [3:0] nibble = (cont_adj != 5'd0) ?
-	                    ((digit_scan == 2'd3) ? 4'd12 :
-	                     (digit_scan == 2'd2) ? 4'd0  :
-	                     (digit_scan == 2'd1) ? {3'b000, cont_adj[4]} :
-	                                            cont_adj[3:0]) :
-	                    ((int_adj != 8'd0) || (int_vadj != 8'd0)) ?
-	                    ((digit_scan == 2'd3) ? int_adj[7:4] :
-	                     (digit_scan == 2'd2) ? int_adj[3:0] :
-	                     (digit_scan == 2'd1) ? int_vadj[7:4] :
-	                                            int_vadj[3:0]) :
+	// The display carries whichever trim was touched last, named by a
+	// letter so there is no doubt which one is on it:
+	//
+	//   A0nn  interrupt position, F1 and F2, a pixel a press
+	//   d0nn  interrupt line, F3 and F4, a sixteenth of a line a press
+	//   C0nn  contention window, KEY2 and KEY3, a T-state a press
+	//
+	// It used to pick by a fixed priority, with the contention window
+	// first. Set that one with the board buttons and the display stayed
+	// on it, so pressing F3 or F4 changed a number that was not being
+	// shown - which on the board looked exactly like the keys being
+	// dead. That is the fifth instrument in this project to report
+	// something other than what it was being asked about.
+	//
+	// With every trim at zero it goes back to "3.5" and the page.
+	localparam TRIM_ADJ  = 2'd0;
+	localparam TRIM_VADJ = 2'd1;
+	localparam TRIM_CONT = 2'd2;
+	reg [1:0] trim_sel = TRIM_ADJ;
+	always @(posedge clock) begin
+		if ((key_f1 == 1'b1 && key_f1_d == 1'b0) ||
+		    (key_f2 == 1'b1 && key_f2_d == 1'b0))
+			trim_sel <= TRIM_ADJ;
+		else if ((key_f3 == 1'b1 && key_f3_d == 1'b0) ||
+		         (key_f4 == 1'b1 && key_f4_d == 1'b0))
+			trim_sel <= TRIM_VADJ;
+		else if (btn_div == 17'd0 &&
+		         ((btn_prev[0] == 1'b1 && KEY[2] == 1'b0) ||
+		          (btn_prev[1] == 1'b1 && KEY[3] == 1'b0)))
+			trim_sel <= TRIM_CONT;
+	end
+
+	wire any_trim = (int_adj != 8'd0) || (int_vadj != 8'd0) || (cont_adj != 5'd0);
+	wire [7:0] trim_val = (trim_sel == TRIM_ADJ)  ? int_adj  :
+	                      (trim_sel == TRIM_VADJ) ? int_vadj :
+	                                                {3'b000, cont_adj};
+	wire [3:0] trim_tag = (trim_sel == TRIM_ADJ)  ? 4'ha :   // A
+	                      (trim_sel == TRIM_VADJ) ? 4'hd :   // d
+	                                                4'hc;    // C
+
+	wire [3:0] nibble = any_trim ?
+	                    ((digit_scan == 2'd3) ? trim_tag :
+	                     (digit_scan == 2'd2) ? 4'd0 :
+	                     (digit_scan == 2'd1) ? trim_val[7:4] :
+	                                            trim_val[3:0]) :
 	                    (digit_scan == 2'd3) ? 4'd3 :
 	                    (digit_scan == 2'd2) ? 4'd5 :
 	                    (digit_scan == 2'd1) ? pg_tens :
 	                                           pg_units;
 
-	wire digit_blank = ((int_adj != 8'd0) || (int_vadj != 8'd0) || (cont_adj != 5'd0)) ? 1'b0 :
+	wire digit_blank = any_trim ? 1'b0 :
 	                   ((digit_scan == 2'd1) && (page_ram_sel < 6'd10));
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in
