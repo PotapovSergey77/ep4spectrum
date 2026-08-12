@@ -1586,7 +1586,10 @@ module spectrum_top (
 	//
 	// Left pair: T-states the CPU has actually taken, climbing while it
 	// is alive and stopping dead if it is frozen.
-	// Digit 1: WAIT_n, served, inflight, mem_active.
+	// Digit 1: contention, vid_contention, WAIT_n, mem_active. The
+	// arbiter is not holding the CPU - WAIT_n reads high - so if the
+	// step counter is frozen the only thing left that can withhold its
+	// clock is the ULA contention added today.
 	// Digit 0: 0, 0, HALT_n, INT_n.
 	reg [7:0] step_cnt = 8'd0;
 	always @(posedge clock) begin
@@ -1597,8 +1600,8 @@ module spectrum_top (
 	wire [3:0] nibble_io =
 	                    (digit_scan == 2'd3) ? step_cnt[7:4] :
 	                    (digit_scan == 2'd2) ? step_cnt[3:0] :
-	                    (digit_scan == 2'd1) ? {cpu_wait_n, cpu_served,
-	                                            cpu_inflight, cpu_mem_active} :
+	                    (digit_scan == 2'd1) ? {contention, vid_contention,
+	                                            cpu_wait_n, cpu_mem_active} :
 	                                           {2'b00, cpu_halt_n, cpu_irq_n};
 
 	// "3.5" for the CPU clock on the two left digits, the upper RAM page
