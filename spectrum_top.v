@@ -202,7 +202,11 @@ module spectrum_top (
 	// Vertical trim, one line a press on F3/F4
 	reg     [4:0]   int_vadj = 5'd0;
 	// F10 toggles the ULA contention model
-	reg             cont_enable = 1'b1;
+	// 0 = no contention, 1 = memory only, 2 = memory and IO.
+	// With it full on the stripes spread downward, with it off they
+	// spread upward - so the amount is wrong rather than its presence,
+	// and IO is where a stripe loop spends its time.
+	reg     [1:0]   cont_mode = 2'd2;
 	reg             key_f10_d = 1'b0;
 	wire            key_f3;
 	wire            key_f4;
@@ -598,8 +602,10 @@ module spectrum_top (
 	//   LED4, rightmost - Pentagon 1024K extension on
 	//   LED2, LED3      - unused
 	assign LED[3] = divmmc_cs;
-	assign LED[2] = cont_enable;   // lit while contention is off
-	assign LED[1] = 1'b1;
+	// contention mode on LED2 and LED3: both dark = full, LED2 = memory
+	// only, LED3 = off
+	assign LED[2] = ~(cont_mode == 2'd1);
+	assign LED[1] = ~(cont_mode == 2'd0);
 	assign LED[0] = ~ext1024;
 
 	// ULA "ear" input (tape in) - no tape hardware on this board, keep idle
@@ -633,7 +639,7 @@ module spectrum_top (
 			int_adj <= int_adj + 8'd2;
 		key_f10_d <= key_f10;
 		if (key_f10 == 1'b1 && key_f10_d == 1'b0)
-			cont_enable <= ~cont_enable;
+			cont_mode <= (cont_mode == 2'd2) ? 2'd0 : (cont_mode + 2'd1);
 		key_f3_d <= key_f3;
 		key_f4_d <= key_f4;
 		if (key_f3 == 1'b1 && key_f3_d == 1'b0)
@@ -755,7 +761,8 @@ module spectrum_top (
 	wire contention = vid_contention & ~iorq_cont_d
 	                  & (cont_mem | iorq_cont)
 	                  & (machine != MACHINE_PENT)
-	                  & cont_enable;
+	                  & ((cont_mode == 2'd2) ? 1'b1 :
+	                     (cont_mode == 2'd1) ? ~iorq_cont : 1'b0);
 
 	// Holding the CPU means withholding its clock enable here, which is
 	// what Sizif does by holding clkcpu.

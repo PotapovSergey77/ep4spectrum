@@ -347,8 +347,12 @@ module video (
 	// Pentagon's entry has been set against a real machine; the others
 	// are zx-sizif-512's converted and have never been checked on the
 	// board, which is what the trim is back for.
+	// 48K's 824 is Sizif's 0 with the board's trim of -72 counts folded
+		// in, wrapped into the line. Pentagon's 622 was set the same way.
+	// 128K and +2A/+3 are still Sizif's untouched.
 	wire [9:0] int_hpos_base =
 		(MACHINE == MACHINE_PENT) ? 10'd622 :
+		(MACHINE == MACHINE_S48)  ? 10'd824 :
 		lines228                  ? 10'd8   :
 		                            10'd0;
 	// Wrapped into the line rather than added raw.
