@@ -901,6 +901,12 @@ module T80_MCode (
 		8'b00000000: begin
 			if (NMICycle == 1'b1) begin
 				// NMI
+				//
+				// The stack writes are three T-states, not four - the
+				// same error that was found and fixed in the IM2 entry
+				// just below, left standing here. A Z80 answers an NMI
+				// in 11 T-states: 5 to acknowledge, then 3 each to push
+				// PC high and low. With four it came to 13.
 				MCycles <= 3'b011;
 				case (MCycle)
 				1: begin
@@ -910,14 +916,14 @@ module T80_MCode (
 					Set_BusB_To <= 4'b1101;
 				end
 				2: begin
-					TStates <= 3'b100;
+					TStates <= 3'b011;
 					Write <= 1'b1;
 					IncDec_16 <= 4'b1111;
 					Set_Addr_To <= aSP;
 					Set_BusB_To <= 4'b1100;
 				end
 				3: begin
-					TStates <= 3'b100;
+					TStates <= 3'b011;
 					Write <= 1'b1;
 				end
 				default: ;

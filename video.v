@@ -211,6 +211,20 @@ module video (
 	//
 	// A T-state is four hcounter counts and the window is thirty-two, so
 	// hcounter[4:2] is the offset.
+	// Declared here rather than beside the frame geometry further down,
+	// where these used to be: they are needed above that point now, and
+	// a name used before its declaration becomes an implicit one-bit net
+	// instead. ModelSim rejects that outright; Quartus built it without
+	// a word, and the board ran with this window computed from a single
+	// bit - which is why moving the window there changed nothing.
+	wire lines228 = (MACHINE == MACHINE_S128) | (MACHINE == MACHINE_S3);
+	wire [9:0] hcount_last = lines228 ? 10'd911 : 10'd895;
+	wire [8:0] vline_last  =
+		(MACHINE == MACHINE_PENT) ? 9'd319 :
+		lines228                  ? 9'd310 :
+		                            9'd311;
+	wire signed [12:0] hline = {3'b000, hcount_last} + 13'sd1;
+
 	// Wrapped into the line, so a negative trim near the start of a line
 	// lands at its end rather than turning into a huge unsigned count -
 	// the same trap the interrupt position fell into.
@@ -374,13 +388,8 @@ module video (
 	//   Pentagon     224     320    71680      239      161 T     32 T
 	//
 	// vcounter[9:1] is the real line number, so its limit is not doubled.
-	wire lines228 = (MACHINE == MACHINE_S128) | (MACHINE == MACHINE_S3);
-
-	wire [9:0] hcount_last = lines228 ? 10'd911 : 10'd895;
-	wire [8:0] vline_last  =
-		(MACHINE == MACHINE_PENT) ? 9'd319 :
-		lines228                  ? 9'd310 :
-		                            9'd311;
+	// The line and frame lengths are declared with the contention window
+	// near the top of the file, since it needs them.
 
 	// Getting the horizontal position wrong shifts everything a demo
 	// draws relative to the interrupt - fired at the start of the line
@@ -399,9 +408,18 @@ module video (
 	// 245 was Sizif's 248 less three lines, also measured here. 128K and
 	// +2A/+3 keep it: the trim above was set on 48K, and folding it into
 	// an entry those two share would move machines nobody has checked.
+	// 48K's 248 and the position of 8 below are not eyeballed - they are
+	// the only pair that gives the published figure. A 48K puts exactly
+	// 14336 T-states between the interrupt and the first pixel of the
+	// screen, and 64 whole lines at the picture's own horizontal start
+	// is 64 * 896 counts = 57344 = 14336 T on the nose.
+	//
+	// The board-trimmed 247 and 880 that stood here came to 14342, six
+	// T-states early - twelve pixels, which is about what setting it by
+	// eye against a demo can resolve.
 	wire [8:0] int_line_base =
 		(MACHINE == MACHINE_PENT) ? 9'd239 :
-		(MACHINE == MACHINE_S48)  ? 9'd247 : 9'd245;
+		(MACHINE == MACHINE_S48)  ? 9'd248 : 9'd245;
 	// Interrupt position. The table entry is zx-sizif-512's converted;
 	// Pentagon's was then set on the board, where the picture drawn in
 	// the border shows it directly.
@@ -416,7 +434,7 @@ module video (
 	// 128K and +2A/+3 are still Sizif's untouched.
 	wire [9:0] int_hpos_base =
 		(MACHINE == MACHINE_PENT) ? 10'd622 :
-		(MACHINE == MACHINE_S48)  ? 10'd880 :
+		(MACHINE == MACHINE_S48)  ? 10'd8   :
 		lines228                  ? 10'd8   :
 		                            10'd0;
 	// Wrapped into the line rather than added raw.
@@ -427,7 +445,6 @@ module video (
 	// and the machine stopped dead. That is what trimming left did on
 	// the board - and left is exactly where the right position appears
 	// to be, so it could not be reached.
-	wire signed [12:0] hline = {3'b000, hcount_last} + 13'sd1;
 	// One sixteenth of a line. Both line lengths here divide by sixteen
 	// exactly - 896 counts for 224 T-states gives 56, and 912 for 228
 	// gives 57 - so sixteen steps come to precisely one line. Thirty-two

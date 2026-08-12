@@ -536,4 +536,20 @@ module tb_top;
 			dut.pram_sel, dut.mem128);
 	end
 
+
+// --- temporary: geometry behind the interrupt position ---
+integer gshow=0;
+reg gpic_d=1'b0;
+initial begin #200000; force dut.machine = 2'd0; end
+always @(posedge dut.clock) if (dut.vid.CLKEN) begin
+  if (dut.vid.picture && !gpic_d && gshow<3 && $time>400000) begin
+    $display("GEOM pic starts at h=%0d on line %0d", dut.vid.hcounter, dut.vid.vcounter/2);
+    $display("GEOM int_line=%0d int_hpos=%0d hcount_last=%0d int_len=%0d",
+             dut.vid.int_line, dut.vid.int_hpos, dut.vid.hcount_last, dut.vid.int_len);
+    $display("GEOM vline_last=%0d vpic_lines_end=%0d", dut.vid.vline_last, 384);
+    gshow=gshow+1;
+  end
+  gpic_d <= dut.vid.picture;
+end
+
 endmodule
