@@ -416,9 +416,22 @@ module spectrum_top (
 		.locked(pll_locked)
 	);
 
-	// generate 28Mhz system clock from 56MHz main clock by dividing it by 2
+	// The SDRAM clock is 112MHz now, so the system clock is a quarter of
+	// it rather than a half. Everything above this line - video, the CPU
+	// enables, the whole machine - still runs at 28MHz; only the memory
+	// got faster.
+	//
+	// A cycle is eight SDRAM clocks either way, so doubling the clock
+	// doubles the slots: one every 71ns instead of 143, 14M accesses a
+	// second instead of 7. That is the wall the turbo speeds were
+	// hitting.
+	reg [1:0] clkdiv = 2'd0;
 	always @(posedge clk56) begin
-		clock <= ~clock;
+		clkdiv <= clkdiv + 2'd1;
+		// Bit 1, not bit 0: bit 0 is half of 112 and would run the whole
+		// machine at 56MHz. Bit 1 has a period of four clocks, which is
+		// the 28MHz everything above this line is built on.
+		clock  <= clkdiv[1];
 	end
 
 	// Clock enable logic
