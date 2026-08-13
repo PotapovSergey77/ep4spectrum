@@ -481,6 +481,7 @@ module tb_top;
 	reg [19:0] wr_addr;
 	reg [7:0]  wr_data;
 	reg        wr_pending = 1'b0;
+	reg [4:0]  wr_wait = 5'd0;
 	reg        prev_mreq_w = 1'b1;
 	always @(posedge dut.clock) begin
 		if (dut.reset_n === 1'b1) begin
@@ -489,7 +490,22 @@ module tb_top;
 				wr_data    <= dut.cpu_do;
 				wr_pending <= 1'b1;
 			end
-			if (dut.cpu_mreq_n && !prev_mreq_w && wr_pending) begin
+			// Wait for the SDRAM cycle to finish before looking.
+			//
+			// This used to compare the instant MREQ went high. A cycle
+			// is eight 56MHz clocks - four of these - so at 3.5 MHz the
+			// CPU holds MREQ long enough for the write to land first,
+			// and above 7 MHz it does not. The checker then read the
+			// location while the write was still in flight and called
+			// every one of them lost. Traced on the board's own symptom
+			// and found to be the instrument, not the design: the
+			// arbiter had granted the cycle and latched address and
+			// write flag correctly one clock earlier.
+			if (dut.cpu_mreq_n && !prev_mreq_w && wr_pending)
+				wr_wait <= 5'd16;
+			else if (wr_wait != 5'd0)
+				wr_wait <= wr_wait - 5'd1;
+			if (wr_wait == 5'd1 && wr_pending) begin
 				wr_pending <= 1'b0;
 				if (peek(wr_addr) === wr_data)
 					wr_ok = wr_ok + 1;
