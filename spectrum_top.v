@@ -395,6 +395,7 @@ module spectrum_top (
 	wire            psg_bc1;
 
 	// DIVMMC interface
+	wire            divmmc_hold;
 	wire    [7:0]   divmmc_do;
 
 	wire            divmmc_sclk;
@@ -1148,7 +1149,8 @@ module spectrum_top (
 		.sd_cs(divmmc_cs),
 		.sd_sck(divmmc_sclk),
 		.sd_mosi(divmmc_mosi),
-		.sd_miso(divmmc_miso)
+		.sd_miso(divmmc_miso),
+		.cpu_hold(divmmc_hold)
 	);
 	assign SD_CS = divmmc_cs;
 	assign SD_SCK = divmmc_sclk;
@@ -1451,7 +1453,13 @@ module spectrum_top (
 
 	// The CPU runs at a steady 3.5MHz and is held only while its own
 	// data is genuinely outstanding.
-	assign cpu_wait_n = ~(cpu_mem_active & ~cpu_served);
+	// Also held while a DivMMC SPI byte is in flight and the CPU is on
+	// the port. ESXDOS times the transfer in instructions, so at 7MHz
+	// and above its count runs out well before the 36us a byte takes at
+	// the SPI divider's 219kHz - which is why the card stopped
+	// initialising above 3.5 MHz. Holding the CPU makes the exchange
+	// independent of the core's speed.
+	assign cpu_wait_n = ~((cpu_mem_active & ~cpu_served) | divmmc_hold);
 
 	// CPU data bus mux
 	assign cpu_di =

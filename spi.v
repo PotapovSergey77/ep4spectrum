@@ -9,7 +9,12 @@ module spi (
 
    output spi_clk,         // spi itself
    input  spi_di,          //
-   output spi_do           //
+   output spi_do,          //
+   // A transfer is in flight. The CPU is held on the port while this
+   // is high, so the exchange does not depend on the CPU's speed:
+   // ESXDOS times the wait in instructions, and at 7MHz and above its
+   // count is shorter than the 36us a byte actually takes.
+   output spi_busy
 );
 
 // SD cards require a slow (<=400kHz) SCK during the CMD0/CMD8/ACMD41
@@ -45,6 +50,7 @@ reg [4:0] counter = 5'd16; // tx/rx counter is idle
 reg [7:0] io_byte;
 
 assign spi_clk = counter[0];
+assign spi_busy = (counter != 5'd16);
 assign spi_do = io_byte[7];       // data is shifted up during transfer
 wire io_strobe = tx_strobe || rx_strobe;
 
