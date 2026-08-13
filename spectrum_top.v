@@ -142,7 +142,7 @@ module spectrum_top (
 	wire    [1:0]   sdram_dqm;
 	reg     [7:0]   sdram_di;
 	wire    [7:0]   sdram_do;
-	wire    [7:0]   sdram_do_raw;
+	wire   [15:0]   sdram_word;   // the whole word a read came from
 	reg     [24:0]  sdram_addr;
 	reg             sdram_we;
 	reg             sdram_oe;
@@ -198,7 +198,18 @@ module spectrum_top (
 	wire            key_f9;
 	wire            key_f10;
 	// CPU speed, set by F1..F4: 0 = 3.5 MHz, 1 = 7, 2 = 14, 3 = 28.
-	reg     [1:0]   cpu_speed = 2'd0;
+	//
+	// The key only asks; the change lands further down, on a slot
+	// boundary with no access in flight. Switching the moment the key
+	// is pressed corrupted a running BASIC, and it would: the enable
+	// pattern changes instantly, but the arbiter is built on the CPU
+	// putting MREQ exactly on a slot boundary - which is why the 3.5 MHz
+	// enables sit on counts 6 and 14. Change it under an open SDRAM
+	// cycle and the address moves out from under it, splitting one
+	// transaction across two locations. One byte of BASIC's system
+	// variables is enough to break it.
+	reg     [1:0]   cpu_speed_req = 2'd0;
+	reg     [1:0]   cpu_speed     = 2'd0;
 	// The interrupt trims are gone - F1..F4 are the speed now, and the
 	// interrupt sits at the position the published 14336 T-states give.
 	// video.v keeps the inputs; they are tied off below.
@@ -446,7 +457,7 @@ module spectrum_top (
 		// cpu interface
 		.din(sdram_di),
 		.dout(sdram_do),
-		.dout_raw(sdram_do_raw),
+		.dout16(sdram_word),
 		.addr(sdram_addr),
 		.we(sdram_we),
 		.oe(sdram_oe)
@@ -652,13 +663,13 @@ module spectrum_top (
 		key_f1_d <= key_f1;
 		key_f2_d <= key_f2;
 		if (key_f1 == 1'b1 && key_f1_d == 1'b0)
-			cpu_speed <= 2'd0;
+			cpu_speed_req <= 2'd0;
 		else if (key_f2 == 1'b1 && key_f2_d == 1'b0)
-			cpu_speed <= 2'd1;
+			cpu_speed_req <= 2'd1;
 		else if (key_f3 == 1'b1 && key_f3_d == 1'b0)
-			cpu_speed <= 2'd2;
+			cpu_speed_req <= 2'd2;
 		else if (key_f4 == 1'b1 && key_f4_d == 1'b0)
-			cpu_speed <= 2'd3;
+			cpu_speed_req <= 2'd3;
 		btn_div <= btn_div + 17'd1;
 		if (btn_div == 17'd0) begin
 			btn_prev <= KEY[3:2];
@@ -865,6 +876,17 @@ module spectrum_top (
 	// Holding the CPU means withholding its clock enable here, which is
 	// what Sizif does by holding clkcpu.
 	assign cpu_clken_gated = cpu_clken & ~contention;
+
+	// The speed change lands here rather than where the key is read: on
+	// a slot boundary, with no memory or IO cycle open and nothing
+	// waiting on the arbiter. Everything downstream assumes the CPU's
+	// MREQ arrives on a boundary, so the enable pattern must only ever
+	// change while there is nothing in flight to disturb.
+	always @(posedge clock) begin
+		if (slot_tick == 1'b1 && cpu_mreq_n == 1'b1 && cpu_ioreq_n == 1'b1 &&
+		    cpu_wait_n == 1'b1)
+			cpu_speed <= cpu_speed_req;
+	end
 
 	// cpu_wait_n is driven by the arbiter further down.
 	// F12 (PS/2 keyboard) or board button S2 triggers a plain NMI directly -

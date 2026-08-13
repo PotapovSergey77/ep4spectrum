@@ -34,8 +34,8 @@ module sdram_ep4ce (
 
 	input [7:0]  		din,			// data input from chipset/cpu
 	output [7:0]  dout,				// data output to chipset/cpu (registered)
-	output [7:0]  dout_raw,			// same data, straight off the pins
-	input [24:0]   	addr,       // byte address (only addr[21:0] are decoded, giving 4MB usable)
+	output [15:0] dout16,			// the whole word the byte came from
+	input [24:0]   	addr,       // byte address (addr[22:0] decoded, giving 8MB usable)
 	input 		 		oe,         // cpu/chipset requests read
 	input 		 		we          // cpu/chipset requests write
 );
@@ -172,19 +172,28 @@ reg       read_cycle    = 1'b0;
 //
 // read_cycle is assigned at q==0 too, so the value read here is still
 // the finishing cycle's - which is the one whose data this is.
-reg [7:0] dout_r;
+//
+// Two bytes to a word now, so which half of the bus the byte came from
+// depends on addr[0] of the cycle that is finishing. rd_sel carries it:
+// like read_cycle it is reassigned at q==0 for the cycle just starting,
+// so the value read on this line is still the finishing cycle's.
+reg [7:0]  dout_r;
+reg [15:0] word_r;
+reg        rd_sel = 1'b0;
 always @(posedge clk) begin
-	if (q == 3'd0 && read_cycle)
-		dout_r <= sd_data[7:0];
+	if (q == 3'd0 && read_cycle) begin
+		dout_r <= rd_sel ? sd_data[15:8] : sd_data[7:0];
+		word_r <= sd_data;
+	end
+	if (q == 3'd0)
+		rd_sel <= addr[0];
 end
 assign dout = dout_r;
 
-// Unregistered copy for the video controller, which samples the bus on
-// its own schedule and was designed around the combinational output.
-// The CPU path needs the registered one for timing margin; giving each
-// consumer the form it expects avoids making one work at the cost of
-// the other.
-assign dout_raw = sd_data[7:0];
+// The whole word, for a consumer that wants both bytes from one access -
+// video reads consecutive addresses, so every second byte it asks for is
+// already here and costs no cycle at all.
+assign dout16 = word_r;
 
 // ---------------------------------------------------------------------
 // ------------------------- forced refresh ----------------------------
@@ -258,9 +267,14 @@ always @(posedge clk) begin
 				sd_cmd <= CMD_AUTO_REFRESH;
 			end else if(we || oe) begin
 				// RAS phase - 12 bit row address
+				// A byte address maps to half a word now: addr[0] picks
+				// the half and everything above it is the word address,
+				// so row, column and bank all shift up one bit. Same
+				// byte addresses as before, half the chip used, and the
+				// top address bit comes free.
 				sd_cmd <= CMD_ACTIVE;
-				sd_addr <= addr[19:8];
-				sd_ba <= addr[21:20];
+				sd_addr <= addr[20:9];
+				sd_ba <= addr[22:21];
 				sd_dqm <= 2'b00;
 			end else begin
 				// bus idle anyway - may as well refresh
@@ -271,7 +285,18 @@ always @(posedge clk) begin
 		// CAS phase - 8 bit column address, A10 forces auto precharge
 		if(q == STATE_CMD_CONT && !refresh_cycle && (we || oe)) begin
 			sd_cmd <= we?CMD_WRITE:CMD_READ;
-			sd_addr <= { 4'b0100, addr[7:0] };  // auto precharge
+			sd_addr <= { 4'b0100, addr[8:1] };  // auto precharge
+			// The byte is on both halves of the bus; the masks decide
+			// which one is actually written, so the neighbour sharing
+			// the word survives. A masked byte is left untouched, which
+			// is what makes byte writes safe under packing. Reads want
+			// both halves, and get them.
+			//
+			// The chip samples the masks with the write command, and
+			// this is that command. They go back to 00 at the next
+			// cycle's ACTIVE, well before any read data is due.
+			if (we)
+				sd_dqm <= addr[0] ? 2'b01 : 2'b10;
 		end
 	end
 end

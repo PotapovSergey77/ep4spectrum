@@ -122,8 +122,8 @@ module tb_top;
 		if (!$value$plusargs("ROM=%s", romfile)) romfile = "esxmmc_plain.hex";
 		$readmemh(romfile, esxinit);
 		for (k = 0; k < 8192; k = k + 1) begin
-			chip.mem[22'h180000 + k] = {esxinit[k], esxinit[k]};
-			chip.mem[22'h1A6000 + k] = {esxinit[k], esxinit[k]};
+			poke(23'h180000 + k, esxinit[k]);
+			poke(23'h1A6000 + k, esxinit[k]);
 		end
 		wait (dut.boot_settle_done === 1'b1);
 		@(posedge dut.clock);
@@ -362,7 +362,7 @@ module tb_top;
 	initial begin
 		// screen page: vid_addr = {6'b001010, 13 bits} -> 81920..90111
 		for (w = 81920; w < 90112; w = w + 1)
-			chip.mem[w] = {vpat(w), vpat(w)};
+			poke(w, vpat(w));
 	end
 
 	integer vid_good = 0, vid_wrong = 0;
@@ -491,13 +491,13 @@ module tb_top;
 			end
 			if (dut.cpu_mreq_n && !prev_mreq_w && wr_pending) begin
 				wr_pending <= 1'b0;
-				if (chip.mem[wr_addr][7:0] === wr_data)
+				if (peek(wr_addr) === wr_data)
 					wr_ok = wr_ok + 1;
 				else begin
 					wr_bad = wr_bad + 1;
 					if (wr_bad <= 10)
 						$display("[%0t] LOST WRITE addr=%05h wrote=%02h found=%02h",
-							$time, wr_addr, wr_data, chip.mem[wr_addr][7:0]);
+							$time, wr_addr, wr_data, peek(wr_addr));
 				end
 			end
 			prev_mreq_w <= dut.cpu_mreq_n;
@@ -531,7 +531,7 @@ module tb_top;
 	initial begin
 		#1_400_000;
 		$display("PAGING: bank1[0]=%02h (want 11)  bank2[0]=%02h (want 22)  readback=%02h (want 11)",
-			chip.mem[16384][7:0], chip.mem[32768][7:0], chip.mem[36864][7:0]);
+			peek(16384), peek(32768), peek(36864));
 		$display("PAGING: page register pram_sel=%0d mem128=%b",
 			dut.pram_sel, dut.mem128);
 	end
@@ -551,5 +551,24 @@ always @(posedge dut.clock) if (dut.vid.CLKEN) begin
   end
   gpic_d <= dut.vid.picture;
 end
+
+
+	// Two bytes to a word: the modelled chip is addressed by word, the
+	// design by byte, so every poke and peek here goes through the same
+	// split the controller does. Getting this wrong reads a neighbour's
+	// byte, which looks exactly like corruption.
+	task poke(input [24:0] byte_addr, input [7:0] data);
+	begin
+		if (byte_addr[0]) chip.mem[byte_addr[24:1]][15:8] = data;
+		else              chip.mem[byte_addr[24:1]][7:0]  = data;
+	end
+	endtask
+
+	function [7:0] peek(input [24:0] byte_addr);
+	begin
+		peek = byte_addr[0] ? chip.mem[byte_addr[24:1]][15:8]
+		                    : chip.mem[byte_addr[24:1]][7:0];
+	end
+	endfunction
 
 endmodule
