@@ -79,12 +79,8 @@ module clocks (
 
 	reg     [3:0]   counter;
 
-	// The reference the SDRAM controller syncs its eight-state counter
-	// to. It has to run at the cycle rate: 14MHz now that the chip is
-	// clocked at 112, so one count of this 28MHz counter per half
-	// period instead of two.
 	always @(posedge CLK) begin
-		if (counter[0] == 1'b1)
+		if (counter[1] == 1'b1)
 			CLK_REF <= 1'b1;
 		else
 			CLK_REF <= 1'b0;
@@ -121,11 +117,11 @@ module clocks (
 			else
 				VID_MEM_SYNC <= 1'b0;
 
-			// One tick per SDRAM cycle boundary. At 112MHz a cycle is
-			// two counts of this 28MHz counter rather than four, so the
-			// boundaries are every even count and this must be high
-			// during them. Eight cycles to a window now, not four.
-			if (counter[0] == 1'b1)
+			// One tick per SDRAM cycle boundary. The four cycles in a
+			// window run over counters 1-4, 5-8, 9-12 and 13-0, so the
+			// arbiter's grant register has to update entering 1, 5, 9
+			// and 13 - which means this must be high during 0, 4, 8, 12.
+			if (counter[1:0] == 2'b11)
 				CLKEN_SLOT <= 1'b1;
 			else
 				CLKEN_SLOT <= 1'b0;
