@@ -35,6 +35,7 @@ module sdram_ep4ce (
 	input [7:0]  		din,			// data input from chipset/cpu
 	output [7:0]  dout,				// data output to chipset/cpu (registered)
 	output [15:0] dout16,			// the whole word the byte came from
+	output          refresh_req, // refresh overdue - yield the next cycle
 	input [24:0]   	addr,       // byte address (addr[22:0] decoded, giving 8MB usable)
 	input 		 		oe,         // cpu/chipset requests read
 	input 		 		we          // cpu/chipset requests write
@@ -153,6 +154,20 @@ assign sd_data = (we && q >= 3'd2 && q <= 3'd4) ?
 // Registered here, dout stays valid for a whole ~143ns q cycle.
 reg [6:0] refresh_timer = 7'd0;
 reg       refresh_due   = 1'b0;
+
+// Refresh happens only on a cycle nobody is using - the branches below
+// pick AUTO_REFRESH when neither oe nor we is asserted. That is fine
+// while the bus has idle cycles, and at 3.5MHz it has plenty. At 14 and
+// 28 MHz the CPU and video take nearly all of them, idle cycles vanish,
+// and the chip stops being refreshed: its contents decay in tens of ms,
+// which is instant to anyone watching.
+//
+// So the arbiter is told when a refresh is overdue and yields the next
+// cycle to nobody, which leaves the bus idle and lets the branch below
+// refresh. Nothing is lost by yielding: the arbiter credits a request
+// as served only when its cycle completes, so a request that was not
+// granted simply asks again.
+assign refresh_req = refresh_due;
 reg       refresh_cycle = 1'b0;
 reg       read_cycle    = 1'b0;
 
