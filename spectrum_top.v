@@ -197,12 +197,13 @@ module spectrum_top (
 	wire            key_f7;
 	wire            key_f9;
 	wire            key_f10;
-	// Interrupt position trim, two counts - one pixel - a press on F1/F2
-	reg     [7:0]   int_adj = 8'd0;
-	// Vertical trim, one eighth of a line a press on F3/F4. A whole line
-	// a press could not place the interrupt: on the board two lines came
-	// out a little short and three already too far.
-	reg     [7:0]   int_vadj = 8'd0;
+	// CPU speed, set by F1..F4: 0 = 3.5 MHz, 1 = 7, 2 = 14, 3 = 28.
+	reg     [1:0]   cpu_speed = 2'd0;
+	// The interrupt trims are gone - F1..F4 are the speed now, and the
+	// interrupt sits at the position the published 14336 T-states give.
+	// video.v keeps the inputs; they are tied off below.
+	wire    [7:0]   int_adj = 8'd0;
+	wire    [7:0]   int_vadj = 8'd0;
 	// F10 cycles the ULA contention model
 	// 0 = no contention, 1 = memory only, 2 = memory and IO.
 	//
@@ -414,6 +415,7 @@ module spectrum_top (
 		.CLK(clock),
 		.nRESET(pll_locked),
 		.MREQ(~cpu_mreq_n | ~cpu_ioreq_n),
+		.SPEED(cpu_speed),
 		.CLKEN_PSG(psg_clken),
 		.CLKEN_CPU(cpu_clken),
 		.CLKEN_MEM(mem_clken),
@@ -641,15 +643,22 @@ module spectrum_top (
 		key_f9_d <= key_f9;
 	end
 
-	// F1 and F2 trim the interrupt position of whichever machine is
-	// selected, one pixel a press, acting on the press and not the hold.
+	// F1..F4 pick the CPU speed: 3.5, 7, 14, 28 MHz. They used to trim
+	// the interrupt position and line, which was set aside once no trim
+	// could satisfy two demos at once - the interrupt now sits at the
+	// value the published 14336 T-states give and is not adjustable.
+	// The contention window on KEY2/KEY3 is still there.
 	always @(posedge clock) begin
 		key_f1_d <= key_f1;
 		key_f2_d <= key_f2;
 		if (key_f1 == 1'b1 && key_f1_d == 1'b0)
-			int_adj <= int_adj - 8'd2;
+			cpu_speed <= 2'd0;
 		else if (key_f2 == 1'b1 && key_f2_d == 1'b0)
-			int_adj <= int_adj + 8'd2;
+			cpu_speed <= 2'd1;
+		else if (key_f3 == 1'b1 && key_f3_d == 1'b0)
+			cpu_speed <= 2'd2;
+		else if (key_f4 == 1'b1 && key_f4_d == 1'b0)
+			cpu_speed <= 2'd3;
 		btn_div <= btn_div + 17'd1;
 		if (btn_div == 17'd0) begin
 			btn_prev <= KEY[3:2];
@@ -663,10 +672,6 @@ module spectrum_top (
 			cont_mode <= (cont_mode == 2'd2) ? 2'd0 : (cont_mode + 2'd1);
 		key_f3_d <= key_f3;
 		key_f4_d <= key_f4;
-		if (key_f3 == 1'b1 && key_f3_d == 1'b0)
-			int_vadj <= int_vadj - 8'd1;
-		else if (key_f4 == 1'b1 && key_f4_d == 1'b0)
-			int_vadj <= int_vadj + 8'd1;
 	end
 
 	// F5..F8 pick the machine. Switching deliberately does NOT reset,
@@ -1716,38 +1721,25 @@ module spectrum_top (
 	// something other than what it was being asked about.
 	//
 	// With every trim at zero it goes back to "3.5" and the page.
-	localparam TRIM_ADJ  = 2'd0;
-	localparam TRIM_VADJ = 2'd1;
-	localparam TRIM_CONT = 2'd2;
-	reg [1:0] trim_sel = TRIM_ADJ;
-	always @(posedge clock) begin
-		if ((key_f1 == 1'b1 && key_f1_d == 1'b0) ||
-		    (key_f2 == 1'b1 && key_f2_d == 1'b0))
-			trim_sel <= TRIM_ADJ;
-		else if ((key_f3 == 1'b1 && key_f3_d == 1'b0) ||
-		         (key_f4 == 1'b1 && key_f4_d == 1'b0))
-			trim_sel <= TRIM_VADJ;
-		else if (btn_div == 17'd0 &&
-		         ((btn_prev[0] == 1'b1 && KEY[2] == 1'b0) ||
-		          (btn_prev[1] == 1'b1 && KEY[3] == 1'b0)))
-			trim_sel <= TRIM_CONT;
-	end
+	wire any_trim = (cont_adj != 5'd0);
 
-	wire any_trim = (int_adj != 8'd0) || (int_vadj != 8'd0) || (cont_adj != 5'd0);
-	wire [7:0] trim_val = (trim_sel == TRIM_ADJ)  ? int_adj  :
-	                      (trim_sel == TRIM_VADJ) ? int_vadj :
-	                                                {3'b000, cont_adj};
-	wire [3:0] trim_tag = (trim_sel == TRIM_ADJ)  ? 4'ha :   // A
-	                      (trim_sel == TRIM_VADJ) ? 4'hd :   // d
-	                                                4'hc;    // C
+	// The left pair carries the CPU speed: 3.5, 7.0, 14, 28. The two
+	// slower ones take a decimal point after the first digit, which is
+	// also where "3.5" came from before there was anything to choose.
+	wire [3:0] spd_hi = (cpu_speed == 2'd0) ? 4'd3 :
+	                    (cpu_speed == 2'd1) ? 4'd7 :
+	                    (cpu_speed == 2'd2) ? 4'd1 : 4'd2;
+	wire [3:0] spd_lo = (cpu_speed == 2'd0) ? 4'd5 :
+	                    (cpu_speed == 2'd1) ? 4'd0 :
+	                    (cpu_speed == 2'd2) ? 4'd4 : 4'd8;
 
 	wire [3:0] nibble = any_trim ?
-	                    ((digit_scan == 2'd3) ? trim_tag :
+	                    ((digit_scan == 2'd3) ? 4'hc :   // C, contention window
 	                     (digit_scan == 2'd2) ? 4'd0 :
-	                     (digit_scan == 2'd1) ? trim_val[7:4] :
-	                                            trim_val[3:0]) :
-	                    (digit_scan == 2'd3) ? 4'd3 :
-	                    (digit_scan == 2'd2) ? 4'd5 :
+	                     (digit_scan == 2'd1) ? {3'b000, cont_adj[4]} :
+	                                            cont_adj[3:0]) :
+	                    (digit_scan == 2'd3) ? spd_hi :
+	                    (digit_scan == 2'd2) ? spd_lo :
 	                    (digit_scan == 2'd1) ? pg_tens :
 	                                           pg_units;
 
@@ -1755,7 +1747,10 @@ module spectrum_top (
 	                   ((digit_scan == 2'd1) && (page_ram_sel < 6'd10));
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in
-	wire digit_dp    = (digit_scan == 2'd3) ||
+	// Point after the first digit only where the speed has a fraction -
+	// "3.5" and "7.0" - not on "14" or "28".
+	wire digit_dp    = ((digit_scan == 2'd3) &&
+	                    (any_trim || (cpu_speed == 2'd0) || (cpu_speed == 2'd1))) ||
 	                   (divmmc_paged_in && (digit_scan == 2'd0));
 
 	reg [6:0] seg_gfedcba;

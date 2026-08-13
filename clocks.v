@@ -42,10 +42,12 @@ module clocks (
 	nRESET,
 	// cpu requests bus
 	MREQ,
+	// CPU speed: 0 = 3.5 MHz, 1 = 7, 2 = 14, 3 = 28
+	SPEED,
 
 	// 1.75 MHz clock enable for sound
 	CLKEN_PSG,
-	// 3.5 MHz clock enable (1 in 8)
+	// CPU clock enable, 1 in 8 at 3.5 MHz up to every clock at 28
 	CLKEN_CPU,
 	// 3.5 MHz clock enable (1 in 8) for cpu memory access
 	CLKEN_MEM,
@@ -64,6 +66,7 @@ module clocks (
 	input           CLK;
 	input           nRESET;
 	input           MREQ;
+	input   [1:0]   SPEED;
 
 	output reg      CLKEN_PSG;
 	output reg      CLKEN_CPU;
@@ -139,10 +142,27 @@ module clocks (
 			// of full speed when measured). Enabling during 7 and 15
 			// puts the request on the boundary at 8 and 0, and the byte
 			// then comes back exactly at the next enable.
-			if (counter == 4'b0110 || counter == 4'b1110)
-				CLKEN_CPU <= 1'b1;
-			else
-				CLKEN_CPU <= 1'b0;
+			// Turbo divides this down from the same counter, so every
+			// speed keeps the phase the 3.5 MHz case was tuned to -
+			// the enables stay on the even counts that put MREQ on an
+			// arbiter boundary.
+			//
+			//   3.5 MHz  counts 6 and 14          2 of 16
+			//   7   MHz  counts 2, 6, 10, 14      4 of 16
+			//   14  MHz  every even count         8 of 16
+			//   28  MHz  every count             16 of 16
+			//
+			// Above 3.5 the SDRAM cannot keep up - one slot every four
+			// clocks is 7M accesses a second, and video takes its share
+			// of those - so the CPU spends the difference in wait
+			// states off the arbiter. It runs, just not at the full
+			// multiple.
+			case (SPEED)
+			2'd0:    CLKEN_CPU <= (counter[2:0] == 3'd6);
+			2'd1:    CLKEN_CPU <= (counter[1:0] == 2'd2);
+			2'd2:    CLKEN_CPU <= (counter[0]   == 1'b0);
+			default: CLKEN_CPU <= 1'b1;
+			endcase
 		end
 	end
 
