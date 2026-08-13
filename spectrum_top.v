@@ -142,7 +142,6 @@ module spectrum_top (
 	wire    [1:0]   sdram_dqm;
 	reg     [7:0]   sdram_di;
 	wire    [7:0]   sdram_do;
-	wire            sdram_refresh_req;
 	wire   [15:0]   sdram_word;   // the whole word a read came from
 	reg     [24:0]  sdram_addr;
 	reg             sdram_we;
@@ -471,7 +470,6 @@ module spectrum_top (
 		.dout16(sdram_word),
 		.addr(sdram_addr),
 		.we(sdram_we),
-		.refresh_req(sdram_refresh_req),
 		.oe(sdram_oe)
 	);
 	assign SDRAM_DQMH = sdram_dqm[1];
@@ -1374,17 +1372,7 @@ module spectrum_top (
 	wire cpu_wants = cpu_mem_active & ~cpu_served & (~cpu_inflight | cpu_overdue);
 	wire vid_wants = ~vid_rd_n;
 
-	// An overdue refresh outranks both. Yielding the cycle to nobody
-	// leaves the bus idle, which is the only condition under which
-	// sdram_ep4ce.v issues AUTO_REFRESH - and above 7 MHz the CPU and
-	// video between them leave no idle cycles at all, so without this
-	// the chip is never refreshed and its contents decay.
-	//
-	// Costs nothing to whoever was asking: a request is credited as
-	// served only when its own cycle completes, so one that was not
-	// granted simply asks again at the next boundary.
-	wire [1:0] next_own = sdram_refresh_req ? OWN_NONE :
-	                      cpu_wants ? OWN_CPU :
+	wire [1:0] next_own = cpu_wants ? OWN_CPU :
 	                      vid_wants ? OWN_VID : OWN_NONE;
 
 	always @(posedge clock) begin
