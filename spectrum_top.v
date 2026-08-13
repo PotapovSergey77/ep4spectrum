@@ -285,7 +285,8 @@ module spectrum_top (
 	// - but this register is derived from itself (clock <= ~clock), so
 	// without it the whole 28MHz domain is stuck at X in simulation and
 	// the design does absolutely nothing.
-	reg             clock = 1'b0;
+	wire            clock;
+	wire            clk28;
 	reg             reset_n;
 
 	// Clock control
@@ -413,13 +414,22 @@ module spectrum_top (
 		.inclk0(CLOCK_50),
 		.c0(clk56),
 		.c1(SDRAM_CLK),
+		.c2(clk28),
 		.locked(pll_locked)
 	);
 
-	// generate 28Mhz system clock from 56MHz main clock by dividing it by 2
-	always @(posedge clk56) begin
-		clock <= ~clock;
-	end
+	// The system clock comes from its own PLL output rather than from
+	// dividing the SDRAM clock.
+	//
+	// Dividing tied the two together: the memory could only run at a
+	// whole multiple of 28MHz - 84, 112, 140 and nothing between. It
+	// also fixed the PLL's VCO configuration, and that configuration is
+	// what made the phase grid too coarse to close 112MHz, where the
+	// output path finished 76ps short with no shift left to give it.
+	//
+	// Both outputs come from the same PLL, so they stay phase-related
+	// and the crossing between them is as safe as it was.
+	assign clock = clk28;
 
 	// Clock enable logic
 	clocks clken (

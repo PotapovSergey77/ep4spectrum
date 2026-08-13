@@ -17,12 +17,14 @@ module pll_ep4ce (
 	inclk0,
 	c0,
 	c1,
+	c2,
 	locked);
 
 	input	  areset;
 	input	  inclk0;
 	output	  c0;
 	output	  c1;
+	output	  c2;
 	output	  locked;
 
 	wire [4:0] sub_wire0;
@@ -30,6 +32,8 @@ module pll_ep4ce (
 	wire  c0 = sub_wire3;
 	wire  sub_wire1 = sub_wire0[1:1];
 	wire  c1 = sub_wire1;
+	wire  sub_wire6 = sub_wire0[2:2];
+	wire  c2 = sub_wire6;
 	wire  sub_wire2;
 	wire  locked = sub_wire2;
 	wire  sub_wire4 = inclk0;
@@ -117,7 +121,11 @@ module pll_ep4ce (
 		altpll_component.port_scanwrite = "PORT_UNUSED",
 		altpll_component.port_clk0 = "PORT_USED",
 		altpll_component.port_clk1 = "PORT_USED",
-		altpll_component.port_clk2 = "PORT_UNUSED",
+		altpll_component.clk2_divide_by = 25,
+		altpll_component.clk2_duty_cycle = 50,
+		altpll_component.clk2_multiply_by = 14,
+		altpll_component.clk2_phase_shift = "0",
+		altpll_component.port_clk2 = "PORT_USED",
 		altpll_component.port_clk3 = "PORT_UNUSED",
 		altpll_component.port_clk4 = "PORT_UNUSED",
 		altpll_component.port_clk5 = "PORT_UNUSED",
