@@ -25,9 +25,7 @@ module divmmc (
 	output reg     sd_cs,
 	output         sd_sck,
 	output         sd_mosi,
-	input          sd_miso,
-	// High while an SPI byte is in flight and the CPU is on the port.
-	output         cpu_hold
+	input          sd_miso
 );
 
 reg m1_trigger;
@@ -42,20 +40,12 @@ assign conmem = ctrl[7];
 
 // Control del modulo SPI
 reg spi_tx_strobe;
-wire spi_busy_i;
 reg spi_rx_strobe;
 
 // One SPI transfer per bus cycle, detected on the access starting
 // rather than on its level - see the comment at the strobe below.
 wire spi_acc = enable && (a[3:0] == 4'hb) && (!rd_n || !wr_n);
 reg  spi_acc_d = 1'b0;
-
-// Hold the CPU on the SPI port while a byte is in flight, so the
-// exchange stops depending on how fast the CPU polls it. Declared here
-// rather than above, where spi_acc has not been declared yet and would
-// become an implicit one-bit net - ModelSim rejects that and Quartus
-// builds it silently, which cost a board flash earlier in this project.
-assign cpu_hold = spi_acc & spi_busy_i;
 
 // (removed: an acc_cnt access counter clocked by `enable` and never read
 // by anything, kept alive only by a noprune attribute. Because `enable`
@@ -130,8 +120,7 @@ spi mi_spi (
    
    .spi_clk(sd_sck),
    .spi_di(sd_miso),
-   .spi_do(sd_mosi),
-   .spi_busy(spi_busy_i)
+   .spi_do(sd_mosi)
 );
 
 endmodule
