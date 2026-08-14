@@ -818,9 +818,62 @@ module tb_top;
 			prev_mreq_w <= dut.cpu_mreq_n;
 		end
 	end
+	// The same question asked without any timing in it. The checker above
+	// settles for 16 clocks before it looks, and at 28MHz the CPU issues
+	// a write about every 17 clocks - so the next write overwrites
+	// wr_addr/wr_data while the previous check is still counting down,
+	// and what it finally compares is a mixture of two accesses. That is
+	// the same class of fault as the one this checker was already fixed
+	// for once ("called every turbo write lost"), so its turbo verdict
+	// cannot be trusted either way.
+	//
+	// Instead: remember every byte the CPU wrote, and compare the
+	// finished memory against that list at the end of the run. A write
+	// that never reached the chip shows up here and nothing else does.
+	// Each address in ramtest.hex is written exactly once, so the last
+	// value written is what memory must hold.
+	integer wl_n = 0;
+	reg [19:0] wl_addr [0:8191];
+	reg [7:0]  wl_data [0:8191];
+	reg        wr_cyc_d = 1'b0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1) begin
+			// One entry per write cycle, on its leading edge.
+			if (!dut.cpu_mreq_n && !dut.cpu_wr_n && dut.ram_enable
+			    && !wr_cyc_d && wl_n < 8192) begin
+				wl_addr[wl_n] = {3'b000, dut.ram_page, dut.cpu_a[13:0]};
+				wl_data[wl_n] = dut.cpu_do;
+				wl_n = wl_n + 1;
+			end
+			wr_cyc_d <= (!dut.cpu_mreq_n && !dut.cpu_wr_n && dut.ram_enable);
+		end
+	end
+
 	initial begin
 		#1_450_000;
-		$display("CPU RAM writes: %0d landed, %0d lost or misplaced", wr_ok, wr_bad);
+		// Reported for continuity with older runs, but do not believe its
+		// verdict above 7MHz - see the note on the timed checker above.
+		// Measured at 28MHz it called 334 of 335 writes lost while every
+		// one of them was in fact present in memory. The FINAL MEMORY
+		// CHECK below is the one to read.
+		$display("CPU RAM writes (timed, unreliable >7MHz): %0d landed, %0d lost",
+			wr_ok, wr_bad);
+		begin : final_write_check
+			integer wi, wgood, wmiss;
+			wgood = 0; wmiss = 0;
+			for (wi = 0; wi < wl_n; wi = wi + 1) begin
+				if (peek(wl_addr[wi]) === wl_data[wi])
+					wgood = wgood + 1;
+				else begin
+					wmiss = wmiss + 1;
+					if (wmiss <= 8)
+						$display("  MISSING addr=%05h wrote=%02h memory holds=%02h",
+							wl_addr[wi], wl_data[wi], peek(wl_addr[wi]));
+				end
+			end
+			$display("FINAL MEMORY CHECK: %0d of %0d CPU writes are present, %0d missing",
+				wgood, wl_n, wmiss);
+		end
 	end
 
 	// Is the CPU clock enable ever unknown? It comes from a free-running

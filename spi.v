@@ -9,7 +9,12 @@ module spi (
 
    output spi_clk,         // spi itself
    input  spi_di,          //
-   output spi_do           //
+   output spi_do,          //
+
+   // High from the clock the engine is kicked off until it is idle
+   // again, so a caller can hold the CPU for exactly one transfer.
+   // See divmmc.v's wait_n for why that is needed.
+   output busy
 );
 
 // SD cards require a slow (<=400kHz) SCK during the CMD0/CMD8/ACMD41
@@ -49,6 +54,8 @@ always @(posedge clk) div_cnt <= div_cnt + 3'd1;
 
 reg [4:0] counter = 5'd16; // tx/rx counter is idle
 reg [7:0] io_byte;
+
+assign busy = (counter != 5'd16);
 
 assign spi_clk = counter[0];
 assign spi_do = io_byte[7];       // data is shifted up during transfer

@@ -350,6 +350,14 @@ module spectrum_top (
 
 	// CPU signals
 	wire            cpu_wait_n;
+	// Held low for the span of one DivMMC SPI transfer - see divmmc.v's
+	// wait_n. ANDed with the arbiter's own wait below to make the signal
+	// T80 actually sees; cpu_wait_n itself keeps its name and meaning
+	// (the SDRAM arbiter alone) everywhere else in this file. Declared
+	// here, ahead of the T80 instance that reads it: Quartus accepts
+	// use-before-declaration, ModelSim does not.
+	wire            divmmc_wait_n;
+	wire            cpu_wait_all_n;
 	wire            cpu_irq_n;
 	wire            cpu_nmi_n;
 	wire            cpu_busreq_n;
@@ -750,7 +758,7 @@ module spectrum_top (
 		.RESET_n(reset_n),
 		.CLK_n(clock),
 		.CLKEN(cpu_clken_gated),
-		.WAIT_n(cpu_wait_n),
+		.WAIT_n(cpu_wait_all_n),
 		.INT_n(cpu_irq_n),
 		.NMI_n(cpu_nmi_n),
 		.BUSRQ_n(cpu_busreq_n),
@@ -1181,7 +1189,8 @@ module spectrum_top (
 		.sd_cs(divmmc_cs),
 		.sd_sck(divmmc_sclk),
 		.sd_mosi(divmmc_mosi),
-		.sd_miso(divmmc_miso)
+		.sd_miso(divmmc_miso),
+		.wait_n(divmmc_wait_n)
 	);
 	assign SD_CS = divmmc_cs;
 	assign SD_SCK = divmmc_sclk;
@@ -1485,6 +1494,10 @@ module spectrum_top (
 	// The CPU runs at a steady 3.5MHz and is held only while its own
 	// data is genuinely outstanding.
 	assign cpu_wait_n = ~(cpu_mem_active & ~cpu_served);
+
+	// What T80 is actually given: held by the arbiter or by an in-flight
+	// DivMMC SPI transfer, whichever wants it.
+	assign cpu_wait_all_n = cpu_wait_n & divmmc_wait_n;
 
 	// CPU data bus mux
 	assign cpu_di =

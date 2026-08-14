@@ -298,16 +298,38 @@ module video (
 	// on Pentagon - where this was measured. On the Sinclair machines
 	// that enable arrived once every eight pixels, so the stage meant to
 	// cost one pixel cost a whole character cell.
+	//
+	// Two further pixels on top of that, which are a correction for
+	// something outside this file. T2Write=1 on the T80se instance in
+	// spectrum_top.v moves an OUT's IORQ and WR from T3 into T2, so the
+	// ULA port latches a border write one T-state earlier than it used
+	// to - and a T-state at 3.5MHz is two pixels, which is exactly how
+	// far left the border moved when that went in. The write has to stay
+	// early: it is what makes the write visible to T80 when it samples
+	// WAIT at the end of T2, and contention, the turbo modes and DivMMC
+	// all depend on that. So only its visible consequence is taken back,
+	// here, where the machine's own border adjustment already acts.
+	//
+	// The cause is machine-independent, so this delay is too - it is not
+	// a Pentagon-only trim, even though Pentagon is where it shows up
+	// cleanest, having no contention to smear the OUT across a slot.
+	reg     [2:0]   border_d1  = 3'b000;
+	reg     [2:0]   border_d2  = 3'b000;
 	reg     [2:0]   border_out = 3'b000;
 	always @(posedge CLK or negedge nRESET) begin
 		if (nRESET == 1'b0) begin
 			border_latched <= 3'b000;
+			border_d1      <= 3'b000;
+			border_d2      <= 3'b000;
 			border_out     <= 3'b000;
 		end else if (CLKEN == 1'b1) begin
 			if (border_update == 1'b1)
 				border_latched <= BORDER_IN;
-			if (hcounter[0] == 1'b1)
-				border_out <= border_latched;
+			if (hcounter[0] == 1'b1) begin
+				border_d1  <= border_latched;
+				border_d2  <= border_d1;
+				border_out <= border_d2;
+			end
 		end
 	end
 

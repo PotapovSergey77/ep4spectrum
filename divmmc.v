@@ -25,7 +25,12 @@ module divmmc (
 	output reg     sd_cs,
 	output         sd_sck,
 	output         sd_mosi,
-	input          sd_miso
+	input          sd_miso,
+
+	// Low while an SPI transfer this module started is still shifting.
+	// See the comment above the assign at the bottom for what it is for
+	// and for the two earlier attempts that did not work.
+	output         wait_n
 );
 
 reg m1_trigger;
@@ -47,6 +52,20 @@ reg spi_rx_strobe;
 wire spi_acc = enable && (a[3:0] == 4'hb) && (!rd_n || !wr_n);
 reg  spi_acc_d = 1'b0;
 
+// spi.v starts a transfer only when it is idle, and silently discards
+// one that arrives while a previous byte is still shifting - dout is
+// left alone and nothing begins. ESXDOS polls this port in a loop; at
+// 3.5MHz the polls are far enough apart that each finds the engine
+// idle, and above that one can land mid-shift and the driver then
+// reads the same stale byte forever.
+wire spi_busy;
+
+// Latches that this access has been seen to actually start a transfer.
+// Without it, wait_n would be fooled by spi_busy still reading low in
+// the clock or two before spi.v reacts to the strobe, and would release
+// the CPU before the byte it just asked for had begun.
+reg  seen_busy = 1'b0;
+
 // (removed: an acc_cnt access counter clocked by `enable` and never read
 // by anything, kept alive only by a noprune attribute. Because `enable`
 // is derived from the CPU's IORQ_n, it made TimeQuest treat IORQ_n as a
@@ -60,6 +79,7 @@ always @(posedge clk) begin
 		paged_in <= 1'b0;
 		ctrl <= 8'h00;
 		sd_cs <= 1'b1;
+		seen_busy <= 1'b0;
 	end else begin
 		spi_rx_strobe = 1'b0;
 		spi_tx_strobe = 1'b0;
@@ -92,6 +112,12 @@ always @(posedge clk) begin
 			else     spi_tx_strobe = 1'b1;
 		end
 
+		// Rearms the moment the access ends, ready for the next one.
+		if (!spi_acc)
+			seen_busy <= 1'b0;
+		else if (spi_busy)
+			seen_busy <= 1'b1;
+
 		if (!mreq_n && !rd_n && !m1_n && 
 			((a==16'h0000) || (a==16'h0008) || (a==16'h0038) ||
 			 (a==16'h0066) || (a==16'h04C6) || (a==16'h0562))) begin
@@ -120,7 +146,44 @@ spi mi_spi (
    
    .spi_clk(sd_sck),
    .spi_di(sd_miso),
-   .spi_do(sd_mosi)
+   .spi_do(sd_mosi),
+   .busy(spi_busy)
 );
+
+// True once this access's own transfer has both started and finished.
+// Gating on spi_busy alone would drop wait_n the instant it read low,
+// which includes the clocks right after the strobe before spi.v has
+// reacted - releasing the CPU before the byte had begun to shift.
+wire spi_xfer_complete = seen_busy && !spi_busy;
+
+// Hold the CPU for exactly one transfer, so a poll can never arrive
+// while the engine is still shifting and be discarded. Modelled on
+// zx-sizif-512's divmmc.sv, which has no free-running engine to race:
+// every access loads the shift counter and holds the CPU until it is
+// done, making the drop impossible by construction rather than
+// handling it with a queue.
+//
+// Keyed on spi_acc - a fully qualified access, IORQ and RD/WR and the
+// port address together - and released unconditionally the moment the
+// access ends. Two earlier shapes are worth not repeating:
+//
+//  - Keyed on the address alone (plus m1_n/mreq_n), to get the signal
+//    earlier. The address bus holds its last value between cycles, so
+//    this went true on its own during idle and refresh with nothing
+//    able to clear it, and wait_n stuck low forever. That is a machine
+//    that will not boot, will not switch speed and will not run BASIC.
+//
+//  - This same spi_acc shape, before T2Write=1 was set on the T80se
+//    instance in spectrum_top.v. It was a complete no-op: T80 samples
+//    WAIT at the end of TState 2, and with T2Write=0 an OUT's IORQ did
+//    not go low until T3, so the wait was always exactly one T-state
+//    too late to be seen. It compiled, closed timing, passed every
+//    regression, and changed nothing at all on the board.
+//
+// While the CPU is held at TState 2, T80se keeps re-asserting IORQ
+// (its `TState == 2 && WAIT_n == 0` term), so the access - and this
+// signal - stay up until the transfer completes and then release
+// together.
+assign wait_n = ~spi_acc | spi_xfer_complete;
 
 endmodule
