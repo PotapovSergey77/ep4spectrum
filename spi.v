@@ -37,7 +37,13 @@ module spi (
 // ESXDOS's card-init path has its own timeout that a slow clock misses.
 // 3.5MHz is the rate that has actually got through both, and it is what
 // real DivMMC hardware runs at.
-reg [2:0] div_cnt;
+// Explicit power-up value: Quartus maps this to the DFF's power-up
+// state (the same thing `counter`'s own = 5'd16 below relies on), but
+// in simulation an uninitialised reg starts 'x' and, since div_cnt only
+// ever adds to itself, never recovers - tick stays 'x' forever and the
+// x propagates into counter. Sim-only problem, but it invalidates any
+// run that touches this module.
+reg [2:0] div_cnt = 3'd0;
 wire      tick = (div_cnt == 3'd7);
 always @(posedge clk) div_cnt <= div_cnt + 3'd1;
 

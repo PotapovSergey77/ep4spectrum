@@ -228,8 +228,27 @@ module video (
 	// Wrapped into the line, so a negative trim near the start of a line
 	// lands at its end rather than turning into a huge unsigned count -
 	// the same trap the interrupt position fell into.
+	//
+	// The -4 (one T-state, four hcounter counts) is structural, not a
+	// trim, and is why CONT_ADJ can stay centred on zero. The CPU side
+	// charges contention when it sees MREQ_n or IORQ_n go low, and both
+	// of those are first visible in T2 here - MREQ because T80se raises
+	// it on the edge that ends TState 1 where a real Z80 has it in T1,
+	// IORQ because T2 is where it genuinely belongs. So the charge lands
+	// one T-state after the machine cycle it belongs to started, for
+	// every access alike, and winding the window back one T-state makes
+	// the delay come out against the cycle's own T1 - which is what the
+	// published table is written in terms of and what a program can time
+	// against.
+	//
+	// One window covers memory and IO both. Giving them separate windows
+	// a T-state apart was tried, on the theory that MREQ-in-T1 and
+	// IORQ-in-T2 need different corrections; measurement says they do
+	// not, because T80se's MREQ is late by exactly the amount that makes
+	// the two agree. (Requires T2Write=1 on the T80se instance so a
+	// write's MREQ is on the same edge as a read's.)
 	wire signed [12:0] hc_sum =
-		{3'b000, hcounter} + {{6{CONT_ADJ[4]}}, CONT_ADJ, 2'b00};
+		{3'b000, hcounter} + {{6{CONT_ADJ[4]}}, CONT_ADJ, 2'b00} - 13'sd4;
 	wire signed [12:0] hc_wrap =
 		(hc_sum < 0)      ? (hc_sum + hline) :
 		(hc_sum >= hline) ? (hc_sum - hline) : hc_sum;

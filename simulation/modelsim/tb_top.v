@@ -102,6 +102,282 @@ module tb_top;
 	end
 
 	// ------------------------------------------------------------
+	// Turbo speed override for investigation: +SPEED=0..3 forces
+	// cpu_speed directly (0=3.5MHz .. 3=28MHz) from time zero, bypassing
+	// the F1-F4/PS2 path entirely (there is no keyboard traffic in this
+	// testbench to drive it otherwise). Omit the plusarg to keep the
+	// power-up default of 3.5MHz.
+	// ------------------------------------------------------------
+	reg [31:0] forced_speed;
+	initial begin
+		if ($value$plusargs("SPEED=%d", forced_speed)) begin
+			force dut.cpu_speed = forced_speed[1:0];
+			$display("[%0t] cpu_speed forced to %0d", $time, forced_speed[1:0]);
+		end
+	end
+
+	// How long the run lasts before the final summary prints and
+	// $finish fires (see that block, near the end of this file).
+	// +RUNLEN=<us> overrides the default 1.5ms - e.g. 25000 to clear a
+	// 20.48ms frame/INT boundary. Must still be <= the outer `run <N>us`
+	// given to vsim, or the run stops first and this block, along with
+	// the trace file close, never happens at all. Read here (rather
+	// than in the block that waits on it) so there is no race between
+	// two initial blocks both acting at time zero.
+	reg [31:0] end_time_us = 32'd1500;
+	initial begin
+		if ($value$plusargs("RUNLEN=%d", end_time_us))
+			$display("run length overridden to %0dus", end_time_us);
+	end
+
+	// ------------------------------------------------------------
+	// Live turbo transition: +LIVESPEED=1..3 lets the machine boot and
+	// run normally at 3.5MHz, then - once the CPU has been running for
+	// a while - drives cpu_speed_req the way an F2/F3/F4 keypress
+	// actually would, through the real "landing" logic in
+	// spectrum_top.v (only takes effect on a slot boundary with no
+	// memory/IO cycle open and WAIT released). +SPEED forces cpu_speed
+	// directly and so never exercises that landing logic at all - this
+	// is the board's actual reported symptom: engage 14/28MHz and even
+	// F1/F2 cannot get the machine back, which only makes sense if the
+	// safe point to change speed stops arriving.
+	// ------------------------------------------------------------
+	reg [31:0] live_speed;
+	reg        live_transition_requested = 1'b0;
+	initial begin
+		if ($value$plusargs("LIVESPEED=%d", live_speed)) begin
+			wait (dut.reset_n === 1'b1);
+			repeat (4000) @(posedge dut.clock);
+			$display("[%0t] driving cpu_speed_req -> %0d (simulated F-key press)",
+				$time, live_speed[1:0]);
+			force dut.cpu_speed_req = live_speed[1:0];
+			live_transition_requested = 1'b1;
+		end
+	end
+
+	integer landed_at = -1;
+	always @(posedge dut.clock) begin
+		if (live_transition_requested && landed_at == -1
+		    && dut.cpu_speed === live_speed[1:0]) begin
+			landed_at = $time;
+			$display("[%0t] cpu_speed landed on %0d", $time, live_speed[1:0]);
+		end
+	end
+
+	// Watchdog: longest continuous run of WAIT held. Healthy operation
+	// clears within a couple of slot boundaries every time; the board's
+	// symptom - stuck permanently, F-keys unable to recover - would show
+	// up here as a streak that never ends.
+	integer wait_streak = 0, max_wait_streak = 0;
+	always @(posedge dut.clock) begin
+		if (dut.cpu_wait_n == 1'b0) begin
+			wait_streak <= wait_streak + 1;
+			if (wait_streak + 1 > max_wait_streak) max_wait_streak <= wait_streak + 1;
+		end else
+			wait_streak <= 0;
+	end
+
+	// Confirms whether an interrupt actually happened during the run,
+	// so a clean result can't be mistaken for "never reached one".
+	// Also measures the frame period between interrupts: for a 48K that
+	// must be 69888 T-states = 19.968ms, and every raster effect in
+	// every program is placed relative to it.
+	integer int_count = 0;
+	reg cpu_irq_n_d = 1'b1;
+	time    last_irq_time = 0;
+	always @(posedge dut.clock) begin
+		cpu_irq_n_d <= dut.cpu_irq_n;
+		if (cpu_irq_n_d == 1'b1 && dut.cpu_irq_n == 1'b0) begin
+			int_count <= int_count + 1;
+			if (last_irq_time != 0 && int_count < 6)
+				$display("[%0t] FRAME period %0d ns (48K wants 19968000)",
+					$time, $time - last_irq_time);
+			last_irq_time <= $time;
+		end
+	end
+
+	// --- IM1 interrupt acceptance and the exit from HALT ---
+	// The two things the 48K raster-timing investigation has never
+	// actually measured. A real Z80 accepts an IM1 interrupt in 13
+	// T-states (a 5-T-state RST-style M1 plus 2 automatic wait states,
+	// then two 3-T-state pushes) and exiting HALT must not add or lose
+	// any. If either is wrong here, programs that wait in HALT land at
+	// a different raster position than programs that spin in a poll
+	// loop - which is exactly the shape of "no single trim satisfies
+	// both demos".
+	//
+	// Counted in CPU T-states, not clocks: one gated clock enable is
+	// one T-state, so contention holding the CPU cannot distort it.
+	// IntCycle is set by T80 as the accepting M1 begins and cleared at
+	// the end of the sequence, so it brackets exactly the acceptance.
+	integer int_ts = 0;
+	integer int_reported = 0;
+	reg     intcycle_d = 1'b0;
+	reg     was_halted = 1'b0;
+	always @(posedge dut.clock) begin
+		intcycle_d <= dut.cpu.u0.IntCycle;
+
+		if (dut.cpu.u0.IntCycle == 1'b1 && intcycle_d == 1'b0) begin
+			int_ts <= 0;
+			was_halted <= dut.cpu.u0.Halt_FF;
+		end else if (dut.cpu.u0.IntCycle == 1'b1 &&
+		             dut.cpu_clken_gated == 1'b1)
+			int_ts <= int_ts + 1;
+
+		if (dut.cpu.u0.IntCycle == 1'b0 && intcycle_d == 1'b1) begin
+			if (int_reported < 6)
+				$display("[%0t] INT ACCEPT: %0d T-states (from HALT: %b) - Z80 wants 13",
+					$time, int_ts, was_halted);
+			int_reported <= int_reported + 1;
+		end
+	end
+
+	// How long the CPU sat in HALT, and that it left at all.
+	integer halt_ts = 0;
+	integer halt_reported = 0;
+	reg     halt_d = 1'b0;
+	always @(posedge dut.clock) begin
+		halt_d <= dut.cpu.u0.Halt_FF;
+		if (dut.cpu.u0.Halt_FF == 1'b1 && halt_d == 1'b0)
+			halt_ts <= 0;
+		else if (dut.cpu.u0.Halt_FF == 1'b1 && dut.cpu_clken_gated == 1'b1)
+			halt_ts <= halt_ts + 1;
+		if (dut.cpu.u0.Halt_FF == 1'b0 && halt_d == 1'b1) begin
+			if (halt_reported < 6)
+				$display("[%0t] HALT exited after %0d T-states", $time, halt_ts);
+			halt_reported <= halt_reported + 1;
+		end
+	end
+
+	// --- The ULA contention delay table, measured per access type ---
+	//
+	// Indexed by the phase of the ULA window at which the CPU's machine
+	// cycle BEGINS (its T1), which is what a program can actually see
+	// and time against. The canonical 48K table is 6,5,4,3,2,1,0,0 and
+	// it is the same for reads and writes on real hardware.
+	//
+	// Split by read/write on purpose. T80se.v asserts MREQ a T-state
+	// later for a write (the TState==2 edge, T80se.v:170) than for a
+	// read or opcode fetch (the TState==1 edge, T80se.v:157/166), and
+	// contention here is charged off MREQ going low (spectrum_top.v's
+	// cont_mem). So the delay a program is charged is expected to come
+	// out shifted between the two - and a shift that differs by access
+	// type is exactly what no single CONT_ADJ trim can straighten,
+	// which would explain why no trim has ever satisfied two demos at
+	// once.
+	//
+	// TState only advances on a gated enable, so a stall shows up as
+	// enables the CPU did not get; counting those is counting T-states.
+	// IO gets its own row. An OUT is how border stripes are drawn, and
+	// IO contention is a separate branch in spectrum_top.v (cont_io and
+	// the io_seq walk) from the memory one. It also has a different
+	// correct answer: a real Z80 puts IORQ in T2 of the IO cycle, which
+	// is where T80se puts it too, whereas it puts MREQ in T1 and T80se
+	// does not. So a compensation that is right for memory is not
+	// automatically right for IO - and if the two end up shifted from
+	// each other, an OUT-heavy program and a memory-heavy program will
+	// again disagree about the trim.
+	integer rd_delay [0:7];
+	integer rd_count [0:7];
+	integer wr_delay [0:7];
+	integer wr_count [0:7];
+	integer io_delay [0:7];
+	integer io_count [0:7];
+	integer ci;
+	initial begin
+		for (ci = 0; ci < 8; ci = ci + 1) begin
+			rd_delay[ci] = 0; rd_count[ci] = 0;
+			wr_delay[ci] = 0; wr_count[ci] = 0;
+			io_delay[ci] = 0; io_count[ci] = 0;
+		end
+	end
+
+	reg [2:0] mc_phase = 3'd0;
+	reg       mc_inwin = 1'b0;      // cycle began inside the ULA window
+	reg       mc_caddr = 1'b0;      // ...and pointed at contended RAM
+	reg       mc_write = 1'b0;
+	reg       mc_io    = 1'b0;
+	integer   mc_stall = 0;
+
+	always @(posedge dut.clock) begin
+		if (dut.cpu_clken == 1'b1) begin
+			if (dut.cpu_clken_gated == 1'b1 && dut.cpu.u0.TState == 3'd1) begin
+				// A machine cycle is starting: bank the one that just
+				// ended, then latch where this one begins. Which table it
+				// belongs to is only known now, at the end - IORQ and WR
+				// both appear part way through the cycle.
+				if (mc_inwin) begin
+					if (mc_io) begin
+						io_delay[mc_phase] = io_delay[mc_phase] + mc_stall;
+						io_count[mc_phase] = io_count[mc_phase] + 1;
+					end else if (mc_caddr && mc_write) begin
+						wr_delay[mc_phase] = wr_delay[mc_phase] + mc_stall;
+						wr_count[mc_phase] = wr_count[mc_phase] + 1;
+					end else if (mc_caddr) begin
+						rd_delay[mc_phase] = rd_delay[mc_phase] + mc_stall;
+						rd_count[mc_phase] = rd_count[mc_phase] + 1;
+					end
+				end
+				mc_phase <= dut.vid.hc_cont[4:2];
+				// Only a cycle inside the contended part of a contended
+				// line can be charged anything at all. The contended-RAM
+				// test is applied on top for the memory rows: without it
+				// the uncontended ROM fetches - most of the cycles in the
+				// test loop - land in the same phase buckets contributing
+				// zero and dilute the table into noise.
+				mc_inwin <= dut.vid.vpicture & ~dut.vid.hc_cont[9];
+				mc_caddr <= dut.cpu_a[14] & ~dut.cpu_a[15];
+				mc_io    <= 1'b0;
+				mc_write <= 1'b0;
+				mc_stall <= 0;
+			end else begin
+				if (dut.cpu_clken_gated == 1'b0)
+					mc_stall <= mc_stall + 1;
+				if (dut.cpu_wr_n == 1'b0)
+					mc_write <= 1'b1;
+				if (dut.cpu_ioreq_n == 1'b0 && dut.cpu_m1_n == 1'b1)
+					mc_io <= 1'b1;
+			end
+		end
+	end
+
+	initial begin
+		#(end_time_us * 1000 - 10_000);
+		if (live_transition_requested) begin
+			if (landed_at == -1)
+				$display("LIVE TRANSITION: cpu_speed NEVER reached %0d - stuck at %0d",
+					live_speed[1:0], dut.cpu_speed);
+			else
+				$display("LIVE TRANSITION: landed at time %0d ps", landed_at);
+			$display("Longest continuous WAIT hold: %0d clocks", max_wait_streak);
+		end
+		$display("Interrupts seen this run: %0d", int_count);
+		$display("CONTENTION TABLE (mean delay in T-states by phase the cycle starts at)");
+		$display("  phase :    0    1    2    3    4    5    6    7");
+		$write("  read  :");
+		for (ci = 0; ci < 8; ci = ci + 1)
+			if (rd_count[ci] == 0) $write("    -");
+			else $write(" %4.1f", 1.0 * rd_delay[ci] / rd_count[ci]);
+		$write("\n  write :");
+		for (ci = 0; ci < 8; ci = ci + 1)
+			if (wr_count[ci] == 0) $write("    -");
+			else $write(" %4.1f", 1.0 * wr_delay[ci] / wr_count[ci]);
+		$write("\n  io    :");
+		for (ci = 0; ci < 8; ci = ci + 1)
+			if (io_count[ci] == 0) $write("    -");
+			else $write(" %4.1f", 1.0 * io_delay[ci] / io_count[ci]);
+		$write("\n  n(rd) :");
+		for (ci = 0; ci < 8; ci = ci + 1) $write(" %4d", rd_count[ci]);
+		$write("\n  n(wr) :");
+		for (ci = 0; ci < 8; ci = ci + 1) $write(" %4d", wr_count[ci]);
+		$write("\n  n(io) :");
+		for (ci = 0; ci < 8; ci = ci + 1) $write(" %4d", io_count[ci]);
+		$display("\n  a real 48K ULA charges 6,5,4,3,2,1,0,0 for memory;");
+		$display("  IO is the four-case table, so what matters for the io");
+		$display("  row is whether its pattern lines up with the memory rows");
+	end
+
+	// ------------------------------------------------------------
 	// Simulation accelerator: preload the modelled chip with the image
 	// the boot copy would have written, and fast-forward the copy
 	// counter once the settle delay is done. The copy itself is not
@@ -317,7 +593,7 @@ module tb_top;
 	// and its buffer never reaches disk - which is why an earlier 25ms
 	// run left an empty log despite the design executing.
 	initial begin
-		#1_500_000;    // 1.5ms
+		#(end_time_us * 1000);
 		$fclose(logfile);
 		$display("=====================================================");
 		$display("DivMMC fixed-ROM opcode fetches: %0d good, %0d corrupted",
@@ -443,6 +719,29 @@ module tb_top;
 		#1_400_000;
 		$display("CPU cycles on the right address: %0d, stale: %0d",
 			addr_ok, addr_stale);
+	end
+
+	// Diagnostic: how often a DivMMC SPI port access starts while
+	// spi.v's engine is still shifting a previous byte - the trigger
+	// for the drop believed to be why ESXDOS fails above 3.5MHz.
+	// Watches spi_acc/spi_acc_d/mi_spi.counter directly, so this reads
+	// the same whichever divmmc.v/spi.v is compiled in - pre-fix it
+	// shows what spi.v's old idle-only gate would have discarded, on
+	// the fixed design it should always read zero because wait_n
+	// never lets a second access start early enough to see it.
+	integer spi_accesses = 0;
+	integer spi_would_drop = 0;
+	always @(posedge dut.clock) begin
+		if (dut.dmmc.spi_acc && !dut.dmmc.spi_acc_d) begin
+			spi_accesses <= spi_accesses + 1;
+			if (dut.dmmc.mi_spi.counter != 5'd16)
+				spi_would_drop <= spi_would_drop + 1;
+		end
+	end
+	initial begin
+		#1_450_000;
+		$display("DivMMC SPI: %0d port accesses, %0d landed on a busy engine",
+			spi_accesses, spi_would_drop);
 	end
 
 	// Bus contention: the chip driving read data while the design is

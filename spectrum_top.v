@@ -729,7 +729,24 @@ module spectrum_top (
 	wire nmi_trigger = key_f12 | ~KEY[1];
 
 	// CPU
-	T80se cpu (
+	//
+	// T2Write=1 puts a write's WR_n/MREQ_n on the TState==1 edge, the
+	// same edge a read or an opcode fetch uses (T80se.v:157/166 against
+	// :170). With the core's default T2Write=0 a write asserts MREQ a
+	// T-state later than a read does, and since ULA contention here is
+	// charged off MREQ going low (cont_mem, below), the delay a program
+	// was charged depended on whether it was reading or writing.
+	//
+	// Measured, by phase of the machine cycle's own T1, against the
+	// 6,5,4,3,2,1,0,0 a real 48K charges:
+	//     reads   5,4,3,2,1,0,0,6   - one T-state late
+	//     writes  4,3,2,1,0,0,6,5   - two T-states late
+	//
+	// One T-state apart, so no single CONT_ADJ trim can straighten both
+	// at once - which is exactly why no trim ever satisfied two demos
+	// together. This makes them agree; video.v then takes out the
+	// one-T-state lateness they now share.
+	T80se #(.T2Write(1)) cpu (
 		.RESET_n(reset_n),
 		.CLK_n(clock),
 		.CLKEN(cpu_clken_gated),
@@ -874,6 +891,22 @@ module spectrum_top (
 	// the bus through the internal T-states that follow an access.
 	wire cont_mem = ~io_cyc & ~cpu_mreq_n & ~mreq_paid & cont_addr;
 	wire cont_io  = (io_start | (io_seq != 3'd0)) & io_point;
+	// One window for both memory and IO. It is worth recording why,
+	// because the opposite looks plausible: a real Z80 puts MREQ in T1
+	// and IORQ in T2, so it seems as though the two would need windows a
+	// T-state apart. They do not, because T80se raises MREQ a T-state
+	// late (on the edge ending T1, so first visible in T2) and IORQ on
+	// time - which lands both of them in T2 here, once T2Write=1 has
+	// moved a write's onto the same edge as a read's.
+	//
+	// Measured, on this build, with a loop containing both a contended
+	// read and a contended OUT so the two share a phase reference: both
+	// follow the same rule on every sample with real statistics behind
+	// it - read 5.8 where 6 is due and 0.0 where 0 is, IO 4.9 where 5 is
+	// due and 4.0 where 4 is. Splitting the window was tried and put a
+	// T-state of difference between them that the hardware does not
+	// have.
+	//
 	// F10 turns contention off, to tell whether the model is what makes
 	// border stripes spread out from the middle of the screen: a demo's
 	// loop taking longer than it should stretches everything it draws.
