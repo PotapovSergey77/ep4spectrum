@@ -16,7 +16,7 @@ module divmmc (
 	output [7:0]  	dout,
 	
 	// memory state
-	output reg     paged_in,
+	output         paged_in,
 	output [3:0]   sram_page,
 	output         mapram,
 	output         conmem,
@@ -34,6 +34,38 @@ module divmmc (
 );
 
 reg m1_trigger;
+reg paged_in_r;
+
+// The 0x3Dxx entry is documented - in this file, below - as activating
+// the automapper "immediately", meaning the very fetch that triggers it
+// must already come from the DivMMC page. Latching paged_in_r does not
+// achieve that: the register only takes effect on the following clock,
+// while T80se latches the byte it fetched on the edge that ends TState
+// 2. Whether the new mapping wins is then a race decided by how many
+// master clocks a T-state lasts:
+//
+//   3.5 / 7 / 14MHz - T2 spans 8 / 4 / 2 clocks, so the trigger fires
+//                     on an earlier one and the CPU latches the byte
+//                     with the DivMMC page already mapped. Works.
+//   28MHz           - T2 is a single clock. The trigger and the latch
+//                     happen on the same edge, the mapping is still the
+//                     old one, and the CPU gets the 48K ROM's byte
+//                     instead of the DivMMC page's. It then runs on
+//                     through 0x3DFE, 0x3DFF, 0x3E00... into the
+//                     character set.
+//
+// Measured: at 28MHz and 14MHz the boot agrees for 609 fetches and
+// splits at the 610th - 14MHz takes the jump the DivMMC page holds at
+// 0x3DFD and lands on 0x0863, 28MHz falls through to 0x3DFE. That is
+// the whole of the 28MHz DivMMC failure: everything entering through a
+// trigger breaks, everything already inside the page is fine.
+//
+// So the 0x3Dxx case is made combinational - it maps the page for the
+// cycle that asks, at any speed. The other triggers are deliberately
+// left alone: they are specified as taking effect AFTER their cycle,
+// and moving them is what broke 14MHz in an earlier attempt.
+wire auto_now = (!mreq_n && !rd_n && !m1_n && a[15:8] == 8'h3D);
+assign paged_in = paged_in_r | auto_now;
 
 // Declared before use: Quartus accepts use-before-declaration,
 // ModelSim rejects it.
@@ -76,7 +108,7 @@ reg  seen_busy = 1'b0;
 always @(posedge clk) begin
 	if(reset_n == 1'b0) begin
 		m1_trigger <= 1'b0;
-		paged_in <= 1'b0;
+		paged_in_r <= 1'b0;
 		ctrl <= 8'h00;
 		sd_cs <= 1'b1;
 		seen_busy <= 1'b0;
@@ -125,7 +157,7 @@ always @(posedge clk) begin
 			m1_trigger <= 1'b1;
 		end else if (!mreq_n && !rd_n && !m1_n && a[15:8]==8'h3D) begin
 			// activate automapper immediately
-			paged_in <= 1'b1;
+			paged_in_r <= 1'b1;
 			m1_trigger <= 1'b1;
 		end else if (!mreq_n && !rd_n && !m1_n && {a[15:3],3'd0} == 16'h1ff8) begin
 			// deactivate automapper after this cycle
@@ -133,7 +165,7 @@ always @(posedge clk) begin
 		end
 	
 		if (m1_n==1'b1)
-			paged_in <= m1_trigger;
+			paged_in_r <= m1_trigger;
 	end
 end
 

@@ -91,6 +91,25 @@ module tb_top;
 		.sd_miso(SD_MISO)
 	);
 
+	// Give the CPU's register file defined contents at time zero.
+	//
+	// T80's registers start x in simulation, and the 48K ROM only sets
+	// IY (to 0x5C3A) part way through startup - so a routine that does
+	// PUSH IY before that puts x on the stack, a later POP HL pulls it
+	// into HL, and from there undefined data spreads through everything
+	// the program touches. On real silicon the flops power up to some
+	// defined value, PUSH/POP saves and restores whatever it is, and no
+	// program cares. Left as x it manufactures failures that look
+	// exactly like a hardware fault, including a speed-dependent one -
+	// which is precisely the trap this investigation fell into.
+	integer rg;
+	initial begin
+		for (rg = 0; rg < 8; rg = rg + 1) begin
+			dut.cpu.u0.Regs.RegsH[rg] = 8'h00;
+			dut.cpu.u0.Regs.RegsL[rg] = 8'h00;
+		end
+	end
+
 	// clock-liveness probe
 	integer n56 = 0, n28 = 0;
 	always @(posedge dut.clk56) n56 = n56 + 1;
@@ -117,18 +136,28 @@ module tb_top;
 	end
 
 	// How long the run lasts before the final summary prints and
-	// $finish fires (see that block, near the end of this file).
-	// +RUNLEN=<us> overrides the default 1.5ms - e.g. 25000 to clear a
-	// 20.48ms frame/INT boundary. Must still be <= the outer `run <N>us`
-	// given to vsim, or the run stops first and this block, along with
-	// the trace file close, never happens at all. Read here (rather
-	// than in the block that waits on it) so there is no race between
-	// two initial blocks both acting at time zero.
-	reg [31:0] end_time_us = 32'd1500;
-	initial begin
-		if ($value$plusargs("RUNLEN=%d", end_time_us))
-			$display("run length overridden to %0dus", end_time_us);
-	end
+	// $finish fires. +RUNLEN=<us> overrides the default 1.5ms. It must
+	// still be <= the outer `run <N>us` given to vsim, or the run stops
+	// first and the summary, along with the trace file close, never
+	// happens at all.
+	//
+	// Read on demand rather than in an initial block of its own. Four
+	// separate blocks delay off this value, all at time zero, and a
+	// plain `initial` assignment races them: whichever block Verilog
+	// happens to elaborate first wins, so +RUNLEN sometimes took effect
+	// and sometimes did not. That silently truncated long runs - an
+	// 11ms run stopping at 1.5ms and quietly reporting as if it had
+	// finished - which is exactly the kind of instrument fault that has
+	// already cost this investigation twice. A function has no such
+	// race: every caller evaluates it for itself.
+	function [31:0] run_len_us;
+		input dummy;
+		reg [31:0] v;
+		begin
+			if (!$value$plusargs("RUNLEN=%d", v)) v = 32'd1500;
+			run_len_us = v;
+		end
+	endfunction
 
 	// ------------------------------------------------------------
 	// Live turbo transition: +LIVESPEED=1..3 lets the machine boot and
@@ -193,6 +222,409 @@ module tb_top;
 				$display("[%0t] FRAME period %0d ns (48K wants 19968000)",
 					$time, $time - last_irq_time);
 			last_irq_time <= $time;
+		end
+	end
+
+	// --- DivMMC automapper entry, driven by an NMI ---
+	//
+	// The board fails at 28MHz in exactly the two places that ENTER the
+	// DivMMC ROM through the automapper - cold init, and NMI - while
+	// work already inside ESXDOS (loading a file) is fine. So the
+	// suspect is the trigger, not the card.
+	//
+	// The trigger is `!mreq_n && !rd_n && !m1_n` with the address on one
+	// of six values, and that condition is true for exactly as long as
+	// the M1 cycle's T2 - which is eight master clocks at 3.5MHz, four
+	// at 7, two at 14 and ONE at 28. The failure appears at the speed
+	// where the window is a single clock.
+	//
+	// +NMITEST pulses NMI and reports whether the automapper actually
+	// paged in and where the CPU fetched afterwards.
+	reg do_nmitest = 1'b0;
+	initial do_nmitest = $test$plusargs("NMITEST");
+	integer nmi_at = 0;
+	reg paged_seen = 1'b0;
+	reg trig_seen = 1'b0;
+	initial begin
+		if ($test$plusargs("NMITEST")) begin
+			wait (dut.reset_n === 1'b1);
+			repeat (8000) @(posedge dut.clock);
+			$display("[%0t] NMITEST: asserting NMI (paged_in=%b)",
+				$time, dut.divmmc_paged_in);
+			force dut.cpu_nmi_n = 1'b0;
+			nmi_at = $time;
+			repeat (2000) @(posedge dut.clock);
+			release dut.cpu_nmi_n;
+		end
+	end
+	// Did the fetch at 0x0066 even present the trigger condition, and did
+	// paged_in follow? Reported separately so a failure says which half
+	// broke - the CPU never taking the NMI, or the automapper missing it.
+	always @(posedge dut.clock) begin
+		if (do_nmitest && nmi_at != 0) begin
+			if (!dut.cpu_mreq_n && !dut.cpu_rd_n && !dut.cpu_m1_n
+			    && dut.cpu_a == 16'h0066 && !trig_seen) begin
+				trig_seen <= 1'b1;
+				$display("[%0t] NMITEST: M1 fetch at 0x0066 seen (the trigger condition)", $time);
+			end
+			if (dut.divmmc_paged_in && !paged_seen) begin
+				paged_seen <= 1'b1;
+				$display("[%0t] NMITEST: automapper paged in", $time);
+			end
+		end
+	end
+	initial begin
+		#(run_len_us(0) * 1000 - 20_000);
+		if (do_nmitest)
+			$display("NMITEST RESULT: trigger fetch seen=%b, paged in=%b",
+				trig_seen, paged_seen);
+	end
+
+	// --- Automapper transitions, counted in both directions ---
+	//
+	// The board's DivMMC failures at 28MHz are all in code that crosses
+	// the automapper boundary: cold init, NMI, TAP and TRD loading. What
+	// runs entirely inside ESXDOS - directory navigation, loading a .z80
+	// - is fine. And the first NMI after init works while the next one
+	// hangs, which points at the way OUT (the 0x1FF8-0x1FFF trigger)
+	// being missed and leaving the DivMMC bank mapped over the 48K ROM.
+	//
+	// Both triggers are only live while the M1 cycle's T2 is on the bus:
+	// eight master clocks at 3.5MHz, four at 7, two at 14 and ONE at 28.
+	// If the counts here diverge with speed, that single sampling
+	// opportunity is the fault.
+	integer page_in_n = 0, page_out_n = 0;
+	reg paged_d = 1'b0;
+	always @(posedge dut.clock) begin
+		paged_d <= dut.divmmc_paged_in;
+		if (dut.reset_n === 1'b1) begin
+			if (dut.divmmc_paged_in && !paged_d) page_in_n  = page_in_n + 1;
+			if (!dut.divmmc_paged_in && paged_d) page_out_n = page_out_n + 1;
+		end
+	end
+	initial begin
+		#(run_len_us(0) * 1000 - 15_000);
+		$display("AUTOMAPPER: %0d page-ins, %0d page-outs", page_in_n, page_out_n);
+	end
+
+	// --- Where is the stock ROM actually spending its time? ---
+	//
+	// Every DivMMC investigation so far has been done on purpose-built
+	// test ROMs, because the real ESXDOS image never touches the SPI
+	// port in simulation - `DivMMC SPI: 0 port accesses`, checked out to
+	// 24.5ms. That blind spot has now sent two plausible hypotheses all
+	// the way to the board before they were disproven, so it is worth
+	// more than another guess to find out what the ROM is waiting for.
+	//
+	// +PCTRACE samples the opcode-fetch address at a fixed interval, so
+	// a long run prints a picture of where execution actually sits
+	// rather than only whether it finished.
+	reg do_pctrace = 1'b0;
+	initial do_pctrace = $test$plusargs("PCTRACE");
+	integer pc_div = 0;
+	integer pc_shown = 0;
+	reg [15:0] last_m1_addr = 16'hFFFF;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1) begin
+			// The opcode fetch itself, which is MREQ and RD and M1 all
+			// low together - not the falling edge of M1, where MREQ has
+			// not arrived yet and this captured nothing at all.
+			if (!dut.cpu_m1_n && !dut.cpu_mreq_n && !dut.cpu_rd_n)
+				last_m1_addr <= dut.cpu_a;
+			if (do_pctrace) begin
+				pc_div <= pc_div + 1;
+				if (pc_div >= 200) begin
+					pc_div <= 0;
+					if (pc_shown < 400) begin
+						pc_shown <= pc_shown + 1;
+						$display("[%0t] PC~%04h halt_n=%b paged_in=%b cs=%b ctrl=%02h spi_cnt=%0d",
+							$time, last_m1_addr, dut.cpu_halt_n, dut.divmmc_paged_in,
+							dut.divmmc_cs, dut.dmmc.ctrl,
+							dut.dmmc.mi_spi.counter);
+					end
+				end
+			end
+		end
+	end
+
+	// --- The last opcodes actually fetched ---
+	//
+	// ESXDOS relocates itself into RAM early, so when it sits in a loop
+	// there is nothing in the ROM image to disassemble - the code only
+	// exists in the modelled chip. Recording address and opcode byte as
+	// they are fetched shows the loop directly. Ring of the last 24
+	// fetches, printed at the end of the run.
+	reg [15:0] op_a [0:23];
+	reg [7:0]  op_d [0:23];
+	integer    op_w = 0;
+	reg        m1_seen = 1'b0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1) begin
+			if (!dut.cpu_m1_n && !dut.cpu_mreq_n && !dut.cpu_rd_n) begin
+				if (!m1_seen) begin
+					op_a[op_w % 24] = dut.cpu_a;
+					op_d[op_w % 24] = dut.cpu_di;
+					op_w = op_w + 1;
+				end
+				m1_seen <= 1'b1;
+			end else
+				m1_seen <= 1'b0;
+		end
+	end
+	initial begin
+		#(run_len_us(0) * 1000 - 5_000);
+		begin : dump_ops
+			integer k, idx;
+			$write("LAST OPCODES:");
+			for (k = 0; k < 24; k = k + 1) begin
+				idx = (op_w + k) % 24;
+				$write(" %04h:%02h", op_a[idx], op_d[idx]);
+			end
+			$display("");
+		end
+	end
+
+	// --- Full fetch log, for diffing one speed against another ---
+	//
+	// The ring below shows the run-up to a crash but cannot answer "at
+	// which instruction do 14MHz and 28MHz stop agreeing", because the
+	// two runs reach any given point at different times. Writing every
+	// fetch to a file instead makes that a plain diff: the boot is
+	// deterministic, so the two logs share a prefix and the first line
+	// that differs is the divergence.
+	//
+	// +FETCHLOG=<name> turns it on. Off by default - it is large.
+	integer fl = 0;
+	reg [255:0] flname;
+	reg flm1_d = 1'b0;
+	initial begin
+		if ($value$plusargs("FETCHLOG=%s", flname))
+			fl = $fopen(flname, "w");
+	end
+	always @(posedge dut.clock) begin
+		if (fl != 0 && dut.reset_n === 1'b1) begin
+			if (!dut.cpu_m1_n && !dut.cpu_mreq_n && !dut.cpu_rd_n) begin
+				if (!flm1_d)
+					$fwrite(fl, "%04h %b\n", dut.cpu_a, dut.divmmc_paged_in);
+				flm1_d <= 1'b1;
+			end else
+				flm1_d <= 1'b0;
+		end
+	end
+	initial begin
+		#(run_len_us(0) * 1000 - 2_500);
+		if (fl != 0) $fclose(fl);
+	end
+
+	// --- Every fetch leading into the crash ---
+	//
+	// The periodic PC trace narrowed the 28MHz failure to a bad control
+	// transfer around 0x15fe -> 0x3e09, but sampling every 200 clocks
+	// leaves several instructions unseen between the two. This records
+	// EVERY opcode fetch, and freezes the moment the PC first lands in
+	// the runaway region, so what is left is the run-up rather than
+	// thousands of addresses of the sled that follows.
+	reg [15:0] tr_a [0:255];
+	integer    tr_w = 0;
+	reg        tr_frozen = 1'b0;
+	reg        tr_m1_d = 1'b0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1 && !tr_frozen) begin
+			if (!dut.cpu_m1_n && !dut.cpu_mreq_n && !dut.cpu_rd_n) begin
+				if (!tr_m1_d) begin
+					tr_a[tr_w % 256] = {dut.divmmc_paged_in, dut.cpu_a[14:0]};
+					tr_w = tr_w + 1;
+					// Anything at or above this is already the runaway:
+					// the healthy boot never fetches there.
+					if (dut.cpu_a >= 16'h3E00 && dut.cpu_a < 16'h4100)
+						tr_frozen <= 1'b1;
+				end
+				tr_m1_d <= 1'b1;
+			end else
+				tr_m1_d <= 1'b0;
+		end
+	end
+	initial begin
+		#(run_len_us(0) * 1000 - 3_000);
+		begin : dump_trail
+			integer k, idx, first;
+			$display("FETCH TRAIL (frozen=%b, %0d fetches total):", tr_frozen, tr_w);
+			first = (tr_w > 256) ? (tr_w - 256) : 0;
+			$write("   ");
+			for (k = first; k < tr_w; k = k + 1) begin
+				idx = k % 256;
+				$write(" %s%04h", tr_a[idx][15] ? "D" : ".", {1'b0, tr_a[idx][14:0]});
+			end
+			$display("");
+		end
+	end
+
+	// --- The arbiter's overdue backstop, and what it costs ---
+	//
+	// spectrum_top.v credits a CPU cycle as served only when the address
+	// the cycle actually fetched still matches what the CPU is asking
+	// for - Sizif's cpu_read_misaddress guard - EXCEPT when cpu_overdue
+	// is set, which accepts the answer whatever the address says. That
+	// exception exists so a request cannot wait for ever, but it hands
+	// the CPU a byte read from somewhere else.
+	//
+	// The 28MHz crash is a RET at 0x1600 taking a corrupted address off
+	// the stack, i.e. a read that returned the wrong data. So: how often
+	// does the backstop actually fire, and does it fire on a mismatch?
+	// Counted separately, because firing while the address happens to
+	// match is harmless and firing on a mismatch is the fault.
+	integer overdue_fired = 0;
+	integer overdue_wrong = 0;
+	reg     ovd_d = 1'b0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1) begin
+			ovd_d <= dut.cpu_overdue;
+			if (dut.slot_tick_d2 && dut.prev_own == dut.OWN_CPU
+			    && dut.cpu_overdue) begin
+				overdue_fired = overdue_fired + 1;
+				if (dut.cpu_addr_held !== dut.cpu_addr)
+					overdue_wrong = overdue_wrong + 1;
+			end
+		end
+	end
+	initial begin
+		#(run_len_us(0) * 1000 - 4_000);
+		$display("ARBITER OVERDUE: fired %0d times, %0d of them on a MISMATCHED address",
+			overdue_fired, overdue_wrong);
+	end
+
+	// --- Does the CPU get the byte memory actually holds? ---
+	//
+	// The 28MHz crash is a RET at 0x1600 jumping to 0x3DFD, so the two
+	// bytes it took off the stack were wrong. Two possibilities, and
+	// they need different fixes: the memory system handed the CPU the
+	// wrong byte, or memory genuinely held those bytes because an
+	// earlier write went astray. This settles which.
+	//
+	// Sampled where T80se itself latches the bus - `TState == 2 &&
+	// WAIT_n == 1` - so it compares exactly the byte the CPU takes,
+	// not whatever is on the bus at some other moment. Reads of RAM
+	// only, where the physical address is known the same way the write
+	// checker builds it.
+	integer rd_checked = 0, rd_wrong = 0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1 && dut.cpu_clken_gated
+		    && dut.cpu.u0.TState == 3'd2 && dut.cpu_wait_all_n
+		    && !dut.cpu_mreq_n && !dut.cpu_rd_n && dut.ram_enable) begin
+			rd_checked = rd_checked + 1;
+			if (dut.cpu_di !== peek({3'b000, dut.ram_page, dut.cpu_a[13:0]})) begin
+				rd_wrong = rd_wrong + 1;
+				if (rd_wrong <= 8)
+					$display("[%0t] BAD READ a=%04h got=%02h memory holds=%02h",
+						$time, dut.cpu_a, dut.cpu_di,
+						peek({3'b000, dut.ram_page, dut.cpu_a[13:0]}));
+			end
+		end
+	end
+	initial begin
+		#(run_len_us(0) * 1000 - 4_500);
+		$display("CPU RAM READS: %0d checked, %0d returned the wrong byte",
+			rd_checked, rd_wrong);
+	end
+
+	// --- Every memory operation leading into the crash ---
+	//
+	// The RET at 0x1600 takes a corrupted address off the stack, and the
+	// earlier read check missed the stack entirely (it was gated on
+	// ram_enable). This records reads AND writes with no region filter
+	// at all, so the PUSH at 0x15F3 and the POP/RET that follow are all
+	// visible, and freezes on the same runaway trigger.
+	//
+	// Reads are sampled where T80se latches the bus (TState==2 with WAIT
+	// released) because that is the only moment the byte is the one the
+	// CPU actually takes; writes are recorded on the leading edge of the
+	// cycle, where cpu_do is already driven. Getting that distinction
+	// wrong is what made an earlier opcode ring report 0x77 for a byte
+	// that was really 0x76.
+	reg [15:0] mo_a [0:511];
+	reg [7:0]  mo_d [0:511];
+	reg        mo_wr [0:511];
+	integer    mo_i = 0;
+	reg        mo_frozen = 1'b0;
+	reg        mo_wcyc_d = 1'b0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1 && !mo_frozen) begin
+			// a read, at the instant it is taken. IO reads count too:
+			// capturing only mreq cycles left IN instructions
+			// invisible, and no captured memory read ever returned x
+			// even though the CPU was plainly pushing x - so whatever
+			// poisons HL had to be coming through a path this ring was
+			// not watching.
+			if (dut.cpu_clken_gated && dut.cpu.u0.TState == 3'd2
+			    && dut.cpu_wait_all_n && dut.cpu_rd_n == 1'b0
+			    && (dut.cpu_mreq_n == 1'b0 || dut.cpu_ioreq_n == 1'b0)) begin
+				mo_a[mo_i % 512]  = dut.cpu_a;
+				mo_d[mo_i % 512]  = dut.cpu_di;
+				mo_wr[mo_i % 512] = 1'b0;
+				mo_i = mo_i + 1;
+			end
+			// a write, once per cycle
+			if (!dut.cpu_mreq_n && !dut.cpu_wr_n) begin
+				if (!mo_wcyc_d) begin
+					mo_a[mo_i % 512]  = dut.cpu_a;
+					mo_d[mo_i % 512]  = dut.cpu_do;
+					mo_wr[mo_i % 512] = 1'b1;
+					mo_i = mo_i + 1;
+				end
+				mo_wcyc_d <= 1'b1;
+			end else
+				mo_wcyc_d <= 1'b0;
+
+			if (!dut.cpu_m1_n && !dut.cpu_mreq_n && !dut.cpu_rd_n
+			    && dut.cpu_a >= 16'h3E00 && dut.cpu_a < 16'h4100)
+				mo_frozen <= 1'b1;
+		end
+	end
+	initial begin
+		#(run_len_us(0) * 1000 - 3_500);
+		begin : dump_mo
+			integer k, idx, first;
+			$display("MEMORY OPS into the crash (frozen=%b):", mo_frozen);
+			first = (mo_i > 512) ? (mo_i - 512) : 0;
+			$write("   ");
+			for (k = first; k < mo_i; k = k + 1) begin
+				idx = k % 512;
+				$write(" %s%04h=%02h", mo_wr[idx] ? "W" : "r", mo_a[idx], mo_d[idx]);
+			end
+			$display("");
+		end
+	end
+
+	// --- Hang detector ---
+	// The board's symptom, stated directly: the CPU stops fetching. A
+	// healthy machine takes an opcode every few clocks at any speed, so
+	// a long gap between M1 fetches means it is stuck - and the point of
+	// this is to say WHY, by printing what was holding it at the moment
+	// it stopped, rather than leaving a silent log to be read backwards.
+	integer last_m1 = 0;
+	integer hang_reported = 0;
+	reg m1_d = 1'b1;
+	always @(posedge dut.clock) begin
+		m1_d <= dut.cpu_m1_n;
+		if (dut.reset_n === 1'b1) begin
+			if (dut.cpu_m1_n == 1'b0 && m1_d == 1'b1)
+				last_m1 <= 0;
+			else if (last_m1 < 200000)
+				last_m1 <= last_m1 + 1;
+			// 20000 clocks is ~700us, far beyond any legitimate stall:
+			// a whole SPI byte is 128.
+			if (last_m1 == 20000 && hang_reported < 4) begin
+				hang_reported <= hang_reported + 1;
+				$display("[%0t] HANG: no opcode fetch for 20000 clocks", $time);
+				$display("   wait_all=%b arbiter_wait=%b divmmc_wait=%b spi_acc=%b busy=%b seen_busy=%b counter=%0d",
+					dut.cpu_wait_all_n, dut.cpu_wait_n, dut.divmmc_wait_n,
+					dut.dmmc.spi_acc, dut.dmmc.spi_busy, dut.dmmc.seen_busy,
+					dut.dmmc.mi_spi.counter);
+				$display("   a=%04h mreq_n=%b ioreq_n=%b rd_n=%b wr_n=%b m1_n=%b TState=%0d MCycle=%0d contention=%b",
+					dut.cpu_a, dut.cpu_mreq_n, dut.cpu_ioreq_n, dut.cpu_rd_n,
+					dut.cpu_wr_n, dut.cpu_m1_n, dut.cpu.u0.TState,
+					dut.cpu.u0.MCycle, dut.contention);
+			end
 		end
 	end
 
@@ -342,7 +774,7 @@ module tb_top;
 	end
 
 	initial begin
-		#(end_time_us * 1000 - 10_000);
+		#(run_len_us(0) * 1000 - 10_000);
 		if (live_transition_requested) begin
 			if (landed_at == -1)
 				$display("LIVE TRANSITION: cpu_speed NEVER reached %0d - stuck at %0d",
@@ -395,6 +827,23 @@ module tb_top;
 	reg [255:0] romfile, romfile2;
 	integer k;
 	initial begin
+		// Give the modelled chip defined contents before anything is
+		// poked into it. A real part powers up with arbitrary but
+		// defined bits; an uninitialised array holds x, which
+		// propagates through every read of memory the ROM has not
+		// written yet. Zeroing also makes the ROM's own two block RAM
+		// clears redundant, which is what lets esxmmc_fb2.hex cut them
+		// to a single iteration and save tens of milliseconds.
+		//
+		// It has to happen HERE, ahead of the preload in the same
+		// block. Done in sdram_model.v's own initial block it raced
+		// this one, and when it won it erased the image that had just
+		// been poked in - the CPU then executed zeros, crashed, and sat
+		// in HALT with interrupts disabled, which looked convincingly
+		// like a design fault.
+		for (k = 0; k < 4194304; k = k + 1)
+			chip.mem[k] = 16'h0000;
+
 		if (!$value$plusargs("ROM=%s", romfile)) romfile = "esxmmc_plain.hex";
 		$readmemh(romfile, esxinit);
 		for (k = 0; k < 8192; k = k + 1) begin
@@ -593,7 +1042,7 @@ module tb_top;
 	// and its buffer never reaches disk - which is why an earlier 25ms
 	// run left an empty log despite the design executing.
 	initial begin
-		#(end_time_us * 1000);
+		#(run_len_us(0) * 1000);
 		$fclose(logfile);
 		$display("=====================================================");
 		$display("DivMMC fixed-ROM opcode fetches: %0d good, %0d corrupted",

@@ -54,6 +54,15 @@ module sdram_model (
 			active_row[i] = 12'h000;
 		end
 	end
+	// The array is deliberately NOT cleared here. A real part powers up
+	// holding arbitrary but defined bits, and x is worse than useless -
+	// it propagates through every read of memory the ROM has not written
+	// yet. But clearing it in this module's own initial block races the
+	// testbench's ROM preload, which pokes straight into mem from an
+	// initial block of its own: Verilog does not order the two, and when
+	// the clear won it wiped the image and left the CPU executing zeros.
+	// tb_top.v now zeroes the array itself, immediately before the
+	// preload, where the order is guaranteed.
 
 	// statistics, handy for spotting a write that never happened
 	integer writes_seen = 0;
