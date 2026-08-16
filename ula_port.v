@@ -2,6 +2,16 @@
 //
 // Copyright (c) 2009-2011 Mike Stirling
 //
+// Modifications copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
+// Changes:
+//   - Bits 7 and 5 of port 0xFE now read high, as they do on a real
+//     machine. They were returned as zeros, so a read with no key held
+//     gave 0x40 instead of 0xBF, and test software waited forever for a
+//     value it could never see.
+//   - Bit 6 follows the last value written to bit 4, which is what a
+//     machine with nothing in the tape socket does.
+//
 // All rights reserved
 //
 // Redistribution and use in source and synthezised forms, with or without

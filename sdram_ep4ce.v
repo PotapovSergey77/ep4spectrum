@@ -14,6 +14,16 @@
 // Original copyright (c) 2013 Till Harbaum <till@harbaum.org>
 // Licensed under the GNU General Public License v3 (or later).
 //
+// Adaptation copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com),
+// released under the same licence.
+//
+// Changes:
+//   - Retargeted from the 256Mbit 16M x 16 x 4 part (13-bit row, 9-bit
+//     column) to this board's 64Mbit 4M x 16 x 4 part (12-bit row,
+//     8-bit column), which is all the twelve routed address lines allow.
+//   - Whole-word output (dout16) alongside the byte, so video can take
+//     two bytes from one access.
+//
 
 module sdram_ep4ce (
 

@@ -1,4 +1,16 @@
 // spi.v inspired by zxuno project
+//
+// Modifications copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
+// Changes:
+//   - SCK divided down to ~3.5 MHz, the rate real DivMMC hardware runs
+//     at. The engine used to be clocked flat out, which no SD card will
+//     answer during its initialisation handshake.
+//   - busy output added, so divmmc.v can hold the CPU for exactly one
+//     transfer instead of letting a poll land mid-shift and be dropped.
+//   - div_cnt given an explicit power-up value: uninitialised it starts
+//     as x in simulation and, only ever adding to itself, never
+//     recovers - which invalidates any run touching this module.
 
 module spi (
    input clk,              // 7MHz

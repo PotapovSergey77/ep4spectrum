@@ -3,6 +3,16 @@
 // Adapted from spectrum_mist.v (Copyright (c) 2009-2011 Mike Stirling,
 // MiST port by the mist-board project).
 //
+// Copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
+// Written for this board on the basis of spectrum_mist.v. Beyond the
+// port itself, the parts that are new here: the SDRAM arbiter that
+// shares one chip between the CPU and video, the boot-copy state
+// machine that seeds SDRAM from block ROM at power-up, turbo at
+// 3.5/7/14/28 MHz with the speed change landing on a safe boundary,
+// the ULA contention model, machine selection between 48K, 128K/+2,
+// +2A/+3 and Pentagon, and the DivMMC wiring to the SD card breakout.
+//
 // This board has no ARM IO controller and no SD card slot, unlike the
 // MiST board spectrum_mist.v was written for. Everything that depended on
 // that controller over SPI has been removed:

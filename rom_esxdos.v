@@ -6,6 +6,11 @@
 // mechanism - see the boot-copy state machine in spectrum_top.v.
 //
 // Modeled on rom48.v/rom128.v (Quartus altsyncram ROM megafunction).
+//
+// Copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
+// The ROM image itself is ESXDOS, © its own authors (esxdos.org), and
+// is not covered by this notice.
 
 module rom_esxdos (
 	address,

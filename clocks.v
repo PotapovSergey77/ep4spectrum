@@ -2,6 +2,19 @@
 //
 // Copyright (c) 2009-2011 Mike Stirling
 //
+// Modifications copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
+// Changes:
+//   - CPU clock enable divided from the same counter for 3.5, 7, 14 and
+//     28 MHz, selected by SPEED, with every speed keeping the phase that
+//     puts the CPU's MREQ on an SDRAM arbiter boundary.
+//   - The MREQ term no longer withholds the CPU enable. It was a blanket
+//     wait state on every memory and IO access, costing enough T-states
+//     to stop Pentagon-timed demos working; the CPU is now held only
+//     when its data has genuinely not arrived, through WAIT_n.
+//   - CLKEN_SLOT added, one tick per SDRAM cycle boundary, for the
+//     CPU/video arbiter.
+//
 // All rights reserved
 //
 // Redistribution and use in source and synthezised forms, with or without

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
 // tb_sdram.v
 //
 // Focused testbench for the one path that has never been simulated:

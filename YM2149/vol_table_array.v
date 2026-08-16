@@ -1,5 +1,11 @@
 // generated with tablegen by MikeJ
 //
+// Modifications copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
+// Changes:
+//   - Second read port (ADDR_B/DATA_B) added, so the two AY-3-8912s of
+//     the Turbo Sound pair share one copy of the table.
+//
 // Two read ports, so the two AY-3-8912s of the Turbo Sound pair can
 // share one copy of the table.
 //

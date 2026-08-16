@@ -3,6 +3,18 @@
 
 // Copyright (c) MikeJ - Jan 2005
 //
+// Modifications copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
+// Changes:
+//   - The address and register latches are now clocked from CLK with
+//     the strobe's falling edge detected in logic. They used to be
+//     clocked by busctrl_addr/busctrl_we themselves, which derive from
+//     the CPU's IORQ_n - TimeQuest then treated IORQ_n as an
+//     unconstrained clock and left those paths unanalysed.
+//   - The volume table moved outside the module (VOL_ADDR/VOL_DATA), so
+//     the two chips of a Turbo Sound pair share one instance instead of
+//     needing two copies that do not fit in this device's M9K blocks.
+//
 // All rights reserved
 //
 // Redistribution and use in source and synthezised forms, with or without

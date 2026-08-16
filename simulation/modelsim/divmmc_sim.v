@@ -1,4 +1,8 @@
 // divmmc
+//
+// SIM-ONLY COPY of ../../divmmc.v, kept in step with it by hand.
+// Modifications copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
 
 module divmmc (
 	input        	reset_n,

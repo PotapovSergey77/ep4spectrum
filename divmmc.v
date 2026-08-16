@@ -1,5 +1,21 @@
 // divmmc
-
+//
+// Modifications copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
+// Changes:
+//   - The 0x3Dxx automapper entry is combinational, so the fetch that
+//     triggers it already comes from the DivMMC page. As a latch it
+//     worked only while a T-state lasted more than one master clock,
+//     which is why DivMMC would not start at 28 MHz.
+//   - wait_n added: the CPU is held for exactly one SPI transfer, so a
+//     poll can never arrive while the engine is still shifting and be
+//     silently discarded. That is what broke DivMMC above 3.5 MHz.
+//   - One SPI transfer per bus cycle, detected on the access starting
+//     rather than on its level - on the level, one IN/OUT shifted
+//     several bytes through and desynchronised the card.
+//   - Removed a free-running access counter clocked by `enable`, which
+//     made TimeQuest treat IORQ_n as a clock.
+//
 module divmmc (
 	input        	reset_n,
 	input        	clk,

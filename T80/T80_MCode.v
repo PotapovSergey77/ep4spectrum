@@ -2,6 +2,8 @@
 // T80(b) core. In an effort to merge and maintain bug fixes ....
 //
 //
+// Ver 305 IM2 and NMI stack writes are 3 T-states, not 4, by Sergey Potapov (potapov.sergey.77@gmail.com) 16.08.2026
+// Ver 304 converted from VHDL to Verilog by Sergey Potapov (potapov.sergey.77@gmail.com) 09.08.2026
 // Ver 303 add undocumented DDCB and FDCB opcodes by TobiFlex 20.04.2010
 // Ver 302 fixed IO cycle timing, tested thanks to Alessandro.
 // Ver 300 started tidyup
@@ -15,6 +17,8 @@
 // Version : 0242
 //
 // Copyright (c) 2001-2002 Daniel Wallner (jesus@opencores.org)
+//
+// Modifications copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
 //
 // All rights reserved
 //
@@ -62,6 +66,15 @@
 //      0240mj1 fix for HL inc/dec for INI, IND, INIR, INDR, OUTI, OUTD, OTIR, OTDR
 //
 //      0242 : Fixed I/O instruction timing, cleanup
+//
+//      0304 : Converted from the original VHDL to Verilog.
+//             Sergey Potapov (potapov.sergey.77@gmail.com), 09.08.2026
+//
+//      0305 : IM2 and NMI interrupt entry: the two PC stack writes were
+//             four T-states each, making the sequences 21 and 13
+//             T-states instead of the Z80's 19 and 11. RST in this same
+//             file already used three for the identical writes.
+//             Sergey Potapov (potapov.sergey.77@gmail.com), 16.08.2026
 //
 
 module T80_MCode (

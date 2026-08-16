@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
 // sd_model.v
 //
 // Minimal behavioral SD card SPI slave for simulation. Not a full card -

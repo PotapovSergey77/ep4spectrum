@@ -2,6 +2,20 @@
 //
 // Copyright (c) 2009-2011 Mike Stirling
 //
+// Modifications copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
+// Changes:
+//   - Every addressed keyboard row is now combined, instead of a
+//     priority chain that returned row 0 alone when a program selected
+//     all eight rows at once - the usual way software scans the whole
+//     keyboard.
+//   - Host function keys F1..F12 brought out for CPU speed, machine
+//     model, contention mode, NMI and reset.
+//   - PC Shift tracked separately, so the number row can send SYMBOL
+//     SHIFT combinations when shifted and plain digits when not.
+//   - ROW_ANY diagnostic output, one bit per row, for finding a key
+//     stuck down.
+//
 // All rights reserved
 //
 // Redistribution and use in source and synthezised forms, with or without

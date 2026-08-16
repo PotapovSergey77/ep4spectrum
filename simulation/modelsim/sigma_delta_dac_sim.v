@@ -1,3 +1,5 @@
+// Modifications copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
 // SIM-ONLY COPY of ../../sigma_delta_dac.v with the MSBI parameter
 // declared before the port list that uses it (ModelSim, unlike
 // Quartus, requires declare-before-use). No functional change.

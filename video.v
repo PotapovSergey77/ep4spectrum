@@ -2,6 +2,21 @@
 //
 // Copyright (c) 2009-2011 Mike Stirling
 //
+// Modifications copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
+// Changes:
+//   - Per-machine raster geometry: line and frame lengths, and the
+//     interrupt's line, position and length, for 48K, 128K/+2, +2A/+3
+//     and Pentagon.
+//   - ULA contention window brought out on CONTENTION, with the
+//     published 6,5,4,3,2,1,0,0 pattern over 128 of the 224 T-states of
+//     each display line, and a runtime trim on CONT_ADJ.
+//   - Border output delayed by three pixel-rate stages so a write to
+//     port 0xFE takes effect where the ULA puts it.
+//   - Port 0xFF (floating bus) value exported on PORT_FF_ACTIVE/DATA.
+//   - Display fetches turned into a request/acknowledge handshake with
+//     the SDRAM arbiter in spectrum_top.v, replacing direct reads.
+//
 // All rights reserved
 //
 // Redistribution and use in source and synthezised forms, with or without

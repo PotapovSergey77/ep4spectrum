@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
 // sdram_model.v
 //
 // Behavioral SDRAM model, just complete enough to validate

@@ -2,6 +2,7 @@
 // T80(b) core. In an effort to merge and maintain bug fixes ....
 //
 //
+// Ver 304 converted from VHDL to Verilog by Sergey Potapov (potapov.sergey.77@gmail.com) 09.08.2026
 // Ver 300 started tidyup
 // MikeJ March 2005
 // Latest version from www.fpgaarcade.com (original www.opencores.org)
@@ -13,6 +14,8 @@
 // Version : 0247
 //
 // Copyright (c) 2001-2002 Daniel Wallner (jesus@opencores.org)
+//
+// Modifications copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
 //
 // All rights reserved
 //
@@ -65,6 +68,9 @@
 //      0242 : Added I/O wait, fixed refresh address, moved some registers to RAM
 //
 //      0247 : Fixed bus req/ack cycle
+//
+//      0304 : Converted from the original VHDL to Verilog.
+//             Sergey Potapov (potapov.sergey.77@gmail.com), 09.08.2026
 //
 
 module T80 (

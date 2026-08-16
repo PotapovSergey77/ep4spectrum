@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
 // tb_esxdos.v
 //
 // Focused simulation testbench: T80 CPU + divmmc.v + address decode
