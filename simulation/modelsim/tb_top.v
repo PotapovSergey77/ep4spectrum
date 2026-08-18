@@ -160,6 +160,19 @@ module tb_top;
 	// is the knob that would move it - but which direction fixes it has
 	// to be measured, not reasoned about.
 	integer ob_ts = 0, ob_prev = 0, ob_shown = 0;
+	// T-state of the last real nIRQ edge, so port accesses can be
+	// reported as "T-states after the interrupt" - the frame of
+	// reference the published figures use (first contended T-state
+	// at 14335). Every phase measurement so far has been relative to
+	// the display fetch instead, which cannot show the two being
+	// offset from each other.
+	integer irq_mark = -1;
+	reg     irqm_d = 1'b1;
+	always @(posedge dut.clock) begin
+		irqm_d <= dut.vid_irq_n;
+		if (dut.reset_n === 1'b1 && irqm_d && !dut.vid_irq_n)
+			irq_mark <= ob_ts;
+	end
 	// +FORCEINT=<us> pulses nIRQ directly at the given time, instead
 	// of waiting ~16ms of model time for the frame to bring one round.
 	// The measurement wanted here is the DELAY from the interrupt edge
@@ -678,8 +691,40 @@ module tb_top;
 				i2p_armed <= 1'b0;
 				if (i2p_shown < 4) begin
 					i2p_shown <= i2p_shown + 1;
-					$display("[%0t] INT -> first paper pixel: %0d T-states (48K wants 14336)",
+					$display("[%0t] INT -> first paper pixel: %0d T-states (video's own edge)",
 						$time, i2p_cnt);
+				end
+			end
+		end
+	end
+
+	// The same span measured from the edge the CPU actually sees.
+	//
+	// cpu_irq_n_sync resamples vid_irq_n on the CPU's enable and holds
+	// it a whole T-state before T80 can sample it, so the two figures
+	// differ by one and it is this one that decides where a program's
+	// border writes land. 14336 is the number to hold here; the video's
+	// own edge is then a T-state earlier at 14337.
+	integer c2p_cnt = 0;
+	integer c2p_shown = 0;
+	reg     c2p_armed = 1'b0;
+	reg     cirq_d = 1'b1;
+	reg     cpic_d = 1'b0;
+	always @(posedge dut.clock) begin
+		cirq_d <= dut.cpu_irq_n;
+		cpic_d <= dut.vid.picture;
+		if (dut.reset_n === 1'b1) begin
+			if (cirq_d == 1'b1 && dut.cpu_irq_n == 1'b0) begin
+				c2p_armed <= 1'b1;
+				c2p_cnt   <= 0;
+			end else if (c2p_armed && dut.cpu_clken)
+				c2p_cnt <= c2p_cnt + 1;
+			if (c2p_armed && dut.vid.picture && !cpic_d) begin
+				c2p_armed <= 1'b0;
+				if (c2p_shown < 4) begin
+					c2p_shown <= c2p_shown + 1;
+					$display("[%0t] CPU INT -> first paper pixel: %0d T-states (48K wants 14336)",
+						$time, c2p_cnt);
 				end
 			end
 		end
@@ -756,6 +801,38 @@ module tb_top;
 						dut.vid.vcounter[9:1]);
 				end
 			end
+		end
+	end
+
+	// --- Contention charged per display line, tmloop.hex ------------
+	//
+	// Tact Meter counts turns of a two-instruction loop held wholly in
+	// contended RAM:
+	//
+	//     7FFA: INC DE      ; 6T, M1 only
+	//     7FFB: JP $7FFA    ; 10T, M1 + two operand reads
+	//
+	// and reports turns*16 + 192. A real 48K loses exactly 64 T-states
+	// to contention on every one of the 192 display lines, so the whole
+	// frame costs 12288 T and the program reads 57600 where an
+	// uncontended bank reads 69888. Ours reads 57584 - sixteen T-states,
+	// one turn of the loop, too few. Print the charge line by line: any
+	// line that is not 64 is where our window and the ULA's part.
+	integer ln_stall = 0;
+	integer ln_shown = 0;
+	reg [8:0] ln_prev = 9'd511;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1) begin
+			if (dut.vid.vcounter[9:1] != ln_prev) begin
+				if (ln_prev < 9'd192 && ln_shown < 200) begin
+					ln_shown <= ln_shown + 1;
+					$display("[%0t] LINE %0d charged=%0d",
+						 $time, ln_prev, ln_stall);
+				end
+				ln_prev  <= dut.vid.vcounter[9:1];
+				ln_stall <= 0;
+			end else if (dut.cpu_clken && !dut.cpu_clken_gated)
+				ln_stall <= ln_stall + 1;
 		end
 	end
 
@@ -867,7 +944,8 @@ module tb_top;
 	// being stolen and where.
 
 	reg     ob_d = 1'b1;
-	wire    ob_now = ~dut.cpu_ioreq_n & ~dut.cpu_wr_n & ~dut.cpu_a[0];
+	wire    ob_now = ~dut.cpu_ioreq_n & dut.cpu_m1_n & ~dut.cpu_a[0]
+	                 & (~dut.cpu_wr_n | ~dut.cpu_rd_n);
 	always @(posedge dut.clock) begin
 		if (dut.reset_n === 1'b1) begin
 			if (dut.cpu_clken) ob_ts <= ob_ts + 1;
@@ -875,8 +953,8 @@ module tb_top;
 			if (ob_now && !ob_d) begin
 				if (ob_shown < 40) begin
 					ob_shown <= ob_shown + 1;
-					$display("BORDER OUT #%0d: %0d T since last, %0d T since forced INT, h=%0d line=%0d val=%0d vpic=%b cont=%b contio=%b",
-						ob_shown, ob_ts - ob_prev, (fi_mark < 0) ? 0 : (ob_ts - fi_mark),
+					$display("BORDER OUT #%0d: %0d T since last, %0d T after INT, h=%0d line=%0d val=%0d vpic=%b cont=%b contio=%b",
+						ob_shown, ob_ts - ob_prev, (irq_mark < 0) ? 0 : (ob_ts - irq_mark),
 						dut.vid.hcounter, dut.vid.vcounter[9:1],
 						dut.cpu_do[2:0], dut.vid.vpicture, dut.vid_contention, dut.vid_contention_io);
 				end
@@ -944,6 +1022,29 @@ module tb_top;
 		end
 	end
 
+	// --- Exact extent of the contention window, straight off the
+	// signal rather than inferred from a program. Records the lowest
+	// and highest hcounter at which vid_contention is asserted on a
+	// display line, and the same for where a CPU access actually
+	// gets charged. By construction the window is the first 512
+	// counts (hcounter 4..515 with the -4 offset), and the phase
+	// test should stop it before that: the last charging phase ends
+	// at hc_cont 503, i.e. hcounter 507.
+	integer win_lo = 9999, win_hi = 0;   // 0, not -1: hcounter is unsigned and the comparison would go unsigned too
+	integer chg_lo = 9999, chg_hi = 0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1 && dut.vid.vpicture) begin
+			if (dut.vid_contention) begin
+				if (dut.vid.hcounter < win_lo) win_lo <= dut.vid.hcounter;
+				if (dut.vid.hcounter > win_hi) win_hi <= dut.vid.hcounter;
+			end
+			if (dut.contention) begin
+				if (dut.vid.hcounter < chg_lo) chg_lo <= dut.vid.hcounter;
+				if (dut.vid.hcounter > chg_hi) chg_hi <= dut.vid.hcounter;
+			end
+		end
+	end
+
 	integer cont_in_border = 0, cont_in_pic = 0;
 	integer cont_at_int    = 0;
 	always @(posedge dut.clock) begin
@@ -1005,8 +1106,17 @@ module tb_top;
 	integer int_reported = 0;
 	reg     intcycle_d = 1'b0;
 	reg     was_halted = 1'b0;
+	// What the CPU reads off the bus in the acknowledge cycle. A 48K
+	// leaves it floating and the Z80 sees $FF, which is what an IM2
+	// vector table is built around; anything else here puts the vector
+	// at a different address than the same program finds on real iron.
+	reg [7:0] int_vec = 8'hxx;
 	always @(posedge dut.clock) begin
 		intcycle_d <= dut.cpu.u0.IntCycle;
+
+		if (dut.cpu.u0.IntCycle == 1'b1 && dut.cpu.u0.MCycle == 3'd1
+		    && dut.cpu.u0.TState == 3'd2 && dut.cpu_clken_gated == 1'b1)
+			int_vec <= dut.cpu_di;
 
 		if (dut.cpu.u0.IntCycle == 1'b1 && intcycle_d == 1'b0) begin
 			int_ts <= 0;
@@ -1017,9 +1127,47 @@ module tb_top;
 
 		if (dut.cpu.u0.IntCycle == 1'b0 && intcycle_d == 1'b1) begin
 			if (int_reported < 6)
-				$display("[%0t] INT ACCEPT: %0d T-states (from HALT: %b) - Z80 wants 13",
-					$time, int_ts, was_halted);
+				$display("[%0t] INT ACCEPT: %0d T-states (from HALT: %b) bus=%02h - Z80 wants 13, a 48K bus reads FF",
+					$time, int_ts, was_halted, int_vec);
 			int_reported <= int_reported + 1;
+		end
+	end
+
+	// --- Tact Meter's whole preamble, im2meas.hex -------------------
+	//
+	// What decides the number Tact Meter prints is not only contention
+	// but how long the machine takes to get from the interrupt to the
+	// first INC DE of the counting loop: every 16 T-states of that is
+	// one turn the program never counts. On a real Z80 the path is
+	//
+	//   19  IM2 acceptance
+	//   12  JR at $FFFF, the vector landing on the byte before the top
+	//   10  JP at $FFF4
+	//  121  the handler, $815F..$8186
+	//   41  LD A / LD HL / LD DE / EI / JP $7FFA
+	//  ---
+	//  203  T-states
+	//
+	// Counted in gated enables, so contention cannot distort it.
+	integer pre_ts = 0;
+	reg     pre_run = 1'b0, pre_done = 1'b0, pre_ic = 1'b0;
+	always @(posedge dut.clock) begin
+		pre_ic <= dut.cpu.u0.IntCycle;
+		if (!pre_done && dut.reset_n === 1'b1) begin
+			if (dut.cpu.u0.IntCycle == 1'b1 && pre_ic == 1'b0) begin
+				pre_run <= 1'b1;
+				pre_ts  <= 0;
+			end else if (pre_run && dut.cpu_clken_gated) begin
+				if (dut.cpu.u0.MCycle == 3'd1
+				    && dut.cpu.u0.TState == 3'd1
+				    && dut.cpu_a == 16'h7ffa) begin
+					$display("[%0t] PREAMBLE: %0d T-states from interrupt to $7FFA - Z80 wants 203",
+						 $time, pre_ts);
+					pre_run  <= 1'b0;
+					pre_done <= 1'b1;
+				end else
+					pre_ts <= pre_ts + 1;
+			end
 		end
 	end
 
@@ -1440,6 +1588,9 @@ module tb_top;
 		$display("  of which while INT was low: %0d (expected 0 - the",
 			cont_at_int);
 		$display("  interrupt is on line 248, outside vpicture)");
+		$display("WINDOW extent: vid_contention h=%0d..%0d, charged h=%0d..%0d",
+			win_lo, win_hi, chg_lo, chg_hi);
+		$display("  by construction the window is h=4..515, last charging phase ends h=507");
 		$display("Contended address inside the window: %0d T-states with MREQ (we charge these),",
 			charged_mreq);
 		$display("  %0d without MREQ (a real 48K ULA charges these too, we do not)",
@@ -1754,7 +1905,12 @@ module tb_top;
 // --- temporary: geometry behind the interrupt position ---
 integer gshow=0;
 reg gpic_d=1'b0;
-initial begin #200000; force dut.machine = 2'd0; end
+// Machine set at time zero, not at 200us. It used to be forced late, and
+// since spectrum_top defaults to MACHINE_PENT - which has no contention
+// at all - the first three lines of every run came out with contention
+// silently disabled. That looked exactly like a defect in the window and
+// was chased twice as one.
+initial force dut.machine = 2'd0;
 always @(posedge dut.clock) if (dut.vid.CLKEN) begin
   if (dut.vid.picture && !gpic_d && gshow<3 && $time>400000) begin
     $display("GEOM pic starts at h=%0d on line %0d", dut.vid.hcounter, dut.vid.vcounter/2);

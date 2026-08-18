@@ -564,14 +564,29 @@ module video (
 	// Pentagon's entry has been set against a real machine; the others
 	// are zx-sizif-512's converted and have never been checked on the
 	// board, which is what the trim is back for.
-	// 48K's 880 is Sizif's 0 with the board's trims folded in, wrapped
-	// into the line: -72 counts first, then the sixteenth of a line left
-	// over from the vertical trim above, which is 56 counts.
 	// Pentagon's 622 was set the same way.
 	// 128K and +2A/+3 are still Sizif's untouched.
+	//
+	// 48K was 8, and that is two CPU T-states too late. The testbench
+	// measures the frame directly - `INT -> first paper pixel` - and it
+	// came out 14335 where a 48K publishes 14336. On top of that the CPU
+	// does not see nIRQ when the video asserts it: cpu_irq_n_sync
+	// resamples on the CPU's own enable, and since the enables sit on
+	// counter 7 and 15 while hcounter steps on the even counts, the
+	// register holds the edge for exactly one whole T-state before the
+	// CPU can sample it. So what a program actually gets is 14334.
+	//
+	// Four hcounter counts are one T-state, so 8 -> 0 hands both back:
+	// the video's own figure becomes 14337 and the CPU's - the one that
+	// decides where a program's border writes land - becomes 14336.
+	//
+	// This is not the one-T-state trim the note above `int_adj` in
+	// spectrum_top.v warns off. That one cancelled the resampler alone
+	// and left the geometry a T-state short; this is both, and it is the
+	// interrupt-to-raster phase ula48's top border draws against.
 	wire [9:0] int_hpos_base =
 		(MACHINE == MACHINE_PENT) ? 10'd622 :
-		(MACHINE == MACHINE_S48)  ? 10'd8   :
+		(MACHINE == MACHINE_S48)  ? 10'd0   :
 		lines228                  ? 10'd8   :
 		                            10'd0;
 	// Wrapped into the line rather than added raw.
