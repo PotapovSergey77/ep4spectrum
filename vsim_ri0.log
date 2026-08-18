@@ -1,0 +1,10 @@
+Reading C:/altera/13.0sp1/modelsim_ase/tcl/vsim/pref.tcl 
+
+# 10.1d
+
+# vsim +ROM=romint.hex +FORCEINT=400 +RUNLEN=500 +SPEED=0 +CONT=0 -L altera_mf -do {run 520us; quit -f} -c work_full.tb_top 
+# ** Error: (vsim-19) Failed to access library 'work_full' at "work_full".
+# 
+# No such file or directory. (errno = ENOENT)
+# Error loading design
+Error loading design

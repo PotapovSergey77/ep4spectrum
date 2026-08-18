@@ -65,6 +65,7 @@ module video (
 	// Frame timing: which machine to be. See the geometry table below.
 	MACHINE,
 	CONTENTION,
+	CONTENTION_IO,
 	INT_ADJ,
 	INT_VADJ,
 	CONT_ADJ,
@@ -113,6 +114,8 @@ module video (
 	input           VGA;
 	input   [1:0]   MACHINE;
 	output          CONTENTION;
+	// Same window a T-state earlier, for IO - see the assign below.
+	output          CONTENTION_IO;
 	input   [7:0]   INT_ADJ;
 	input   [7:0]   INT_VADJ;
 	input   [4:0]   CONT_ADJ;
@@ -268,8 +271,40 @@ module video (
 		(hc_sum < 0)      ? (hc_sum + hline) :
 		(hc_sum >= hline) ? (hc_sum - hline) : hc_sum;
 	wire [9:0] hc_cont = hc_wrap[9:0];
+	// The Amstrad gate array has its own pattern: 7,6,5,4,3,2,1,0 rather
+	// than the Ferranti ULA's 6,5,4,3,2,1,0,0 - eight delays where the
+	// ULA has six, so every phase of the group is charged something.
+	// (sinclair.wiki.zxnet.co.uk; its window also starts later and
+	// repeats every 228 T-states, which the 228-count line already gives
+	// on this machine.) One pattern was used for all four machines.
+	wire [2:0] cont_span = (MACHINE == MACHINE_S3) ? 3'd7 : 3'd6;
 	assign CONTENTION = vpicture & ~hc_cont[9]
-	                    & (hc_cont[4:2] < 3'd6);
+	                    & (hc_cont[4:2] < cont_span);
+
+	// A second window for IO, one T-state earlier than the memory one.
+	//
+	// The two need to differ now, where before they did not. Memory
+	// contention is charged against T1 of the machine cycle, taken from
+	// the CPU's own T-state count. IO contention has nothing to key on
+	// but IORQ, which a Z80 asserts in T2 - so its charge lands a
+	// T-state after the cycle it belongs to began, and against a single
+	// shared window every IO delay came out one T-state short of the
+	// published table. Measured directly: a program writing the border
+	// at a fixed instruction spacing was charged 3 T-states where the
+	// table gives 4, at every phase with real statistics behind it.
+	//
+	// Splitting the window was tried once before and reverted, correctly
+	// at the time: back then memory was charged off MREQ, which T80se
+	// also produces in T2, so the two genuinely did agree and giving
+	// them separate windows introduced a difference the hardware does
+	// not have. Moving memory onto T1 is what made them disagree.
+	wire signed [12:0] hi_sum  = hc_sum - 13'sd4;
+	wire signed [12:0] hi_wrap =
+		(hi_sum < 0)      ? (hi_sum + hline) :
+		(hi_sum >= hline) ? (hi_sum - hline) : hi_sum;
+	wire [9:0] hc_io = hi_wrap[9:0];
+	assign CONTENTION_IO = vpicture & ~hc_io[9]
+	                       & (hc_io[4:2] < cont_span);
 
 
 	// The border colour is latched rather than taken straight off the
@@ -328,6 +363,46 @@ module video (
 	// The cause is machine-independent, so this delay is too - it is not
 	// a Pentagon-only trim, even though Pentagon is where it shows up
 	// cleanest, having no contention to smear the OUT across a slot.
+	// The chain is longer than the three stages the picture needs, so
+	// the border OUTSIDE the display lines can be tapped at a different
+	// point from the border beside them. BORD_ADJ picks that tap.
+	//
+	// This exists because the fault is confined to the border above and
+	// below the raster: there the stripes sit right of where they
+	// belong, while beside the raster they are correct. Moving the whole
+	// frame cannot express that - it shifts all three areas alike, which
+	// is why the interrupt trim did nothing useful. This knob moves only
+	// the two areas that are wrong.
+	//
+	// Range: BORD_ADJ 0 keeps the present three stages, positive values
+	// delay further (stripes move right), and it can be wound back to
+	// zero stages for three pixels of left shift - no more, because
+	// moving left further would mean tapping the chain before the value
+	// exists. If the answer turns out to need more left than that, the
+	// displacement is not in the output path and this knob will say so
+	// by running out.
+	// A whole line of history, written as a circular buffer rather than
+	// a shift register so it costs one memory block instead of hundreds
+	// of registers.
+	//
+	// The length is what makes a LEFT shift possible at all. Tapping the
+	// chain can only ever delay, and the stripes above the raster need
+	// to move left - which cannot be done by delaying, because the value
+	// has not happened yet. But the border repeats line to line here
+	// (the stripes are aligned vertically, no stagger), so delaying by
+	// nearly a whole line is indistinguishable from advancing by the
+	// remainder. Winding BORD_ADJ back past zero wraps to the far end of
+	// the buffer and shows the same stripe one line older, which reads
+	// on screen as a shift to the left.
+	// A line-long buffer was tried here, so the border outside the
+	// display lines could be shifted either way independently of the
+	// border beside them. **It settled the question and was removed.**
+	// No setting of it lined the stripes up, and on a text demo the
+	// displacement turned out to vary ALONG the line - which no output
+	// delay can produce, since a delay shifts a whole line equally. The
+	// displacement is in how many T-states the CPU spends getting to
+	// each OUT, not in when the border reaches the screen. It also cost
+	// 94% of the device's logic, being 448 registers wide.
 	reg     [2:0]   border_d1  = 3'b000;
 	reg     [2:0]   border_d2  = 3'b000;
 	reg     [2:0]   border_out = 3'b000;
@@ -473,9 +548,15 @@ module video (
 	// The board-trimmed 247 and 880 that stood here came to 14342, six
 	// T-states early - twelve pixels, which is about what setting it by
 	// eye against a demo can resolve.
+	// 128K and +2A/+3 use 248 as well, checked on the board 2026-08-17
+	// with the Page Up / Page Down trim: both wanted the frame three
+	// lines lower than 245 put it, which is exactly 248. So the "less
+	// three lines" that came in with Sizif's table was wrong for them
+	// too, and 48K was simply the machine where it got corrected first.
+	// Pentagon keeps its own 239, set on the board against a demo that
+	// draws in the border.
 	wire [8:0] int_line_base =
-		(MACHINE == MACHINE_PENT) ? 9'd239 :
-		(MACHINE == MACHINE_S48)  ? 9'd248 : 9'd245;
+		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd248;
 	// Interrupt position. The table entry is zx-sizif-512's converted;
 	// Pentagon's was then set on the board, where the picture drawn in
 	// the border shows it directly.

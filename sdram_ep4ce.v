@@ -221,9 +221,25 @@ assign dout16 = word_r;
 // held in reset and therefore refreshing normally.
 //
 // So take a cycle for refresh on a fixed schedule instead of hoping for
-// a gap. The part needs 4096 refreshes per 64ms; one every 32 q cycles
-// is one every ~4.6us, covering all 4096 rows in ~19ms, a wide margin
-// inside the 64ms requirement, and costs 1/32nd of the bandwidth.
+// a gap. The part needs 4096 refreshes per 64ms.
+//
+// One every 32 q cycles - ~4.6us - was the first schedule here, and it
+// is three to four times more often than the part asks for: it covers
+// all 4096 rows in ~19ms against a 64ms requirement, and takes a
+// thirty-second of the bandwidth to do it. That margin is not free. A
+// refresh cycle takes a slot the CPU could have had, on a counter of
+// its own that has no relation to the 224-T-state line, so the T-states
+// it steals land in a different place in every line. A program stepping
+// along the border with OUTs then finds the gaps between them uneven -
+// which is exactly the symptom that no contention trim could reach,
+// because contention has nothing to do with it.
+//
+// Back to 32 q cycles. Stretching it to 96 was tried to stop refresh
+// stealing T-states unevenly along the line - measured afterwards, it
+// steals none at all: CPU enables taken/offered came out 53760/53760 in
+// the border, zero lost. So the wider margin costs nothing and is worth
+// keeping: ~19ms to cover all 4096 rows against a 64ms requirement.
+
 always @(posedge clk) begin
 	if (q == STATE_LAST) begin
 		if (refresh_timer == 7'd31) begin

@@ -207,6 +207,14 @@ module spectrum_top (
 	wire            key_f7;
 	wire            key_f9;
 	wire            key_f10;
+	wire            key_pgup;
+	wire            key_pgdn;
+	wire            key_home;
+	wire            key_end;
+	reg             key_pgup_d = 1'b0;
+	reg             key_pgdn_d = 1'b0;
+	reg             key_home_d = 1'b0;
+	reg             key_end_d  = 1'b0;
 	// CPU speed, set by F1..F4: 0 = 3.5 MHz, 1 = 7, 2 = 14, 3 = 28.
 	//
 	// The key only asks; the change lands further down, on a slot
@@ -223,8 +231,40 @@ module spectrum_top (
 	// The interrupt trims are gone - F1..F4 are the speed now, and the
 	// interrupt sits at the position the published 14336 T-states give.
 	// video.v keeps the inputs; they are tied off below.
-	wire    [7:0]   int_adj = 8'd0;
-	wire    [7:0]   int_vadj = 8'd0;
+	// -4 counts = one CPU T-state earlier (four hcounter counts to a
+	// T-state), compensating cpu_irq_n_sync.
+	//
+	// That register resamples vid_irq_n on the CPU's own enable so the
+	// interrupt edge cannot land mid-T-state - it has to stay, demos
+	// that count T-states from the interrupt shimmer without it. But it
+	// costs one T-state of latency a real Z80 does not have, so
+	// everything a program does after the interrupt happens one T-state
+	// - two pixels - late. That is invisible on the screen lines, where
+	// a program has other things to synchronise against, and shows up in
+	// the top border, which is the 64 lines immediately after the
+	// interrupt where a program has nothing to go on but its own count.
+	// Which is exactly where the bird demo's stripes are displaced and
+	// its lower-border stripes are not.
+	//
+	// Moving the interrupt a T-state earlier to cancel that latency was
+	// tried on hardware and **does not fix it**: the bird demo's top
+	// border stripes moved the two pixels as intended and were still in
+	// the wrong place. The displacement is therefore not one T-state of
+	// interrupt latency, and since this trim shifts the whole frame
+	// alike it can only cost the lower border and the screen lines,
+	// which are already correct. Back to 0. Do not retry as a fix for
+	// the border displacement - the resampler's T-state is real, but it
+	// is not this fault.
+	wire signed [7:0] int_adj = 8'sd0;
+	// Vertical trim: where the frame sits against the raster, stepped by
+	// Page Up / Page Down. video.v takes this in sixteenths of a line
+	// (INT_VADJ >>> 4), so a step of 16 is exactly one line.
+	//
+	// Unlike CONT_ADJ this does not touch the contention window - it
+	// moves the interrupt, and so the whole frame, up or down. The two
+	// are independent knobs: one for where the frame sits, one for where
+	// the contention window sits inside it.
+	reg  signed [7:0] int_vadj = 8'sd0;
 	// F10 cycles the ULA contention model
 	// 0 = no contention, 1 = memory only, 2 = memory and IO.
 	//
@@ -234,6 +274,11 @@ module spectrum_top (
 	// The lamps read the mode inverted, so mode 2 is the state with all
 	// of them dark.
 	reg     [1:0]   cont_mode = 2'd2;
+	// Which lengthened T-states count as internal ones - see cycle_extra
+	// below. Declared here, with the other trims, because the block that
+	// steps it on Home/End runs long before that point in the file and
+	// Quartus was accepting the forward reference without wiring it.
+	reg     [1:0]   cont_model = 2'd1;
 	// Position of the whole contention window in the line, edges and
 	// pattern together, one CPU T-state a step and signed - so 1F is one
 	// T-state early, not thirty-one late. Stepped by the board's spare
@@ -308,6 +353,7 @@ module spectrum_top (
 	wire            clk_ref;
 	wire            vid_mem_sync;
 	wire            vid_contention;
+	wire            vid_contention_io;
 	wire            vid_port_ff_active;
 	wire    [7:0]   vid_port_ff_data;
 	// The CPU's enable after the ULA has had its say - see the contention
@@ -367,6 +413,8 @@ module spectrum_top (
 	// here, ahead of the T80 instance that reads it: Quartus accepts
 	// use-before-declaration, ModelSim does not.
 	wire            divmmc_wait_n;
+	wire    [2:0]   cpu_mc;
+	wire    [2:0]   cpu_ts;
 	wire            cpu_wait_all_n;
 	wire            cpu_irq_n;
 	wire            cpu_nmi_n;
@@ -709,6 +757,26 @@ module spectrum_top (
 		key_f10_d <= key_f10;
 		if (key_f10 == 1'b1 && key_f10_d == 1'b0)
 			cont_mode <= (cont_mode == 2'd2) ? 2'd0 : (cont_mode + 2'd1);
+		// Page Up / Page Down move the frame a line at a time. Acted on
+		// the press, not the level - these blocks run at 28MHz and a
+		// level test would run the trim away in a single keystroke.
+		key_pgup_d <= key_pgup;
+		key_pgdn_d <= key_pgdn;
+		if (key_pgup == 1'b1 && key_pgup_d == 1'b0)
+			int_vadj <= int_vadj - 8'sd16;
+		else if (key_pgdn == 1'b1 && key_pgdn_d == 1'b0)
+			int_vadj <= int_vadj + 8'sd16;
+		// Home / End move the border ABOVE AND BELOW the raster only, a
+		// pixel a press, leaving the border beside the raster alone.
+		// Home winds the tap back (stripes move left) and stops at zero;
+		// End delays it further.
+		key_home_d <= key_home;
+		key_end_d  <= key_end;
+		if (key_home == 1'b1 && key_home_d == 1'b0) begin
+			cont_model <= cont_model - 2'd1;
+		end else if (key_end == 1'b1 && key_end_d == 1'b0) begin
+			cont_model <= cont_model + 2'd1;
+		end
 		key_f3_d <= key_f3;
 		key_f4_d <= key_f4;
 	end
@@ -782,7 +850,9 @@ module spectrum_top (
 		.BUSAK_n(cpu_busack_n),
 		.A(cpu_a),
 		.DI(cpu_di),
-		.DO(cpu_do)
+		.DO(cpu_do),
+		.MC(cpu_mc),
+		.TS(cpu_ts)
 	);
 	// VSYNC interrupt routed to CPU
 	// (tested disabling this entirely as a diagnostic - made no
@@ -832,7 +902,12 @@ module spectrum_top (
 	// due four delays and was given none, and a 128K demo writes it
 	// every frame.
 	wire io_cyc     = (~cpu_ioreq_n) & cpu_m1_n & (machine != MACHINE_S3);
-	wire io_hi_cont = (cpu_a[15:14] == 2'b01);
+	// The port's high byte is contended on the same rule as memory: 0x40-
+	// 0x7F always, and 0xC0-0xFF when the bank paged at 0xC000 is a
+	// contended one. Only the first half was here, so on a 128K a port
+	// in the 0xC000-0xFFFF range was charged nothing where a real
+	// machine charges it. No effect on a 48K, where cont_page is 0.
+	wire io_hi_cont = cpu_a[14] & (~cpu_a[15] | cont_page);
 
 	// A machine cycle is charged the delay once, at its start, and then
 	// runs to its end untouched. These flags remember that this cycle
@@ -850,11 +925,88 @@ module spectrum_top (
 	//
 	// Nothing updates while the CPU is held, since these are clocked by
 	// the gated enable, so a hold stays a hold until the window frees.
+	// What marks the cycle the ULA charges against.
+	//
+	// sinclair.wiki.zxnet.co.uk, on the Amstrad gate array: "it applies
+	// memory contention only if the MREQ line is active, whereas the
+	// 16K/48K ULA applies it under all circumstances". Keying on MREQ is
+	// therefore the +2A/+3 rule, and this design applied it to every
+	// machine - so 48K and 128K were running a gate array's contention.
+	//
+	// The early ULA watches the address bus, and the delay lands once
+	// per machine cycle because a Z80 only samples WAIT at the end of
+	// T2. Here the CPU is held by withholding its clock enable rather
+	// than through WAIT_n, and a withheld enable freezes it in any
+	// T-state, not just T2 - so the T2 test has to be made explicitly.
+	// Without it the CPU is charged again on every T-state of the cycle,
+	// which is the old defect that cost 98% of the enables in the window
+	// where the table says 44%.
+	// The published instruction timings are written as a list of
+	// sub-cycles - "pc:4, hl:3, hl:1, hl:3" for INC (HL) - and EVERY one
+	// of them is charged, the internal `:1` entries included. That is
+	// what "the 16K/48K ULA applies it under all circumstances" means in
+	// practice, and it is why the error depends on what the program is
+	// executing rather than being a fixed offset: two programs with
+	// different instruction mixes have different numbers of internal
+	// T-states, so no single window trim can suit both.
+	//
+	// T80 folds an internal T-state into the machine cycle it follows,
+	// making that cycle longer instead of starting a new one. So a
+	// sub-cycle boundary is T1, plus any T-state beyond the normal
+	// length - beyond 4 for an opcode fetch (MCycle 1), beyond 3 for
+	// everything else. INC (HL)'s read comes through as a 4-T-state
+	// cycle and is charged twice, PUSH's 5-T-state fetch likewise, while
+	// a plain fetch or read is charged once.
+	// Charged at T1. Moving this to T2 was tried on the theory that T80
+	// might still be showing the previous cycle's address during T1, so
+	// that cont_addr would sometimes be tested against the wrong bus
+	// value - a per-instruction-sequence error, which is the shape of
+	// the remaining fault. **Disproven on hardware**: the only effect was
+	// a clean one-T-state shift of everything (a border stripe moved two
+	// pixels, exactly one T-state), the striped demo went from perfect to
+	// broken, and nothing improved. A pure phase shift with no change in
+	// distribution means the address IS valid at T1 and no charge was
+	// landing on the wrong address. Do not repeat this.
+	wire cycle_first = (cpu_ts == 3'd1);
+
+	// Which lengthened T-states count as internal ones, selectable from
+	// the keyboard because the answer has to come off the board and a
+	// simulation run costs half an hour.
+	//
+	// Every variant charges T1 of each machine cycle. They differ only
+	// in the extra charge for T-states beyond a cycle's normal length,
+	// and T80 produces those for two unrelated reasons: a genuine
+	// internal T-state folded onto the cycle - what the published
+	// timings write as hl:1 and a real ULA charges - and its own
+	// lengthening of interrupt acknowledge and the like, which nothing
+	// should charge. The two are indistinguishable from a length test
+	// alone, so each combination is offered:
+	//
+	//   0  none          - one charge per machine cycle
+	//   1  all           - every T-state past the normal length
+	//   2  non-fetch     - only on cycles other than the opcode fetch
+	//   3  fetch only    - only on the opcode fetch
+	wire extra_nonm1 = (cpu_mc != 3'd1) && (cpu_ts > 3'd3);
+	wire extra_m1    = (cpu_mc == 3'd1) && (cpu_ts > 3'd4);
+	wire cycle_extra = (cont_model == 2'd0) ? 1'b0 :
+	                   (cont_model == 2'd1) ? (extra_m1 | extra_nonm1) :
+	                   (cont_model == 2'd2) ? extra_nonm1 : extra_m1;
+	wire cont_trigger = (machine == MACHINE_S3) ? ~cpu_mreq_n
+	                                            : (cycle_first | cycle_extra);
+
+	// No "already paid" flag on the ULA path, deliberately. It existed
+	// because MREQ stays low for two or three T-states, so the level
+	// alone re-charged the same access; a T-state test is true for one
+	// T-state and clears itself. Worse, the flag would break the case
+	// this change is for: two internal T-states in a row must be charged
+	// twice, and a paid flag suppresses the second. The hold still ends
+	// on its own, because it lasts only while the window is in a delay
+	// phase. The +2A/+3 path keeps the flag - it is still keyed on MREQ.
 	reg mreq_paid = 1'b0;
 	always @(posedge clock) begin
 		if (cpu_clken_gated == 1'b1) begin
-			if (cpu_mreq_n == 1'b1)  mreq_paid <= 1'b0;
-			else                     mreq_paid <= 1'b1;
+			if (cpu_mreq_n == 1'b1) mreq_paid <= 1'b0;
+			else                    mreq_paid <= 1'b1;
 		end
 	end
 
@@ -907,7 +1059,8 @@ module spectrum_top (
 	// The MREQ term is not optional either. Without it the address bus
 	// alone asks for contention, and a Z80 leaves the last address on
 	// the bus through the internal T-states that follow an access.
-	wire cont_mem = ~io_cyc & ~cpu_mreq_n & ~mreq_paid & cont_addr;
+	wire cont_mem = ~io_cyc & cont_trigger & cont_addr
+	                & ((machine == MACHINE_S3) ? ~mreq_paid : 1'b1);
 	wire cont_io  = (io_start | (io_seq != 3'd0)) & io_point;
 	// One window for both memory and IO. It is worth recording why,
 	// because the opposite looks plausible: a real Z80 puts MREQ in T1
@@ -928,11 +1081,18 @@ module spectrum_top (
 	// F10 turns contention off, to tell whether the model is what makes
 	// border stripes spread out from the middle of the screen: a demo's
 	// loop taking longer than it should stretches everything it draws.
-	wire contention = vid_contention
-	                  & (cont_mem | cont_io)
-	                  & (machine != MACHINE_PENT)
-	                  & ((cont_mode == 2'd2) ? 1'b1 :
-	                     (cont_mode == 2'd1) ? ~cont_io : 1'b0);
+	// Memory and IO take their delay from windows a T-state apart now:
+	// memory is charged against the machine cycle's own T1, IO against
+	// IORQ, which a Z80 puts in T2. See the comment by CONTENTION_IO in
+	// video.v - measured, IO was coming out a T-state short of the
+	// published table at every phase, and that is the ONLY contention
+	// path a border-drawing OUT goes through.
+	wire contention = (machine != MACHINE_PENT)
+	                  & ((cont_mode == 2'd2) ?
+	                        ((vid_contention & cont_mem) |
+	                         (vid_contention_io & cont_io)) :
+	                     (cont_mode == 2'd1) ?
+	                        (vid_contention & cont_mem) : 1'b0);
 
 	// Holding the CPU means withholding its clock enable here, which is
 	// what Sizif does by holding clkcpu.
@@ -984,6 +1144,10 @@ module spectrum_top (
 		.F3(key_f3),
 		.F4(key_f4),
 		.F10(key_f10),
+		.PGUP(key_pgup),
+		.PGDN(key_pgdn),
+		.HOME(key_home),
+		.END(key_end),
 		.ROW_ANY(kb_row_any)
 	);
 
@@ -1030,6 +1194,7 @@ module spectrum_top (
 		.VGA(1'b0),
 		.MACHINE(machine),
 		.CONTENTION(vid_contention),
+		.CONTENTION_IO(vid_contention_io),
 		.INT_ADJ(int_adj),
 		.INT_VADJ(int_vadj),
 		.CONT_ADJ(cont_adj),
@@ -1809,7 +1974,9 @@ module spectrum_top (
 	// something other than what it was being asked about.
 	//
 	// With every trim at zero it goes back to "3.5" and the page.
-	wire any_trim = (cont_adj != 5'd0);
+	// Also shown once the contention model is moved off its default, so
+	// which variant is running can be read off the board.
+	wire any_trim = (cont_adj != 5'd0) || (cont_model != 2'd1);
 
 	// The left pair carries the CPU speed: 3.5, 7.0, 14, 28. The two
 	// slower ones take a decimal point after the first digit, which is
@@ -1823,7 +1990,7 @@ module spectrum_top (
 
 	wire [3:0] nibble = any_trim ?
 	                    ((digit_scan == 2'd3) ? 4'hc :   // C, contention window
-	                     (digit_scan == 2'd2) ? 4'd0 :
+	                     (digit_scan == 2'd2) ? {2'b00, cont_model} :
 	                     (digit_scan == 2'd1) ? {3'b000, cont_adj[4]} :
 	                                            cont_adj[3:0]) :
 	                    (digit_scan == 2'd3) ? spd_hi :

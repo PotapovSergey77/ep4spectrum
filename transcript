@@ -1,0 +1,5 @@
+# vsim +ROM=border.hex +RUNLEN=350 +SPEED=0 +CONT=2 -L altera_mf -do {run 370us; quit -f} -c work_full.tb_top 
+# ** Error: (vsim-19) Failed to access library 'work_full' at "work_full".
+# 
+# No such file or directory. (errno = ENOENT)
+# Error loading design

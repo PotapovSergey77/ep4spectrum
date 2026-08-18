@@ -152,6 +152,41 @@ module tb_top;
 		end
 	end
 
+	// +CONTADJ=<n> forces the contention window's position, the same
+	// value KEY3/KEY4 step on the board. Five bits signed, one CPU
+	// T-state a step, so 31 is one T-state early rather than 31 late.
+	// Needed here because the measured delay table comes out shifted by
+	// exactly one T-state from the published 6,5,4,3,2,1,0,0, and this
+	// is the knob that would move it - but which direction fixes it has
+	// to be measured, not reasoned about.
+	integer ob_ts = 0, ob_prev = 0, ob_shown = 0;
+	// +FORCEINT=<us> pulses nIRQ directly at the given time, instead
+	// of waiting ~16ms of model time for the frame to bring one round.
+	// The measurement wanted here is the DELAY from the interrupt edge
+	// to the first OUT, which does not care where in the frame the
+	// edge falls - so the wait was pure cost, about an hour a run.
+	reg [31:0] forceint_us;
+	integer    fi_mark = -1;
+	initial begin
+		if ($value$plusargs("FORCEINT=%d", forceint_us)) begin
+			#(forceint_us * 1000);
+			fi_mark = ob_ts;
+			$display("[%0t] FORCED INT: nIRQ low, ob_ts=%0d h=%0d line=%0d",
+				$time, ob_ts, dut.vid.hcounter, dut.vid.vcounter[9:1]);
+			force dut.vid.nIRQ = 1'b0;
+			#9143;
+			release dut.vid.nIRQ;
+		end
+	end
+
+	reg [31:0] forced_cadj;
+	initial begin
+		if ($value$plusargs("CONTADJ=%d", forced_cadj)) begin
+			force dut.cont_adj = forced_cadj[4:0];
+			$display("[%0t] cont_adj forced to %0d", $time, forced_cadj[4:0]);
+		end
+	end
+
 	// How long the run lasts before the final summary prints and
 	// $finish fires. +RUNLEN=<us> overrides the default 1.5ms. It must
 	// still be <= the outer `run <N>us` given to vsim, or the run stops
@@ -733,6 +768,182 @@ module tb_top;
 	// the test measures, and the search moves elsewhere. Counted over
 	// the whole run rather than per interrupt so one stray hit cannot
 	// hide in an average.
+	// --- What the canonical 48K model would charge that we do not ---
+	//
+	// sinclair.wiki.zxnet.co.uk: the Amstrad gate array "applies memory
+	// contention only if the MREQ line is active, whereas the 16K/48K
+	// ULA applies it under all circumstances". Our cont_mem carries
+	// ~cpu_mreq_n unconditionally, so we implement the +2A/+3 rule on
+	// every machine, and the T-states of an instruction that hold a
+	// contended address without an access - the ones written hl:1 in the
+	// published instruction tables - go free here.
+	//
+	// This counts them, without changing anything: T-states inside the
+	// contention window, holding a contended address, with no MREQ. The
+	// ratio to the accesses we DO charge is what the canonical model
+	// would cost, and it decides whether adopting it is a small
+	// correction or a large one. Aggregate contention magnitude was
+	// already measured as correct once (32% against 32.7% predicted), so
+	// a big number here would mean the two measurements disagree and one
+	// of them is wrong - worth knowing before rewriting the model.
+	integer free_internal = 0;   // would be charged by a real 48K ULA
+	integer charged_mreq  = 0;   // what we charge now
+	always @(posedge dut.clock) begin
+		// Gated, not ungated: while contention is holding the CPU it is
+		// not executing anything, and MREQ is high for part of that
+		// hold. Counting ungated enables therefore counts the stall
+		// itself as free internal T-states and inflates the answer -
+		// which is the thing this measurement exists to size.
+		if (dut.reset_n === 1'b1 && dut.cpu_clken_gated && dut.vid_contention
+		    && (dut.cpu_a[14] & ~dut.cpu_a[15])) begin
+			if (dut.cpu_mreq_n === 1'b1) free_internal <= free_internal + 1;
+			else                         charged_mreq  <= charged_mreq + 1;
+		end
+	end
+
+	// Which cycles actually collect the charge, by MCycle and TState.
+	// The point is to separate the extra charges that belong - a read
+	// with an internal T-state folded onto it, which the published
+	// timings write as hl:3, hl:1 - from ones that are an artefact of
+	// how T80 lengthens cycles for its own reasons, such as interrupt
+	// acknowledge. Both look identical to a "T-state beyond the normal
+	// length" test, and only the first is real.
+	integer chg_ts [0:7];
+	integer chg_mc [0:7];
+	integer hi;
+	initial for (hi = 0; hi < 8; hi = hi + 1) begin
+		chg_ts[hi] = 0; chg_mc[hi] = 0;
+	end
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1 && dut.cpu_clken && dut.contention) begin
+			chg_ts[dut.cpu_ts] = chg_ts[dut.cpu_ts] + 1;
+			chg_mc[dut.cpu_mc] = chg_mc[dut.cpu_mc] + 1;
+		end
+	end
+
+	// --- Is the CPU losing T-states where contention is NOT running? ---
+	//
+	// The bird demo puts its top-border stripes in the wrong place and
+	// its lower-border stripes in the right one, and no window trim
+	// moves either - the window does not reach the border at all. So the
+	// question is whether anything OTHER than contention is taking
+	// T-states from the CPU, and whether it takes them evenly.
+	//
+	// If the border shows losses, the contention model is not what is
+	// wrong: the screen lines would then only look right because our
+	// contention undercharges by however much the other loss adds, one
+	// error hiding the other. That has to be settled before any further
+	// tuning of contention, or it is tuning against a moving target.
+	//
+	// Counted as enables offered against enables taken, separately for
+	// the display area and the border.
+	integer pic_offer = 0, pic_taken = 0;
+	integer bor_offer = 0, bor_taken = 0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1 && dut.cpu_clken) begin
+			if (dut.vid.vpicture) begin
+				pic_offer <= pic_offer + 1;
+				if (dut.cpu_clken_gated) pic_taken <= pic_taken + 1;
+			end else begin
+				bor_offer <= bor_offer + 1;
+				if (dut.cpu_clken_gated) bor_taken <= bor_taken + 1;
+			end
+		end
+	end
+
+	// --- Where each border write lands, and how far apart they are ---
+	//
+	// The symptom on the board is that the gaps between border stripes
+	// along a line are uneven, and nothing to do with contention touches
+	// it - not the window trim, not the internal-T-state model, not the
+	// output delay, not the refresh rate. So measure the thing itself:
+	// for each OUT to port 0xFE, the T-states since the previous one and
+	// where in the line it happened.
+	//
+	// A program stepping along the border writes at a fixed instruction
+	// count, so the T-state gaps must all be equal. If they are, the CPU
+	// is fine and the fault is in how the write reaches the screen. If
+	// they are not, the number printed beside them says how much is
+	// being stolen and where.
+
+	reg     ob_d = 1'b1;
+	wire    ob_now = ~dut.cpu_ioreq_n & ~dut.cpu_wr_n & ~dut.cpu_a[0];
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1) begin
+			if (dut.cpu_clken) ob_ts <= ob_ts + 1;
+			ob_d <= ob_now;
+			if (ob_now && !ob_d) begin
+				if (ob_shown < 40) begin
+					ob_shown <= ob_shown + 1;
+					$display("BORDER OUT #%0d: %0d T since last, %0d T since forced INT, h=%0d line=%0d val=%0d vpic=%b cont=%b contio=%b",
+						ob_shown, ob_ts - ob_prev, (fi_mark < 0) ? 0 : (ob_ts - fi_mark),
+						dut.vid.hcounter, dut.vid.vcounter[9:1],
+						dut.cpu_do[2:0], dut.vid.vpicture, dut.vid_contention, dut.vid_contention_io);
+				end
+				ob_prev <= ob_ts;
+			end
+		end
+	end
+
+	// --- Every event between the interrupt edge and the first OUT ---
+	//
+	// The delay from edge to OUT measures 55 T-states where a Z80
+	// needs about 36. This prints each step with the CPU T-state it
+	// happens on, so the excess can be attributed rather than guessed:
+	// nIRQ itself, the resynchronised copy the CPU sees, the start and
+	// end of the acceptance sequence, and every opcode fetched after.
+	reg tr_vid_d = 1'b1, tr_cpu_d = 1'b1, tr_ic_d = 1'b0, trm1_d = 1'b1;
+	integer tr_m1n = 0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1 && fi_mark >= 0) begin
+			tr_vid_d <= dut.vid_irq_n;
+			tr_cpu_d <= dut.cpu_irq_n;
+			tr_ic_d  <= dut.cpu.u0.IntCycle;
+			trm1_d  <= dut.cpu_m1_n;
+			if (tr_vid_d && !dut.vid_irq_n)
+				$display("  TRACE T+%0d: vid_irq_n falls", ob_ts - fi_mark);
+			if (tr_cpu_d && !dut.cpu_irq_n)
+				$display("  TRACE T+%0d: cpu_irq_n falls (after resync)", ob_ts - fi_mark);
+			if (!tr_ic_d && dut.cpu.u0.IntCycle)
+				$display("  TRACE T+%0d: acceptance begins", ob_ts - fi_mark);
+			if (tr_ic_d && !dut.cpu.u0.IntCycle)
+				$display("  TRACE T+%0d: acceptance ends", ob_ts - fi_mark);
+			if (trm1_d && !dut.cpu_m1_n && tr_m1n < 70) begin
+				tr_m1n <= tr_m1n + 1;
+				$display("  TRACE T+%0d: M1 fetch at %04h", ob_ts - fi_mark, dut.cpu_a);
+			end
+		end
+	end
+
+	// --- From IORQ on port 0xFE to the colour reaching the screen ---
+	//
+	// The last unmeasured link. Everything from the interrupt edge to
+	// the OUT itself now matches a Z80 to the T-state, yet the border
+	// above the raster is still displaced - so the remaining candidate
+	// is the output path: ula_port latching D_OUT, then video's border
+	// delay chain. Prints where the write happens and where the colour
+	// actually changes, both in hcounter counts (4 per T-state).
+	reg [2:0] bd_prev = 3'b000;
+	reg       bd_arm  = 1'b0;
+	integer   bd_h = 0, bd_shown = 0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1) begin
+			if (ob_now && !ob_d && !bd_arm) begin
+				bd_arm <= 1'b1; bd_h <= dut.vid.hcounter;
+			end
+			bd_prev <= dut.vid.border_out;
+			if (bd_arm && dut.vid.border_out !== bd_prev) begin
+				bd_arm <= 1'b0;
+				if (bd_shown < 6) begin
+					bd_shown <= bd_shown + 1;
+					$display("  BORDER PATH: IORQ at h=%0d, colour changes at h=%0d -> %0d counts = %0d pixels",
+						bd_h, dut.vid.hcounter, dut.vid.hcounter - bd_h,
+						(dut.vid.hcounter - bd_h) / 2);
+				end
+			end
+		end
+	end
+
 	integer cont_in_border = 0, cont_in_pic = 0;
 	integer cont_at_int    = 0;
 	always @(posedge dut.clock) begin
@@ -898,7 +1109,23 @@ module tb_top;
 						rd_count[mc_phase] = rd_count[mc_phase] + 1;
 					end
 				end
-				mc_phase <= dut.vid.hc_cont[4:2];
+				// Phase counted from the first T-state of the display
+				// fetch (hcounter = 8, four counts to a T-state), NOT
+				// from hc_cont.
+				//
+				// hc_cont was the obvious choice and it is useless here:
+				// it already contains CONT_ADJ and the structural -4, so
+				// moving the window moves this ruler with it and the
+				// table comes out identical whatever the trim. Measured -
+				// a run at CONT_ADJ=+1 reproduced the CONT_ADJ=0 table to
+				// the decimal, which is the instrument reporting on its
+				// own coordinate system rather than on the design.
+				//
+				// Against the display fetch the question the published
+				// table actually asks becomes measurable: phase 0 is the
+				// T-state the ULA starts fetching on, and a real 48K
+				// charges 6,5,4,3,2,1,0,0 from there.
+				mc_phase <= dut.vid.hcounter[4:2] - 3'd2;
 				// Only a cycle inside the contended part of a contended
 				// line can be charged anything at all. The contended-RAM
 				// test is applied on top for the memory rows: without it
@@ -1213,6 +1440,23 @@ module tb_top;
 		$display("  of which while INT was low: %0d (expected 0 - the",
 			cont_at_int);
 		$display("  interrupt is on line 248, outside vpicture)");
+		$display("Contended address inside the window: %0d T-states with MREQ (we charge these),",
+			charged_mreq);
+		$display("  %0d without MREQ (a real 48K ULA charges these too, we do not)",
+			free_internal);
+		$display("CPU enables taken/offered - display area: %0d/%0d (%0d%% lost)",
+			pic_taken, pic_offer,
+			(pic_offer == 0) ? 0 : ((pic_offer - pic_taken) * 100) / pic_offer);
+		$display("                          - border      : %0d/%0d (%0d%% lost)",
+			bor_taken, bor_offer,
+			(bor_offer == 0) ? 0 : ((bor_offer - bor_taken) * 100) / bor_offer);
+		$display("  border loss must be 0 - contention does not reach there");
+		$write("Contention charged by TState :");
+		for (hi = 0; hi < 8; hi = hi + 1) $write(" %0d:%0d", hi, chg_ts[hi]);
+		$display("");
+		$write("Contention charged by MCycle :");
+		for (hi = 0; hi < 8; hi = hi + 1) $write(" %0d:%0d", hi, chg_mc[hi]);
+		$display("");
 		$display("=====================================================");
 		$display("SIMULATION DONE");
 		$finish;

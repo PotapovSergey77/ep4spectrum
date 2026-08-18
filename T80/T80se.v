@@ -2,6 +2,7 @@
 // T80(b) core. In an effort to merge and maintain bug fixes ....
 //
 //
+// Ver 306 MC/TS brought out for the ULA contention model by Sergey Potapov (potapov.sergey.77@gmail.com) 17.08.2026
 // Ver 304 converted from VHDL to Verilog by Sergey Potapov (potapov.sergey.77@gmail.com) 09.08.2026
 // Ver 300 started tidyup
 // MikeJ March 2005
@@ -83,7 +84,14 @@ module T80se (
 	BUSAK_n,
 	A,
 	DI,
-	DO
+	DO,
+	// Machine cycle and T-state, brought out for the ULA contention
+	// model. A real 16K/48K ULA charges its delay against the T1 of the
+	// machine cycle and does not look at MREQ at all, so the CPU side
+	// needs to see where a cycle begins rather than inferring it from a
+	// strobe that arrives a T-state later.
+	MC,
+	TS
 );
 
 	parameter Mode = 0;    // 0 => Z80, 1 => Fast Z80, 2 => 8080, 3 => GB
@@ -108,6 +116,8 @@ module T80se (
 	output  [15:0]  A;
 	input   [7:0]   DI;
 	output  [7:0]   DO;
+	output  [2:0]   MC;
+	output  [2:0]   TS;
 
 	wire            IntCycle_n;
 	wire            NoRead;
@@ -116,6 +126,9 @@ module T80se (
 	reg     [7:0]   DI_Reg;
 	wire    [2:0]   MCycle;
 	wire    [2:0]   TState;
+
+	assign MC = MCycle;
+	assign TS = TState;
 
 	T80 #(
 		.Mode(Mode),
