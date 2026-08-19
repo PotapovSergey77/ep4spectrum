@@ -79,6 +79,8 @@ module keyboard (
 	PGDN,
 	HOME,
 	END,
+	KPSUB,
+	KPADD,
 	ROW_ANY
 );
 
@@ -111,6 +113,10 @@ module keyboard (
 	// the line, a CPU T-state (two pixels) a press.
 	output reg      HOME;
 	output reg      END;
+	// Keypad - and +: trims the IO contention window alone, a CPU
+	// T-state a press, without touching the memory window.
+	output reg      KPSUB;
+	output reg      KPADD;
 	// Per-row 'something is held in this row', for finding a stuck bit
 	output  [7:0]   ROW_ANY;
 
@@ -197,6 +203,8 @@ module keyboard (
 			PGDN <= 1'b0;
 			HOME <= 1'b0;
 			END  <= 1'b0;
+			KPSUB  <= 1'b0;
+			KPADD  <= 1'b0;
 		end else begin
 			if (keyb_valid == 1'b1) begin
 				if (keyb_data == 8'he0) begin
@@ -384,6 +392,8 @@ module keyboard (
 						8'h7a: PGDN <= ~release_key; // Page Down -> frame down a line
 						8'h6c: HOME <= ~release_key; // Home -> INT one T-state earlier
 						8'h69: END  <= ~release_key; // End  -> INT one T-state later
+						8'h7b: KPSUB <= ~release_key; // Keypad -  -> IO window a T-state early
+						8'h79: KPADD <= ~release_key; // Keypad +  -> IO window a T-state late
 
 						default: begin
 						end

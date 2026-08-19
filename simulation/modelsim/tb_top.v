@@ -702,9 +702,13 @@ module tb_top;
 	//
 	// cpu_irq_n_sync resamples vid_irq_n on the CPU's enable and holds
 	// it a whole T-state before T80 can sample it, so the two figures
-	// differ by one and it is this one that decides where a program's
-	// border writes land. 14336 is the number to hold here; the video's
-	// own edge is then a T-state earlier at 14337.
+	// differ by one.
+	//
+	// Expect 14338, not 14336: the interrupt is handed over two T-states
+	// early on purpose, to cancel the flat two-T-state latency in T80's
+	// own interrupt path (see int_hpos_base in video.v). What lands at
+	// 14336 is the acknowledge, not the edge - and the acknowledge is
+	// what a program counts from.
 	integer c2p_cnt = 0;
 	integer c2p_shown = 0;
 	reg     c2p_armed = 1'b0;
@@ -1130,6 +1134,74 @@ module tb_top;
 				$display("[%0t] INT ACCEPT: %0d T-states (from HALT: %b) bus=%02h - Z80 wants 13, a 48K bus reads FF",
 					$time, int_ts, was_halted, int_vec);
 			int_reported <= int_reported + 1;
+		end
+	end
+
+	// --- CPU enable phase across a speed round trip ------------------
+	//
+	// Going up to 28MHz and back must leave 3.5MHz on the counts it was
+	// on before. The enables are decoded from a free-running counter
+	// rather than divided by something that gets restarted, so 3.5's
+	// counts are a subset of 7's, which are a subset of 14's, which are
+	// a subset of 28's - but that is an argument. This measures it.
+	integer   sp_seen  = 0;
+	reg [2:0] sp_first = 3'bx;
+	reg       sp_bad   = 1'b0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1 && dut.cpu_speed == 2'd0
+		    && dut.cpu_clken == 1'b1) begin
+			if (sp_seen == 0)
+				sp_first <= dut.clken.counter[2:0];
+			else if (dut.clken.counter[2:0] !== sp_first && !sp_bad) begin
+				sp_bad <= 1'b1;
+				$display("[%0t] SPEED PHASE MOVED: 3.5MHz enable on counter[2:0]=%0d, was %0d",
+					 $time, dut.clken.counter[2:0], sp_first);
+			end
+			sp_seen <= sp_seen + 1;
+		end
+	end
+	// Drive the round trip, and say what happened at the end.
+	initial begin
+		#400000;  force dut.cpu_speed = 2'd3;   // 28 MHz
+		#150000;  force dut.cpu_speed = 2'd1;   // 7 MHz
+		#100000;  force dut.cpu_speed = 2'd2;   // 14 MHz
+		#100000;  release dut.cpu_speed;        // back to 3.5
+	end
+	initial begin
+		#(run_len_us(0) * 1000 - 2000);
+		$display("SPEED PHASE: %0d enables at 3.5MHz, all on counter[2:0]=%0d - %s",
+			 sp_seen, sp_first, sp_bad ? "MOVED" : "unchanged across the round trip");
+	end
+
+	// --- How long the CPU sits on the interrupt before acknowledging --
+	//
+	// The tail of whatever instruction was running when the edge
+	// arrived. Out of HALT a real Z80 runs internal 4-T-state M1 cycles
+	// and samples the interrupt at the end of each, so this can only be
+	// 0..3; out of a 10-T-state JP it can be 0..9. ula48, the birds and
+	// the squares all synchronise on HALT and then count T-states with
+	// nothing else to go on, so their top border is drawn against
+	// exactly this number - and it is the one link in that chain that
+	// has never been measured here.
+	integer int_wait = 0;
+	integer iw_shown = 0;
+	reg     iw_run = 1'b0;
+	reg     iw_irq_d = 1'b1;
+	always @(posedge dut.clock) begin
+		iw_irq_d <= dut.cpu_irq_n;
+		if (dut.reset_n === 1'b1) begin
+			if (iw_irq_d == 1'b1 && dut.cpu_irq_n == 1'b0) begin
+				iw_run   <= 1'b1;
+				int_wait <= 0;
+			end else if (iw_run && dut.cpu.u0.IntCycle == 1'b1) begin
+				iw_run <= 1'b0;
+				if (iw_shown < 6) begin
+					iw_shown <= iw_shown + 1;
+					$display("[%0t] INT WAIT: %0d T-states before the acknowledge (halted=%b) - HALT allows 0..3",
+						 $time, int_wait, dut.cpu.u0.Halt_FF);
+				end
+			end else if (iw_run && dut.cpu_clken_gated == 1'b1)
+				int_wait <= int_wait + 1;
 		end
 	end
 

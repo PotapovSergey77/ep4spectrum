@@ -211,6 +211,10 @@ module spectrum_top (
 	wire            key_pgdn;
 	wire            key_home;
 	wire            key_end;
+	wire            key_kpsub;
+	wire            key_kpadd;
+	reg             key_kpsub_d = 1'b0;
+	reg             key_kpadd_d = 1'b0;
 	reg             key_pgup_d = 1'b0;
 	reg             key_pgdn_d = 1'b0;
 	reg             key_home_d = 1'b0;
@@ -285,6 +289,16 @@ module spectrum_top (
 	// buttons KEY3 and KEY4, sampled slowly so contact bounce does not
 	// run it on.
 	reg     [4:0]   cont_adj = 5'd0;
+	// The same again for the IO window on its own, keypad - and +.
+	//
+	// Memory contention is exact now - Tact Meter reads what a real
+	// machine reads - so anything still displaced cannot be trimmed with
+	// cont_adj without breaking what already agrees. And what is still
+	// displaced grows along the line: in the squares demo the first edge
+	// is out by four pixels and the next by eight. A phase error does
+	// not do that; an IO window in the wrong place does, because every
+	// port write meets it at a different point in the pattern.
+	reg     [4:0]   io_adj = 5'd0;
 	reg     [16:0]  btn_div = 17'd0;
 	reg     [1:0]   btn_prev = 2'b11;
 	reg             key_f10_d = 1'b0;
@@ -760,6 +774,16 @@ module spectrum_top (
 		// Page Up / Page Down move the frame a line at a time. Acted on
 		// the press, not the level - these blocks run at 28MHz and a
 		// level test would run the trim away in a single keystroke.
+		// Keypad - and + move the IO window alone, a T-state a press.
+		// Not the cursor keys: 6b and 74 are already the Spectrum's
+		// CAPS+5 and CAPS+8, so trimming with them typed into whatever
+		// was running.
+		key_kpsub_d <= key_kpsub;
+		key_kpadd_d <= key_kpadd;
+		if (key_kpsub == 1'b1 && key_kpsub_d == 1'b0)
+			io_adj <= io_adj - 5'd1;
+		else if (key_kpadd == 1'b1 && key_kpadd_d == 1'b0)
+			io_adj <= io_adj + 5'd1;
 		key_pgup_d <= key_pgup;
 		key_pgdn_d <= key_pgdn;
 		if (key_pgup == 1'b1 && key_pgup_d == 1'b0)
@@ -1148,6 +1172,8 @@ module spectrum_top (
 		.PGDN(key_pgdn),
 		.HOME(key_home),
 		.END(key_end),
+		.KPSUB(key_kpsub),
+		.KPADD(key_kpadd),
 		.ROW_ANY(kb_row_any)
 	);
 
@@ -1198,6 +1224,7 @@ module spectrum_top (
 		.INT_ADJ(int_adj),
 		.INT_VADJ(int_vadj),
 		.CONT_ADJ(cont_adj),
+		.IO_ADJ(io_adj),
 		.PORT_FF_ACTIVE(vid_port_ff_active),
 		.PORT_FF_DATA(vid_port_ff_data),
 		.VID_A(vid_a),
@@ -1976,7 +2003,13 @@ module spectrum_top (
 	// With every trim at zero it goes back to "3.5" and the page.
 	// Also shown once the contention model is moved off its default, so
 	// which variant is running can be read off the board.
-	wire any_trim = (cont_adj != 5'd0) || (cont_model != 2'd1);
+	//   E0nn  IO contention window, keypad - and +, a T-state a press
+	wire any_trim = (cont_adj != 5'd0) || (cont_model != 2'd1)
+	                || (io_adj != 5'd0);
+	// Off zero, the IO trim takes the display: the keys being pressed
+	// and the number being shown then name the same thing, which is the
+	// mistake the note above describes.
+	wire show_io = (io_adj != 5'd0);
 
 	// The left pair carries the CPU speed: 3.5, 7.0, 14, 28. The two
 	// slower ones take a decimal point after the first digit, which is
@@ -1989,10 +2022,15 @@ module spectrum_top (
 	                    (cpu_speed == 2'd2) ? 4'd4 : 4'd8;
 
 	wire [3:0] nibble = any_trim ?
-	                    ((digit_scan == 2'd3) ? 4'hc :   // C, contention window
-	                     (digit_scan == 2'd2) ? {2'b00, cont_model} :
-	                     (digit_scan == 2'd1) ? {3'b000, cont_adj[4]} :
-	                                            cont_adj[3:0]) :
+	                    (show_io ?
+	                     ((digit_scan == 2'd3) ? 4'he :  // E, IO window
+	                      (digit_scan == 2'd2) ? 4'd0 :
+	                      (digit_scan == 2'd1) ? {3'b000, io_adj[4]} :
+	                                             io_adj[3:0]) :
+	                     ((digit_scan == 2'd3) ? 4'hc :  // C, contention window
+	                      (digit_scan == 2'd2) ? {2'b00, cont_model} :
+	                      (digit_scan == 2'd1) ? {3'b000, cont_adj[4]} :
+	                                             cont_adj[3:0])) :
 	                    (digit_scan == 2'd3) ? spd_hi :
 	                    (digit_scan == 2'd2) ? spd_lo :
 	                    (digit_scan == 2'd1) ? pg_tens :

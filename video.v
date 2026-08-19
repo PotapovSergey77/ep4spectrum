@@ -69,6 +69,7 @@ module video (
 	INT_ADJ,
 	INT_VADJ,
 	CONT_ADJ,
+	IO_ADJ,
 	PORT_FF_ACTIVE,
 	PORT_FF_DATA,
 
@@ -119,6 +120,11 @@ module video (
 	input   [7:0]   INT_ADJ;
 	input   [7:0]   INT_VADJ;
 	input   [4:0]   CONT_ADJ;
+	// Shifts the IO window alone, a CPU T-state a step and signed, on
+	// top of the fixed one-T-state lead below. Memory contention is
+	// measured exact now - Tact Meter agrees with a real machine - so
+	// what is left has to be trimmed without touching it.
+	input   [4:0]   IO_ADJ;
 	output          PORT_FF_ACTIVE;
 	output  [7:0]   PORT_FF_DATA;
 
@@ -298,7 +304,24 @@ module video (
 	// also produces in T2, so the two genuinely did agree and giving
 	// them separate windows introduced a difference the hardware does
 	// not have. Moving memory onto T1 is what made them disagree.
-	wire signed [12:0] hi_sum  = hc_sum - 13'sd4;
+	// The lead was -4 counts, one T-state ahead of the memory window.
+	// It is +8 - two T-states behind it - and that was found on the
+	// board, not derived: with the trim brought out on the keypad the
+	// stripes in ula48 line up at IO_ADJ +3 from the old value, and the
+	// bird demo's border stops leaning right at and below the raster on
+	// the same setting.
+	//
+	// It is only the window's position that was wrong, not the pattern.
+	// ioscan.hex sweeps an OUT to $02FE - high byte outside the
+	// contended page, the case ula48 uses and the one nothing here had
+	// ever measured - across every phase, and the delays come out
+	// 4,3,2,1 on phases 1..4 and 0 on phase 6, which is the published
+	// N:1,C:3 row exactly. A pattern that is already right in the wrong
+	// place is what displaces a stream of OUTs progressively along the
+	// line, and that is the shape the squares demo showed: one edge out
+	// by four pixels, the next by eight.
+	wire signed [12:0] hi_sum  = hc_sum + 13'sd8
+	                             + {{6{IO_ADJ[4]}}, IO_ADJ, 2'b00};
 	wire signed [12:0] hi_wrap =
 		(hi_sum < 0)      ? (hi_sum + hline) :
 		(hi_sum >= hline) ? (hi_sum - hline) : hi_sum;
@@ -555,8 +578,12 @@ module video (
 	// too, and 48K was simply the machine where it got corrected first.
 	// Pentagon keeps its own 239, set on the board against a demo that
 	// draws in the border.
+	// 48K is 247 rather than 248 because its position below is eight
+	// counts - two T-states - into the tail of the previous line. See
+	// int_hpos_base.
 	wire [8:0] int_line_base =
-		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd248;
+		(MACHINE == MACHINE_PENT) ? 9'd239 :
+		(MACHINE == MACHINE_S48)  ? 9'd247 : 9'd248;
 	// Interrupt position. The table entry is zx-sizif-512's converted;
 	// Pentagon's was then set on the board, where the picture drawn in
 	// the border shows it directly.
@@ -584,9 +611,25 @@ module video (
 	// spectrum_top.v warns off. That one cancelled the resampler alone
 	// and left the geometry a T-state short; this is both, and it is the
 	// interrupt-to-raster phase ula48's top border draws against.
+	//
+	// Then two more, for T80's own interrupt path. The testbench times
+	// the gap from the edge to the start of the acknowledge with the CPU
+	// halted, and across eight phases it comes out 2,2,3,3,4,4,5,5 - a
+	// clean span of four, so the 4-T-state M1 cycles T80 runs in HALT
+	// are right, but the whole span sits two T-states above the 0..3 a
+	// Z80 gives. That is `INT_s`, which latches ~INT_n on CEN while the
+	// decision reads it at T_Res, one T-state later, plus the pipelining
+	// of IntCycle itself. It is a flat latency, not a missed boundary,
+	// so handing the interrupt over two T-states early cancels it exactly
+	// - on every phase, and against any instruction's boundary grid.
+	//
+	// 0 - 8 counts is the tail of the previous line: hence 888 here and
+	// 247 rather than 248 above. What the CPU is shown is now 14338
+	// before the first pixel, and it acknowledges where a Z80 handed the
+	// interrupt at 14336 would.
 	wire [9:0] int_hpos_base =
 		(MACHINE == MACHINE_PENT) ? 10'd622 :
-		(MACHINE == MACHINE_S48)  ? 10'd0   :
+		(MACHINE == MACHINE_S48)  ? 10'd888 :
 		lines228                  ? 10'd8   :
 		                            10'd0;
 	// Wrapped into the line rather than added raw.
