@@ -629,7 +629,7 @@ module video (
 	// interrupt at 14336 would.
 	wire [9:0] int_hpos_base =
 		(MACHINE == MACHINE_PENT) ? 10'd622 :
-		(MACHINE == MACHINE_S48)  ? 10'd888 :
+		(MACHINE == MACHINE_S48)  ? 10'd876 :
 		lines228                  ? 10'd8   :
 		                            10'd0;
 	// Wrapped into the line rather than added raw.
