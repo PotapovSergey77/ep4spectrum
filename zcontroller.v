@@ -5,7 +5,7 @@
 // Two ports and nothing else:
 //
 //   $77  write: bit 0 card power, bit 1 /CS (0 selects the card)
-//        read : nothing useful, returns $FF
+//        read : the last byte written, so a presence check passes
 //   $57  read/write: one byte through SPI
 //
 // This is deliberately the whole of it. Unlike DivMMC it does not touch
@@ -56,6 +56,7 @@ module zcontroller (
 	wire sel_ctl = (a == 8'h77);
 
 	reg  sd_pwr = 1'b0;
+	reg  [7:0] ctrl_r = 8'h00;   // last byte written to the control port
 
 	// One transfer per bus cycle, taken on the access starting rather
 	// than on its level. IORQ, RD/WR and the port hold for the CPU's
@@ -79,6 +80,7 @@ module zcontroller (
 		if (reset_n == 1'b0) begin
 			sd_cs_n   <= 1'b1;
 			sd_pwr    <= 1'b0;
+			ctrl_r    <= 8'h00;
 			spi_acc_d <= 1'b0;
 			seen_busy <= 1'b0;
 		end else begin
@@ -88,6 +90,7 @@ module zcontroller (
 			if (enable == 1'b1 && sel_ctl == 1'b1 && wr_n == 1'b0) begin
 				sd_pwr  <= din[0];
 				sd_cs_n <= din[1];
+				ctrl_r  <= din;
 			end
 
 			spi_acc_d <= spi_acc;
@@ -118,9 +121,18 @@ module zcontroller (
 		.busy(spi_busy)
 	);
 
+	// Reading the control port gives back what was written to it.
+	//
+	// It used to answer $FF, which is what a port with nothing behind it
+	// answers - and that is exactly how a program checking whether a
+	// controller is fitted would conclude that one is not. Write a value,
+	// read it back, compare: $FF fails that whether the comparison is
+	// exact or masked. The whole byte is kept rather than just the two
+	// defined bits, so an exact compare passes too.
 	always @* begin
-		if (sel_dat) dout = spi_dout;
-		else         dout = 8'hff;
+		if (sel_dat)      dout = spi_dout;
+		else if (sel_ctl) dout = ctrl_r;
+		else              dout = 8'hff;
 	end
 
 	assign act = enable & (sel_dat | sel_ctl);
