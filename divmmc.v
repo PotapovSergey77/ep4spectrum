@@ -76,6 +76,9 @@ module divmmc (
 
 reg m1_trigger;
 reg paged_in_r;
+// The automapper was armed by the $3Dxx entry, which gets the Beta's
+// exit rule as well as its entry - see the trap chain below.
+reg by_3d;
 
 // The 0x3Dxx entry is documented - in this file, below - as activating
 // the automapper "immediately", meaning the very fetch that triggers it
@@ -105,23 +108,10 @@ reg paged_in_r;
 // cycle that asks, at any speed. The other triggers are deliberately
 // left alone: they are specified as taking effect AFTER their cycle,
 // and moving them is what broke 14MHz in an earlier attempt.
-// The $3Dxx entry, switched off.
-//
-// It is a DivIDE feature meant for TR-DOS emulation, and DivMMC boards
-// commonly leave it out. The evidence says this one should too. On a
-// real 48K with a real DivMMC the same test probes for TR-DOS, does not
-// find it - correctly, there is none there - and carries on. Here the
-// probe armed the automapper, and nothing ever disarmed it: the exit is
-// an opcode fetch at $1FF8-$1FFF, and a probe that reads and returns
-// never executes one. From that moment DivMMC's RAM covers $2000-$3FFF
-// for the rest of the program, the top half of the 48K ROM is gone, and
-// the next call into it runs ESXDOS's data as code. That is the hang at
-// $35AA, and it is why the machine dies a screen AFTER the probe rather
-// than at it.
-//
-// Left in place rather than deleted: if the boot turns out to need it,
-// this is one line to put back.
-localparam TRAP_3D = 1'b0;
+// The $3Dxx entry stays on, because the ESXDOS boot uses it: switching
+// it off was tried and the card would not initialise at all. What it
+// gets instead is an exit, down in the trap chain - see by_3d there.
+localparam TRAP_3D = 1'b1;
 
 wire auto_now = (TRAP_3D && !mreq_n && !rd_n && !m1_n
                  && a[15:8] == 8'h3D && !beta_owns_3d);
@@ -170,6 +160,7 @@ always @(posedge clk) begin
 		m1_trigger <= 1'b0;
 		paged_in_r <= 1'b0;
 		ctrl <= 8'h00;
+		by_3d <= 1'b0;
 		sd_cs <= 1'b1;
 		seen_busy <= 1'b0;
 		trap_addr <= 16'h0000;
@@ -261,15 +252,41 @@ always @(posedge clk) begin
 			// activate automapper after this cycle
 			m1_trigger <= 1'b1;
 			trap_addr  <= a;
+			by_3d      <= 1'b0;
 		end else if (TRAP_3D && !mreq_n && !rd_n && !m1_n && a[15:8]==8'h3D
 		             && !beta_owns_3d) begin
 			// activate automapper immediately
 			paged_in_r <= 1'b1;
 			m1_trigger <= 1'b1;
 			trap_addr  <= a;
+			by_3d      <= 1'b1;
 		end else if (!mreq_n && !rd_n && !m1_n && {a[15:3],3'd0} == 16'h1ff8) begin
 			// deactivate automapper after this cycle
 			m1_trigger <= 1'b0;
+			by_3d      <= 1'b0;
+		end else if (by_3d && !mreq_n && !rd_n && !m1_n
+		             && (a[15] | a[14])) begin
+			// Armed through $3Dxx, and now fetching outside the ROM
+			// area: let go.
+			//
+			// The documented exit is $1FF8-$1FFF and nothing else, which
+			// is fine for a caller that goes in and comes back out
+			// through the stub. It is not fine for a program that only
+			// PROBES the page - reads what is there, finds it is not
+			// TR-DOS, and returns to its own code. Nothing disarms the
+			// automapper then, DivMMC's RAM covers $2000-$3FFF for the
+			// rest of the run, and the next call into the top half of
+			// the 48K ROM runs ESXDOS's data as code. That is what
+			// killed Test 4.3 a screen after the probe.
+			//
+			// Removing the entry instead was tried and stopped ESXDOS
+			// booting: the boot uses it. So keep the entry and give it
+			// the Beta's exit rule, which is the paging this entry
+			// exists to emulate in the first place. It costs the boot
+			// nothing - that runs inside $0000-$3FFF throughout.
+			m1_trigger <= 1'b0;
+			paged_in_r <= 1'b0;
+			by_3d      <= 1'b0;
 		end
 	
 		if (m1_n==1'b1)
