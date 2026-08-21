@@ -2193,7 +2193,7 @@ module spectrum_top (
 			// cpu_addr rather than this one.
 			(romld_write | romld_read) ? {slot_base(romld_slot), romld_cnt[14:0]} :
 			trdos_active ? {slot_base(2'd2), 1'b0, cpu_a[13:0]} :
-			((esxdos_downloaded[1] == 1'b1) && (divmmc_maps == 1'b1)) ? {1'b1, divmmc_addr} :
+			((esxdos_downloaded[1] == 1'b1) && (divmmc_maps == 1'b1)) ? {2'b11, divmmc_addr[17:0]} :
 			// Otherwise access the internal ROM
 			// a loaded 128K or Pentagon image, 32K via page_rom_sel
 			rom_from_sd ? {mach_base, page_rom_sel, cpu_a[13:0]} :
@@ -2217,7 +2217,7 @@ module spectrum_top (
 		assign rom_addr =
 			// all DIVMMC mapping (even ram) happens in the ROM
 			// address space (0x0000-0x3fff)
-			((esxdos_downloaded[1] == 1'b1) && (divmmc_maps == 1'b1)) ? {1'b1, divmmc_addr} :
+			((esxdos_downloaded[1] == 1'b1) && (divmmc_maps == 1'b1)) ? {2'b11, divmmc_addr[17:0]} :
 			// Otherwise access the internal ROMs
 			{5'b00000, page_rom_sel, cpu_a[13:0]};
 	end
@@ -2239,7 +2239,7 @@ module spectrum_top (
 		assign rom_addr =
 			// all DIVMMC mapping (even ram) happens in the ROM
 			// address space (0x0000-0x3fff)
-			((esxdos_downloaded[1] == 1'b1) && (divmmc_maps == 1'b1)) ? {1'b1, divmmc_addr} :
+			((esxdos_downloaded[1] == 1'b1) && (divmmc_maps == 1'b1)) ? {2'b11, divmmc_addr[17:0]} :
 
 			// Otherwise access the internal ROMs
 			{4'b0000, plus3_page[1], page_rom_sel, cpu_a[13:0]};
@@ -2618,14 +2618,14 @@ module spectrum_top (
 			// pass 1: the mapram location (conmem=0, mapram=1):
 			// {6'b010011, addr[12:0]} - see boot_copy_addr comment above
 			sdram_addr = boot_copy_addr[13] ?
-				{4'b0000, 2'b11, 6'b010011, boot_copy_addr[12:0]} :
-				{4'b0000, 2'b11, 6'b000000, boot_copy_addr[12:0]};
+				{4'b0000, 3'b111, 5'b10011, boot_copy_addr[12:0]} :
+				{4'b0000, 3'b111, 5'b00000, boot_copy_addr[12:0]};
 		end else if (boot_zero_wr == 1'b1) begin
 			// zeroing the DivMMC sram pages: {2'b11, 2'b01, page, offset}
 			sdram_oe = 1'b0;
 			sdram_we = 1'b1;
 			sdram_di = 8'h00;
-			sdram_addr = {4'b0000, 2'b11, 2'b01, boot_zero_addr[16:13], boot_zero_addr[12:0]};
+			sdram_addr = {4'b0000, 4'b1111, boot_zero_addr[16:13], boot_zero_addr[12:0]};
 		end else if (cur_own == OWN_CPU) begin
 			// All held at the grant, see the arbiter above.
 			sdram_oe = cpu_oe_held;
