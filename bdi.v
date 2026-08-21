@@ -12,13 +12,15 @@
 //
 // Sector data comes out of a disk image sitting in SDRAM, addressed the
 // way a .trd is laid out: (track * sides + side) * 16 sectors of 256
-// bytes. Reads only for now - writing would need the image carried back
-// to the card, which is a separate piece of machinery.
+// bytes. Sectors can be written as well as read: the image is in SDRAM
+// and stays there, which makes drive B a RAM disk that costs the machine
+// none of its own memory. Carrying an image back to the SD card is a
+// separate piece of machinery and is not here.
 //
 // What this is NOT: no track formatting, no write track, no CRC
-// generation, no write path. TR-DOS reads a catalogue and loads files
-// with RESTORE, SEEK, STEP, READ SECTOR and READ ADDRESS, and those are
-// what is here.
+// generation. TR-DOS reads a catalogue, loads files and formats a disk
+// with RESTORE, SEEK, STEP, READ/WRITE SECTOR and READ ADDRESS, and those
+// are what is here.
 
 module bdi (
 	input             clk,
@@ -33,15 +35,24 @@ module bdi (
 	input      [7:0]  din,
 	output reg [7:0]  dout,
 
-	// Is there an image to read at all
-	input             disk_present,
+	// One bit per drive: is there a disk in that one. TR-DOS offers four
+	// drives whatever the hardware does, and with the drive select
+	// ignored all four showed the same image - the boot disk, four times
+	// over.
+	input      [3:0]  drive_present,
+	input      [3:0]  drive_wprot,
 
-	// Where in the image the next byte is. The read itself is done by
-	// the top level on the CPU's own data-register read, holding the CPU
-	// on WAIT exactly as an ordinary memory access does - the same
+	// Which drive the $FF port has selected, so the top level can put
+	// each one somewhere different in SDRAM.
+	output     [1:0]  drive,
+
+	// Where in the image the next byte is. The transfer itself is done by
+	// the top level on the CPU's own data-register access, holding the
+	// CPU on WAIT exactly as an ordinary memory access does - the same
 	// path the ROM slots are read back through, and already proven.
 	output reg [19:0] img_addr,
-	output            img_busy
+	output            img_busy,   // a sector read is in progress
+	output            img_wbusy   // a sector write is in progress
 );
 
 	// --- register file ------------------------------------------------
@@ -89,7 +100,15 @@ module bdi (
 
 	reg  [7:0]  xfer_cnt = 8'h00;     // bytes left in this sector
 	reg         reading  = 1'b0;
-	assign      img_busy = reading;
+	reg         writing  = 1'b0;
+	assign      img_busy  = reading;
+	assign      img_wbusy = writing;
+
+	// $FF bits 1-0 pick the drive, and it is the state of that drive -
+	// not of "the disk" - that every command has to answer about.
+	assign      drive     = r_system[1:0];
+	wire        present   = drive_present[drive];
+	wire        wprot     = drive_wprot[drive];
 
 	// --- READ ADDRESS ---------------------------------------------------
 	//
@@ -134,7 +153,7 @@ module bdi (
 	localparam IDX_PERIOD = 23'd5599999;   // 200ms at 28MHz
 	localparam IDX_WIDTH  = 23'd112000;    // 4ms
 	reg  [22:0] idx_cnt = 23'd0;
-	wire        index   = disk_present & (idx_cnt < IDX_WIDTH);
+	wire        index   = present & (idx_cnt < IDX_WIDTH);
 	always @(posedge clk) begin
 		if (idx_cnt >= IDX_PERIOD) idx_cnt <= 23'd0;
 		else                       idx_cnt <= idx_cnt + 23'd1;
@@ -157,15 +176,18 @@ module bdi (
 	// taken the byte - advancing at the start would hand it the next one.
 	wire acc_wr = enable & ~wr_n;
 	wire dat_rd = enable & ~rd_n & sel_dat;
+	wire dat_wr = enable & ~wr_n & sel_dat;
 	wire cmd_rd = enable & ~rd_n & sel_cmd;
 	reg  acc_wr_d = 1'b0;
 	reg  dat_rd_d = 1'b0;
+	reg  dat_wr_d = 1'b0;
 	reg  cmd_rd_d = 1'b0;
 
 	// --- command decode -------------------------------------------------
 	localparam CMD_RESTORE = 4'h0, CMD_SEEK = 4'h1,
 	           CMD_STEP    = 4'h2, CMD_STEPI = 4'h4, CMD_STEPO = 4'h6,
-	           CMD_RDSEC   = 4'h8, CMD_RDADR = 4'hC, CMD_FORCE = 4'hD;
+	           CMD_RDSEC   = 4'h8, CMD_WRSEC = 4'hA,
+	           CMD_RDADR   = 4'hC, CMD_FORCE = 4'hD;
 
 	always @(posedge clk or negedge reset_n) begin
 		if (reset_n == 1'b0) begin
@@ -181,6 +203,7 @@ module bdi (
 			crc_err  <= 1'b0;
 			rec_nf   <= 1'b0;
 			reading  <= 1'b0;
+			writing  <= 1'b0;
 			rd_adr   <= 1'b0;
 			type2    <= 1'b0;
 			adr_idx  <= 3'd0;
@@ -189,6 +212,7 @@ module bdi (
 		end else begin
 			acc_wr_d <= acc_wr;
 			dat_rd_d <= dat_rd;
+			dat_wr_d <= dat_wr;
 			cmd_rd_d <= cmd_rd;
 
 			if (acc_wr == 1'b1 && acc_wr_d == 1'b0) begin
@@ -230,7 +254,7 @@ module bdi (
 						intrq <= 1'b1;
 					end
 					CMD_RDSEC: begin
-						if (disk_present == 1'b0) begin
+						if (present == 1'b0) begin
 							rec_nf <= 1'b1;
 							intrq  <= 1'b1;
 						end else begin
@@ -251,8 +275,35 @@ module bdi (
 							img_addr <= trk_off + side_off + sec_off;
 						end
 					end
+					CMD_WRSEC: begin
+						// The command that was missing, and the reason
+						// there was nowhere to copy anything to: a
+						// machine whose only drive cannot be written to
+						// has no scratch disk, and Proteus said so.
+						//
+						// The sector goes back into the same image in
+						// SDRAM it was read from. That is a RAM disk in
+						// everything but name, and a better one than a
+						// RAM disk in the Spectrum's own memory: it
+						// costs the machine nothing and survives a
+						// reset.
+						if (present == 1'b0) begin
+							rec_nf <= 1'b1;
+							intrq  <= 1'b1;
+						end else if (wprot == 1'b1) begin
+							intrq  <= 1'b1;   // write protect, status bit 6
+						end else begin
+							rec_nf   <= 1'b0;
+							crc_err  <= 1'b0;
+							busy     <= 1'b1;
+							writing  <= 1'b1;
+							drq      <= 1'b1;
+							xfer_cnt <= 8'h00;
+							img_addr <= trk_off + side_off + sec_off;
+						end
+					end
 					CMD_RDADR: begin
-						if (disk_present == 1'b0) begin
+						if (present == 1'b0) begin
 							rec_nf <= 1'b1;
 							intrq  <= 1'b1;
 						end else begin
@@ -267,6 +318,7 @@ module bdi (
 					CMD_FORCE: begin
 						busy    <= 1'b0;
 						reading <= 1'b0;
+						writing <= 1'b0;
 						rd_adr  <= 1'b0;
 						drq     <= 1'b0;
 						intrq   <= 1'b1;
@@ -301,6 +353,27 @@ module bdi (
 				end
 			end
 
+			// Writing the data register during a sector write puts the
+			// byte into the image and asks for the next one. The store
+			// itself is the top level's, on the same access - it holds
+			// the CPU on WAIT until SDRAM has taken it, exactly as an
+			// ordinary memory write does.
+			//
+			// On the END of the access, like the read: the address has
+			// to still be pointing at this byte while the arbiter is
+			// writing it.
+			if (dat_wr_d == 1'b1 && dat_wr == 1'b0 && writing == 1'b1) begin
+				if (xfer_cnt == 8'hff) begin
+					writing <= 1'b0;
+					busy    <= 1'b0;
+					drq     <= 1'b0;
+					intrq   <= 1'b1;
+				end else begin
+					xfer_cnt <= xfer_cnt + 8'd1;
+					img_addr <= img_addr + 20'd1;
+				end
+			end
+
 			// Reading the status register clears INTRQ, as a 1793 does.
 			if (cmd_rd == 1'b1 && cmd_rd_d == 1'b0)
 				intrq <= 1'b0;
@@ -310,6 +383,7 @@ module bdi (
 			    && din[2] == 1'b0) begin
 				busy    <= 1'b0;
 				reading <= 1'b0;
+				writing <= 1'b0;
 				rd_adr  <= 1'b0;
 				drq     <= 1'b0;
 				intrq   <= 1'b0;
@@ -330,7 +404,7 @@ module bdi (
 	// so LIST simply never came back and printed no error at all.
 	wire [7:0] status_t1 = {1'b0, 1'b0, 1'b1, seek_err, crc_err,
 	                        (head == 8'h00), index, busy};
-	wire [7:0] status_t2 = {1'b0, 1'b0, 1'b0, rec_nf, crc_err,
+	wire [7:0] status_t2 = {1'b0, wprot, 1'b0, rec_nf, crc_err,
 	                        1'b0, drq, busy};
 
 	always @* begin

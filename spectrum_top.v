@@ -1587,8 +1587,30 @@ module spectrum_top (
 	// SDRAM read of the image, served by the arbiter exactly like any
 	// other CPU access - the CPU waits on WAIT until the byte is there.
 	// Same path the ROM slots are read back through.
+	wire        bdi_img_wbusy;
+	wire [1:0]  bdi_drive;
 	wire        bdi_img_rd = bdi_enable & ~cpu_rd_n & cpu_m1_n
 	                         & ~cpu_a[7] & (cpu_a[6:5] == 2'b11) & bdi_img_busy;
+	// The same access the other way round: a write to the data register
+	// during a sector write. It goes into SDRAM through the arbiter,
+	// which holds the CPU on WAIT until the byte is taken, exactly as an
+	// ordinary store does.
+	wire        bdi_img_wr = bdi_enable & ~cpu_wr_n & cpu_m1_n
+	                         & ~cpu_a[7] & (cpu_a[6:5] == 2'b11) & bdi_img_wbusy;
+
+	// Where each drive lives.
+	//
+	//   A  rom_addr $14000, 48K - the boot image, write protected so a
+	//      stray seek cannot walk into B and so it survives a format
+	//   B  rom_addr $20000, 640K - a full double-sided disk, empty at
+	//      power-up and writable. This is the RAM disk: it costs the
+	//      machine none of its own memory and survives a reset.
+	//   C, D  nothing. Reporting no disk beats showing a third and
+	//      fourth copy of A, which is what ignoring the drive select
+	//      produced.
+	wire [19:0] drive_base = (bdi_drive == 2'd0) ? 20'h14000 : 20'h20000;
+	wire [3:0]  drive_present = {2'b00, 1'b1, disk_loaded};
+	wire [3:0]  drive_wprot   = {2'b00, 1'b0, 1'b1};
 	bdi u_bdi (
 		.clk(clock),
 		.clken(cpu_clken_gated),
@@ -1599,12 +1621,12 @@ module spectrum_top (
 		.rd_n(cpu_rd_n),
 		.din(cpu_do),
 		.dout(bdi_do),
-		// No image yet: the controller answers, and says there is no
-		// disk in the drive. That is enough for software to find TR-DOS,
-		// which it cannot do at all while the ports are dead.
-		.disk_present(disk_loaded),
+		.drive_present(drive_present),
+		.drive_wprot(drive_wprot),
+		.drive(bdi_drive),
 		.img_addr(bdi_img_addr),
-		.img_busy(bdi_img_busy)
+		.img_busy(bdi_img_busy),
+		.img_wbusy(bdi_img_wbusy)
 	);
 
 	// --- ROM loader channel ------------------------------------------
@@ -1918,7 +1940,7 @@ module spectrum_top (
 
 	wire ext_ram_write = (rom_enable & esxdos_downloaded[1] & divmmc_maps & divmmc_write) & ~cpu_wr_n;
 	wire int_ram_write = ram_enable & ~cpu_wr_n;
-	wire ram_write = int_ram_write | ext_ram_write | romld_write;
+	wire ram_write = int_ram_write | ext_ram_write | romld_write | bdi_img_wr;
 
 	// ---------------------------------------------------------------
 	// CPU/video SDRAM arbiter, after zx-sizif-512's ram_arbiter
@@ -1973,7 +1995,7 @@ module spectrum_top (
 	// cycle - it is a write to SDRAM like any other, and the CPU is held
 	// on WAIT until it is granted, exactly as it would be for a store.
 	wire cpu_mem_active  = ((~cpu_mreq_n) & ((~cpu_rd_n) | (~cpu_wr_n)) & cpu_needs_sdram)
-	                       | romld_write | romld_read | bdi_img_rd;
+	                       | romld_write | romld_read | bdi_img_rd | bdi_img_wr;
 	// A CPU cycle is in flight while either the cycle running now or
 	// the one that just ended belongs to the CPU - its answer only
 	// lands two clocks after that cycle finishes.
@@ -2266,7 +2288,7 @@ module spectrum_top (
 	// Proteus loads goes to its RAM disk, not through here.
 	wire [19:0] disk_addr = 20'h14000 + romld_cnt;
 	assign cpu_addr =
-		bdi_img_rd ? {1'b1, 20'h14000 + bdi_img_addr} :
+		(bdi_img_rd | bdi_img_wr) ? {1'b1, drive_base + bdi_img_addr} :
 		((romld_write | romld_read) & disk_slot) ? {1'b1, disk_addr} :
 		(ram_enable == 1'b1) ? {1'b0, ram_addr} : {1'b1, rom_addr};
 
