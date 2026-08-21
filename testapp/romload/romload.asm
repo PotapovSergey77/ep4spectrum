@@ -41,7 +41,9 @@ PORT_DAT        equ $9f         ; byte sink
 
 CTL_RESET       equ $04         ; bit 2: zero the byte counter
 CTL_FILL        equ $08         ; bit 3: mark this slot filled
-CTL_DISKB       equ $20         ; bit 5: aim the disk slot at drive B
+CTL_DRV_B       equ $20         ; bits 6-5: which drive the disk slot
+CTL_DRV_C       equ $40         ; writes to - A is 0
+CTL_DRV_D       equ $60
 
 SLOT_128        equ 0
 SLOT_PENT       equ 1
@@ -50,9 +52,9 @@ SLOT_DISK       equ 3
 
 SCRWIDTH        equ 32
 
-; The boot image goes into drive A, which is 32K at rom_addr $14000 -
-; drive B starts right after it. Counted in 256-byte blocks.
-DISK_MAXBLK     equ 128
+; Each drive is a full 640K double-sided disk with a megabyte of
+; address space to itself. Counted in 256-byte blocks.
+DISK_MAXBLK     equ 2560
 
 
 ; Buffers live in the command's own space, which is what the 8K at
@@ -101,19 +103,24 @@ start:
                 ; and it is how the board came up before slot 3 existed.
                 call    one_disk
 
-                ; And a blank disk in drive B.
+                ; And a blank disk in B, C and D.
                 ;
-                ; It has to come from here. TR-DOS formats with WRITE
-                ; TRACK, which the controller does not implement, so a
-                ; drive that comes up holding SDRAM garbage can never be
-                ; formatted from the machine - Proteus looks at it and
-                ; says it is not a TR-DOS disk, which is exactly true.
+                ; They have to come from here. TR-DOS formats with
+                ; WRITE TRACK, which writes no data in this controller,
+                ; so a drive that comes up holding SDRAM garbage can
+                ; never be formatted from the machine - Proteus looks at
+                ; it and says it is not a TR-DOS disk, which is true.
                 ;
-                ; Nine sectors is the whole of it: eight of catalogue,
-                ; all zero, and the disk info block at the end of the
-                ; ninth. Everything past that is free space and nothing
-                ; reads it until something is written there.
-                call    blank_b
+                ; Nine sectors is the whole of a blank one: eight of
+                ; catalogue, all zero, and the disk info block at the end
+                ; of the ninth. Everything past that is free space and
+                ; nothing reads it until something is written there.
+                ld      a,CTL_DRV_B
+                call    blank_drv
+                ld      a,CTL_DRV_C
+                call    blank_drv
+                ld      a,CTL_DRV_D
+                call    blank_drv
 
                 ; Nothing loaded at all is the case worth spelling out.
                 ; Three bare "not on card" lines say what happened but
@@ -443,7 +450,7 @@ dsk_empty:      call    nl
                 jp      print
 
 ; ---------------------------------------------------------------------
-; blank_b: lay an empty TR-DOS filesystem on drive B.
+; blank_drv: lay an empty TR-DOS filesystem on the drive in A.
 ;
 ; 2272 zero bytes, then the 32-byte info block that ends sector 9. The
 ; numbers in it say: first free sector 0 of track 1, disk type $16 (80
@@ -451,9 +458,11 @@ dsk_empty:      call    nl
 ; with track 0 spent on the catalogue - and $10, which is what marks it
 ; as TR-DOS at all.
 ; ---------------------------------------------------------------------
-blank_b:        ld      a,SLOT_DISK|CTL_DISKB|CTL_RESET
+blank_drv:      ld      (bdrv),a
+                or      SLOT_DISK|CTL_RESET
                 out     (PORT_CTL),a
-                ld      a,SLOT_DISK|CTL_DISKB
+                ld      a,(bdrv)
+                or      SLOT_DISK
                 out     (PORT_CTL),a
 
                 ; XOR A inside the loop, not before it: the loop test
@@ -475,10 +484,26 @@ bb_info:        ld      a,(hl)
                 out     (PORT_DAT),a
                 djnz    bb_info
 
-                ld      a,SLOT_DISK|CTL_DISKB|CTL_FILL
+                ld      a,(bdrv)
+                or      SLOT_DISK|CTL_FILL
                 out     (PORT_CTL),a
+
+                ; The drive letter, from the same two bits that aimed
+                ; the write: A is 0, so bits 6-5 shifted down are the
+                ; distance from A.
+                ld      a,(bdrv)
+                rrca
+                rrca
+                rrca
+                rrca
+                rrca
+                and     3
+                add     a,'A'
+                call    putc
                 ld      hl,msg_blankb
                 jp      print
+
+bdrv:           defb    0
 
 tr_info:        defb    $00,$00,$01,$16,$00,$f0,$09,$10
                 defb    $00,$00,"         ",$00,$00
@@ -636,7 +661,7 @@ fn_trdos:       defb    "trdos.rom",0
 fn_disk:        defb    "proteus.trd",0
 
 msg_nofile:     defb    "not on card",13,0
-msg_blankb:     defb    "drive B : blank 640K",13,0
+msg_blankb:     defb    " : blank 640K",13,0
 msg_empty:      defb    "empty",13,0
 msg_rderr:      defb    "read error",13,0
 msg_short:      defb    "wrong size, got ",0

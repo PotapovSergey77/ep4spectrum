@@ -644,8 +644,19 @@ module video (
 	// So the compensation comes out and the derived figure goes back in.
 	// What is left over after it - four pixels on the birds demo - is not
 	// in the acceptance at all, and no value here will reach it.
+	// Pentagon moves 622 -> 630: four pixels right, measured on the board.
+	//
+	// The counter runs at four steps per T-state - 896 of them across a
+	// 224-T line - so a step is half a pixel and eight of them are the
+	// four asked for. Which is also two T-states, and that is not a
+	// coincidence: 622 was set while the CPU still lost two T-states
+	// before taking an interrupt. Removing that latency moved every
+	// machine, and this entry was never brought back in step. The figure
+	// was predicted at the time and left unverified for want of a working
+	// Pentagon to check it on; there is one now, and it reads as four
+	// pixels, which is what two T-states look like.
 	wire [9:0] int_hpos_base =
-		(MACHINE == MACHINE_PENT) ? 10'd622 :
+		(MACHINE == MACHINE_PENT) ? 10'd630 :
 		(MACHINE == MACHINE_S48)  ? 10'd8   :
 		lines228                  ? 10'd8   :
 		                            10'd0;

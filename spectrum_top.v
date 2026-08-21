@@ -187,7 +187,7 @@ module spectrum_top (
 	// writes landing at the previous address, which is the kind of
 	// sparse damage that lets small files load and large ones fail.
 	wire    [19:0]  ram_addr;   // assigned below, after ram_page/cpu_a
-	wire    [20:0]  cpu_addr;
+	wire    [22:0]  cpu_addr;
 	wire    [18:0]  vid_addr;
 	wire    [7:0]   rom_do;
 	reg     [7:0]   mem_do;
@@ -213,7 +213,7 @@ module spectrum_top (
 	wire            trdos_active;
 	wire            disk_loaded;
 	reg     [1:0]   romld_slot = 2'd0;
-	reg             romld_diskb = 1'b0;
+	reg     [1:0]   romld_drive = 2'd0;
 	// Same reason: the DivMMC instance above needs to know whether the
 	// machine ROM is coming from the slots, and that is decided a
 	// thousand lines below.
@@ -1599,26 +1599,22 @@ module spectrum_top (
 	wire        bdi_img_wr = bdi_enable & ~cpu_wr_n & cpu_m1_n
 	                         & ~cpu_a[7] & (cpu_a[6:5] == 2'b11) & bdi_img_wbusy;
 
-	// Where each drive lives.
+	// All four drives are alike now: a full 640K double-sided disk, one
+	// megabyte of address space apart from $200000 up. See cpu_addr for
+	// why there is suddenly room for that.
 	//
-	//   A  rom_addr $14000, 32K - the boot image
-	//   B  rom_addr $1C000, 640K - a full double-sided disk, empty at
-	//      power-up. This is the RAM disk: it costs the machine none of
-	//      its own memory and survives a reset.
-	//   C, D  nothing. Reporting no disk beats showing a third and
-	//      fourth copy of A, which is what ignoring the drive select
-	//      produced.
+	// A holds the boot image; B, C and D come up blank, laid down by the
+	// loader. They have to be: TR-DOS formats with WRITE TRACK, which
+	// writes no data here, so a drive that started as SDRAM garbage could
+	// never become a disk from the machine's side.
 	//
-	// Neither is write protected. A was, as a cheap way to stop a stray
-	// seek on the small drive walking into the big one - and TR-DOS put
-	// "Read Only" on the screen for it, which is worse than the problem
-	// it solved. The offset is masked to A's own 32K instead, so it is
-	// confined by arithmetic rather than by refusing to write.
-	wire [19:0] drive_base = (bdi_drive == 2'd0) ? 20'h14000 : 20'h1C000;
-	wire [19:0] drive_off  = (bdi_drive == 2'd0) ? {5'd0, bdi_img_addr[14:0]}
-	                                             : bdi_img_addr;
-	wire [3:0]  drive_present = {2'b00, 1'b1, disk_loaded};
+	// None is write protected. A was, to stop a stray seek on what used
+	// to be a 32K drive walking into the big one beside it, and TR-DOS
+	// put "Read Only" on the screen for it. With every drive a megabyte
+	// apart there is nothing to walk into.
+	wire [3:0]  drive_present = 4'b1111;
 	wire [3:0]  drive_wprot   = 4'b0000;
+
 	bdi u_bdi (
 		.clk(clock),
 		.clken(cpu_clken_gated),
@@ -1689,7 +1685,7 @@ module spectrum_top (
 	always @(posedge clock or negedge reset_n) begin
 		if (reset_n == 1'b0) begin
 			romld_slot      <= 2'd0;
-			romld_diskb     <= 1'b0;
+			romld_drive     <= 2'd0;
 			romld_cnt       <= 20'd0;
 			romld_wr_d      <= 1'b0;
 		end else begin
@@ -1703,13 +1699,10 @@ module spectrum_top (
 			// every sector after it.
 			if (romld_ctl_enable == 1'b1 && cpu_wr_n == 1'b0) begin
 				romld_slot <= cpu_do[1:0];
-				// Bit 5 aims the disk slot at drive B instead of A,
-				// so the loader can lay a blank TR-DOS filesystem on
-				// it. TR-DOS formats with WRITE TRACK, which is not
-				// implemented here, so a disk that arrives as SDRAM
-				// garbage can never be formatted from the machine -
-				// it has to come out of the loader already blank.
-				romld_diskb <= cpu_do[5];
+				// Bits 6-5 pick which drive the disk slot writes to,
+				// so the loader can put the boot image in A and lay a
+				// blank TR-DOS filesystem on B, C and D.
+				romld_drive <= cpu_do[6:5];
 				if (cpu_do[2] == 1'b1) romld_cnt <= 20'd0;
 			end
 			// Stepped when the write ENDS, not while it is asserted: the
@@ -2001,7 +1994,7 @@ module spectrum_top (
 
 	reg  [1:0]  cur_own  = OWN_NONE;   // owner of the cycle in flight
 	reg  [1:0]  prev_own = OWN_NONE;   // owner of the cycle just finished
-	reg  [20:0] cpu_addr_held = 21'd0;
+	reg  [22:0] cpu_addr_held = 23'd0;
 	reg  [18:0] vid_addr_held = 19'd0;
 	reg         cur_vid_step = 1'b0;
 	reg         prev_vid_step = 1'b0;
@@ -2315,11 +2308,25 @@ module spectrum_top (
 	// slots, and DivMMC starts at $80000, so there are 432K here. That is
 	// plenty: slot 3 only ever holds the boot image now - anything else
 	// Proteus loads goes to its RAM disk, not through here.
-	wire [19:0] disk_addr = (romld_diskb ? 20'h1c000 : 20'h14000) + romld_cnt;
+	// The four drives live above the old two megabytes, a megabyte apart.
+	//
+	// The chip is 8MB - sdram_ep4ce.v decodes addr[22:0], four banks of
+	// 4096 rows by 256 columns of 16 bits - and we were using a quarter
+	// of it. Squeezing drives into what was left below DivMMC gave one
+	// full disk and 16K of change; there was no room for C and D at any
+	// useful size, and shrinking them all to fit would have been the
+	// wrong trade.
+	//
+	// So cpu_addr goes from 21 bits to 23 and the drives go to $200000,
+	// one megabyte of stride each, 640K used of it. The first two
+	// megabytes keep their layout exactly: RAM below $100000, ROM slots
+	// and DivMMC above it. Nothing that worked has moved.
+	wire [22:0] drive_area = 23'h200000 + {bdi_drive, 20'd0} + bdi_img_addr;
+	wire [22:0] disk_area  = 23'h200000 + {romld_drive, 20'd0} + romld_cnt;
 	assign cpu_addr =
-		(bdi_img_rd | bdi_img_wr) ? {1'b1, drive_base + drive_off} :
-		((romld_write | romld_read) & disk_slot) ? {1'b1, disk_addr} :
-		(ram_enable == 1'b1) ? {1'b0, ram_addr} : {1'b1, rom_addr};
+		(bdi_img_rd | bdi_img_wr) ? drive_area :
+		((romld_write | romld_read) & disk_slot) ? disk_area :
+		(ram_enable == 1'b1) ? {3'b000, ram_addr} : {3'b001, rom_addr};
 
 	// Video from bank 7 (128K/+3)
 	// Video from bank 5
@@ -2685,7 +2692,7 @@ module spectrum_top (
 			// The held address, not the live one: the CPU may move on
 			// mid-cycle, and sdram_ep4ce.v needs one address for the
 			// whole RAS-to-CAS sequence.
-			sdram_addr = {4'b0000, cpu_addr_held};
+			sdram_addr = {2'b00, cpu_addr_held};
 		end else if (cur_own == OWN_VID) begin
 			sdram_oe = 1'b1;
 			sdram_we = 1'b0;    // video never writes
