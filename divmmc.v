@@ -34,7 +34,11 @@ module divmmc (
 	// $1FF8-$1FFF inside a ROM that is no longer mapped, so the stub that
 	// would clear the automapper is never executed, and paged_in stays
 	// stuck at one for as long as the machine runs.
-	input          stand_down,
+	input          beta_owns_3d,
+
+	// The machine ROM comes from the SD slots, so the reset fetch at
+	// $0000 belongs to it and not to ESXDOS.
+	input          keep_reset,
 
 	input  [15:0] 	a,
 	input          wr_n,
@@ -101,7 +105,7 @@ reg paged_in_r;
 // cycle that asks, at any speed. The other triggers are deliberately
 // left alone: they are specified as taking effect AFTER their cycle,
 // and moving them is what broke 14MHz in an earlier attempt.
-wire auto_now = (!mreq_n && !rd_n && !m1_n && a[15:8] == 8'h3D && !stand_down);
+wire auto_now = (!mreq_n && !rd_n && !m1_n && a[15:8] == 8'h3D && !beta_owns_3d);
 assign paged_in = paged_in_r | auto_now;
 
 // Declared before use: Quartus accepts use-before-declaration,
@@ -197,21 +201,31 @@ always @(posedge clk) begin
 		// never be executed. One frame is all it takes, and paged_in is
 		// then stuck at one until the power goes off.
 		//
-		// When the machine ROM comes from the SD slots, DivMMC is not
-		// part of the memory map at all - divmmc_maps is held low
-		// upstairs - so there is nothing for the automapper to do and
-		// every reason for it not to arm.
-		if (stand_down) begin
-			m1_trigger <= 1'b0;
-			paged_in_r <= 1'b0;
-		end else if (!mreq_n && !rd_n && !m1_n &&
-			((a==16'h0000) || (a==16'h0008) || (a==16'h0038) ||
+		// Two narrow gates rather than one blanket stand-down.
+		//
+		// Standing the whole automapper down whenever the machine ROM
+		// came from the SD slots also took away $0066, and with it the
+		// NMI menu - so on a machine running a loaded ROM there was no
+		// way to reach ESXDOS at all, and therefore no way to load
+		// anything to run on it. That is not a side effect worth having:
+		// the two devices have to share the machine, not take turns.
+		//
+		// $0000 is the one entry that genuinely cannot be shared. It
+		// fires on the reset fetch, so leaving it armed means every
+		// reset lands in ESXDOS and the loaded ROM's menu is never seen.
+		// Suppressing just that one leaves reset to the machine ROM
+		// while $0008, $0038 and $0066 still reach ESXDOS. It does mean
+		// ESXDOS is not re-initialised by that reset - it does not need
+		// to be, since its RAM in SDRAM survives one.
+		if (!mreq_n && !rd_n && !m1_n &&
+			(((a==16'h0000) && !keep_reset) ||
+			 (a==16'h0008) || (a==16'h0038) ||
 			 (a==16'h0066) || (a==16'h04C6) || (a==16'h0562))) begin
 			// activate automapper after this cycle
 			m1_trigger <= 1'b1;
 			trap_addr  <= a;
 		end else if (!mreq_n && !rd_n && !m1_n && a[15:8]==8'h3D
-		             && !stand_down) begin
+		             && !beta_owns_3d) begin
 			// activate automapper immediately
 			paged_in_r <= 1'b1;
 			m1_trigger <= 1'b1;

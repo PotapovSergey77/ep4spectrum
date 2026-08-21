@@ -1423,7 +1423,8 @@ module spectrum_top (
 		.reset_n(reset_n),
 		.clken(psg_clken),
 		.enable(divmmc_enable),
-		.stand_down(rom_from_sd),
+		.beta_owns_3d(trdos_avail),
+		.keep_reset(rom_from_sd),
 		.a(cpu_a),
 		.wr_n(cpu_wr_n),
 		.rd_n(cpu_rd_n),
@@ -1825,7 +1826,17 @@ module spectrum_top (
 	// fetching it off the card. It comes back on a power cycle, which
 	// clears the slot flags; a plain reset does not, so switching machine
 	// and resetting brings the loaded ROM up rather than ESXDOS again.
-	wire divmmc_maps = divmmc_paged_in & ~rom_from_sd;
+	// DivMMC gives way to TR-DOS, not to the loaded ROM.
+	//
+	// This used to be gated on rom_from_sd, which meant DivMMC could
+	// never map on a machine running a ROM out of the slots - and since
+	// programs are loaded through ESXDOS, that made it impossible to put
+	// anything on such a machine to run. The two have to share: DivMMC
+	// maps whenever its automapper is armed, except while the Beta is
+	// holding the same window. What kept reset safe was never this gate
+	// anyway, it was the $0000 trap, and that is now suppressed on its
+	// own inside divmmc.v.
+	wire divmmc_maps = divmmc_paged_in & ~trdos_active;
 
 	wire ext_ram_write = (rom_enable & esxdos_downloaded[1] & divmmc_maps & divmmc_write) & ~cpu_wr_n;
 	wire int_ram_write = ram_enable & ~cpu_wr_n;
