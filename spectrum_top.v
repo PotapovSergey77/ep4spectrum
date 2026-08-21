@@ -213,6 +213,7 @@ module spectrum_top (
 	wire            trdos_active;
 	wire            disk_loaded;
 	reg     [1:0]   romld_slot = 2'd0;
+	reg             romld_diskb = 1'b0;
 	// Same reason: the DivMMC instance above needs to know whether the
 	// machine ROM is coming from the slots, and that is decided a
 	// thousand lines below.
@@ -1688,6 +1689,7 @@ module spectrum_top (
 	always @(posedge clock or negedge reset_n) begin
 		if (reset_n == 1'b0) begin
 			romld_slot      <= 2'd0;
+			romld_diskb     <= 1'b0;
 			romld_cnt       <= 20'd0;
 			romld_wr_d      <= 1'b0;
 		end else begin
@@ -1701,6 +1703,13 @@ module spectrum_top (
 			// every sector after it.
 			if (romld_ctl_enable == 1'b1 && cpu_wr_n == 1'b0) begin
 				romld_slot <= cpu_do[1:0];
+				// Bit 5 aims the disk slot at drive B instead of A,
+				// so the loader can lay a blank TR-DOS filesystem on
+				// it. TR-DOS formats with WRITE TRACK, which is not
+				// implemented here, so a disk that arrives as SDRAM
+				// garbage can never be formatted from the machine -
+				// it has to come out of the loader already blank.
+				romld_diskb <= cpu_do[5];
 				if (cpu_do[2] == 1'b1) romld_cnt <= 20'd0;
 			end
 			// Stepped when the write ENDS, not while it is asserted: the
@@ -2293,7 +2302,7 @@ module spectrum_top (
 	// slots, and DivMMC starts at $80000, so there are 432K here. That is
 	// plenty: slot 3 only ever holds the boot image now - anything else
 	// Proteus loads goes to its RAM disk, not through here.
-	wire [19:0] disk_addr = 20'h14000 + romld_cnt;
+	wire [19:0] disk_addr = (romld_diskb ? 20'h1c000 : 20'h14000) + romld_cnt;
 	assign cpu_addr =
 		(bdi_img_rd | bdi_img_wr) ? {1'b1, drive_base + drive_off} :
 		((romld_write | romld_read) & disk_slot) ? {1'b1, disk_addr} :

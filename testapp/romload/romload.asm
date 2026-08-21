@@ -41,6 +41,7 @@ PORT_DAT        equ $9f         ; byte sink
 
 CTL_RESET       equ $04         ; bit 2: zero the byte counter
 CTL_FILL        equ $08         ; bit 3: mark this slot filled
+CTL_DISKB       equ $20         ; bit 5: aim the disk slot at drive B
 
 SLOT_128        equ 0
 SLOT_PENT       equ 1
@@ -99,6 +100,20 @@ start:
                 ; no disk in the drive is a perfectly ordinary machine,
                 ; and it is how the board came up before slot 3 existed.
                 call    one_disk
+
+                ; And a blank disk in drive B.
+                ;
+                ; It has to come from here. TR-DOS formats with WRITE
+                ; TRACK, which the controller does not implement, so a
+                ; drive that comes up holding SDRAM garbage can never be
+                ; formatted from the machine - Proteus looks at it and
+                ; says it is not a TR-DOS disk, which is exactly true.
+                ;
+                ; Nine sectors is the whole of it: eight of catalogue,
+                ; all zero, and the disk info block at the end of the
+                ; ninth. Everything past that is free space and nothing
+                ; reads it until something is written there.
+                call    blank_b
 
                 ; Nothing loaded at all is the case worth spelling out.
                 ; Three bare "not on card" lines say what happened but
@@ -428,6 +443,48 @@ dsk_empty:      call    nl
                 jp      print
 
 ; ---------------------------------------------------------------------
+; blank_b: lay an empty TR-DOS filesystem on drive B.
+;
+; 2272 zero bytes, then the 32-byte info block that ends sector 9. The
+; numbers in it say: first free sector 0 of track 1, disk type $16 (80
+; tracks, double sided), no files, 2544 sectors free - a full 640K disk
+; with track 0 spent on the catalogue - and $10, which is what marks it
+; as TR-DOS at all.
+; ---------------------------------------------------------------------
+blank_b:        ld      a,SLOT_DISK|CTL_DISKB|CTL_RESET
+                out     (PORT_CTL),a
+                ld      a,SLOT_DISK|CTL_DISKB
+                out     (PORT_CTL),a
+
+                ; XOR A inside the loop, not before it: the loop test
+                ; itself uses A to fold B and C together, so a zero
+                ; loaded once would be gone by the second byte and the
+                ; catalogue would fill with the loop counter.
+                ld      bc,2272
+bb_zero:        xor     a
+                out     (PORT_DAT),a
+                dec     bc
+                ld      a,b
+                or      c
+                jr      nz,bb_zero
+
+                ld      hl,tr_info
+                ld      b,32
+bb_info:        ld      a,(hl)
+                inc     hl
+                out     (PORT_DAT),a
+                djnz    bb_info
+
+                ld      a,SLOT_DISK|CTL_DISKB|CTL_FILL
+                out     (PORT_CTL),a
+                ld      hl,msg_blankb
+                jp      print
+
+tr_info:        defb    $00,$00,$01,$16,$00,$f0,$09,$10
+                defb    $00,$00,"         ",$00,$00
+                defb    "          ",$00
+
+; ---------------------------------------------------------------------
 ; dsk_count: read the open file to its end, counting 256-byte blocks
 ; into blk_tot. Carry set on a read error. The file is left at EOF, so
 ; the caller has to reopen it.
@@ -579,6 +636,7 @@ fn_trdos:       defb    "trdos.rom",0
 fn_disk:        defb    "proteus.trd",0
 
 msg_nofile:     defb    "not on card",13,0
+msg_blankb:     defb    "drive B : blank 640K",13,0
 msg_empty:      defb    "empty",13,0
 msg_rderr:      defb    "read error",13,0
 msg_short:      defb    "wrong size, got ",0
