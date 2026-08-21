@@ -80,7 +80,10 @@ module bdi (
 	// A .trd is (track * sides + side) * 16 sectors of 256 bytes, and
 	// TR-DOS numbers sectors from 1. Sixteen 256-byte sectors is exactly
 	// 4K a side, so the arithmetic is shifts.
-	wire [19:0] trk_off  = {r_track, 12'h000};      // track * 4096
+	// A cylinder is BOTH sides - 2 x 16 x 256 - so it is 8192 bytes, not
+	// 4096. Written as track * 4096 the sides overlapped one cylinder
+	// apart, which reads correctly on track 0 and nowhere else.
+	wire [19:0] trk_off  = {r_track[6:0], 13'h0000}; // cylinder * 8192
 	wire [19:0] side_off = side ? 20'h01000 : 20'h00000;
 	wire [19:0] sec_off  = {8'h00, (r_sector - 8'd1), 8'h00}; // (sector-1)*256
 
@@ -98,6 +101,19 @@ module bdi (
 	// leaves the data register to us.
 	reg  [2:0]  adr_idx = 3'd0;
 	reg         rd_adr  = 1'b0;
+
+	// Which status word the command register reads back.
+	//
+	// A 1793 answers with the status for the type of the LAST COMMAND
+	// WRITTEN, and holds that until another command is written. Keying it
+	// on a transfer being in progress instead meant that the moment a
+	// sector finished, the answer flipped back to type I - and type I bit
+	// 5 is "head loaded", permanently 1 here, which in type I is nothing
+	// and in type II is WRITE FAULT. So every completed read was reported
+	// as a failure, and bits 2 and 1 of type I - track 0, and the index
+	// pulse coming and going - changed which sector it blamed. That is
+	// the "Disk Error Trk 0 Sec 9", and then Sec 1, and then Sec 15.
+	reg         type2   = 1'b0;
 	wire [7:0]  adr_byte = (adr_idx == 3'd0) ? r_track       :
 	                       (adr_idx == 3'd1) ? {7'd0, side}  :
 	                       (adr_idx == 3'd2) ? 8'd1          :  // sector 1
@@ -166,6 +182,7 @@ module bdi (
 			rec_nf   <= 1'b0;
 			reading  <= 1'b0;
 			rd_adr   <= 1'b0;
+			type2    <= 1'b0;
 			adr_idx  <= 3'd0;
 			xfer_cnt <= 8'h00;
 			img_addr <= 20'h00000;
@@ -182,6 +199,10 @@ module bdi (
 
 				if (sel_cmd) begin
 					intrq <= 1'b0;
+					// Type II (read sector) and type III (read
+					// address) answer with the type II status;
+					// everything else with type I.
+					type2 <= (din[7:5] == 3'b100) | (din[7:4] == CMD_RDADR);
 					case (din[7:4])
 					CMD_RESTORE: begin
 						head  <= 8'h00;
@@ -313,7 +334,7 @@ module bdi (
 	                        1'b0, drq, busy};
 
 	always @* begin
-		if (sel_cmd)      dout = (reading | rd_adr) ? status_t2 : status_t1;
+		if (sel_cmd)      dout = type2 ? status_t2 : status_t1;
 		else if (sel_trk) dout = r_track;
 		else if (sel_sec) dout = r_sector;
 		else if (sel_dat) dout = rd_adr ? adr_byte : r_data;
