@@ -23,6 +23,19 @@ module divmmc (
 
 	// Bus interface
 	input          enable,
+
+	// High when a Beta disk interface is fitted and therefore owns the
+	// $3Dxx entry. Both devices trap that page, and they are not two
+	// spellings of the same mechanism: the Beta swaps a full 16K over
+	// $0000-$3FFF, DivMMC swaps 8K of ROM at $0000-$1FFF and 8K of its
+	// own RAM at $2000-$3FFF. With TR-DOS present the fetch belongs to
+	// the Beta, and DivMMC arming alongside it is not merely redundant -
+	// it is a trap it can never get out of. Its exit lives at
+	// $1FF8-$1FFF inside a ROM that is no longer mapped, so the stub that
+	// would clear the automapper is never executed, and paged_in stays
+	// stuck at one for as long as the machine runs.
+	input          stand_down,
+
 	input  [15:0] 	a,
 	input          wr_n,
 	input          rd_n,
@@ -46,7 +59,15 @@ module divmmc (
 	// Low while an SPI transfer this module started is still shifting.
 	// See the comment above the assign at the bottom for what it is for
 	// and for the two earlier attempts that did not work.
-	output         wait_n
+	output         wait_n,
+
+	// Diagnostic: the address of the fetch that last armed the
+	// automapper. The automapper being on is not by itself a fault - it
+	// is on for every ESXDOS call - but one that is on while an ordinary
+	// program runs means either a trap fired that should not have, or an
+	// exit was missed, and those two have nothing in common as faults.
+	// The entry address separates them at a glance.
+	output reg [15:0] trap_addr
 );
 
 reg m1_trigger;
@@ -80,7 +101,7 @@ reg paged_in_r;
 // cycle that asks, at any speed. The other triggers are deliberately
 // left alone: they are specified as taking effect AFTER their cycle,
 // and moving them is what broke 14MHz in an earlier attempt.
-wire auto_now = (!mreq_n && !rd_n && !m1_n && a[15:8] == 8'h3D);
+wire auto_now = (!mreq_n && !rd_n && !m1_n && a[15:8] == 8'h3D && !stand_down);
 assign paged_in = paged_in_r | auto_now;
 
 // Declared before use: Quartus accepts use-before-declaration,
@@ -128,6 +149,7 @@ always @(posedge clk) begin
 		ctrl <= 8'h00;
 		sd_cs <= 1'b1;
 		seen_busy <= 1'b0;
+		trap_addr <= 16'h0000;
 	end else begin
 		spi_rx_strobe = 1'b0;
 		spi_tx_strobe = 1'b0;
@@ -166,15 +188,34 @@ always @(posedge clk) begin
 		else if (spi_busy)
 			seen_busy <= 1'b1;
 
-		if (!mreq_n && !rd_n && !m1_n && 
+		// Stood down entirely.
+		//
+		// Gating the $3Dxx trap alone was not enough. Every other entry
+		// has the same one-way property: $0038 fires on each interrupt,
+		// and the stub that would disarm the automapper lives at
+		// $1FF8-$1FFF inside a ROM that is no longer mapped, so it can
+		// never be executed. One frame is all it takes, and paged_in is
+		// then stuck at one until the power goes off.
+		//
+		// When the machine ROM comes from the SD slots, DivMMC is not
+		// part of the memory map at all - divmmc_maps is held low
+		// upstairs - so there is nothing for the automapper to do and
+		// every reason for it not to arm.
+		if (stand_down) begin
+			m1_trigger <= 1'b0;
+			paged_in_r <= 1'b0;
+		end else if (!mreq_n && !rd_n && !m1_n &&
 			((a==16'h0000) || (a==16'h0008) || (a==16'h0038) ||
 			 (a==16'h0066) || (a==16'h04C6) || (a==16'h0562))) begin
 			// activate automapper after this cycle
 			m1_trigger <= 1'b1;
-		end else if (!mreq_n && !rd_n && !m1_n && a[15:8]==8'h3D) begin
+			trap_addr  <= a;
+		end else if (!mreq_n && !rd_n && !m1_n && a[15:8]==8'h3D
+		             && !stand_down) begin
 			// activate automapper immediately
 			paged_in_r <= 1'b1;
 			m1_trigger <= 1'b1;
+			trap_addr  <= a;
 		end else if (!mreq_n && !rd_n && !m1_n && {a[15:3],3'd0} == 16'h1ff8) begin
 			// deactivate automapper after this cycle
 			m1_trigger <= 1'b0;

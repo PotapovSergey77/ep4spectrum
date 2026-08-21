@@ -1,0 +1,226 @@
+// bdi - Beta Disk Interface, enough of a VG93/WD1793 for TR-DOS
+//
+// Copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
+//
+// The ports only answer while the TR-DOS ROM is paged in, which is how a
+// real Beta interface behaves and what keeps them out of the way of
+// everything else on the bus:
+//
+//   $1F  write: command      read: status
+//   $3F  track               $5F  sector          $7F  data
+//   $FF  write: drive/side/density/reset   read: INTRQ and DRQ
+//
+// Sector data comes out of a disk image sitting in SDRAM, addressed the
+// way a .trd is laid out: (track * sides + side) * 16 sectors of 256
+// bytes. Reads only for now - writing would need the image carried back
+// to the card, which is a separate piece of machinery.
+//
+// What this is NOT: no index pulses, no track formatting, no write
+// track, no CRC generation. TR-DOS reads a catalogue and loads files
+// with RESTORE, SEEK, STEP, READ SECTOR and READ ADDRESS, and those are
+// what is here.
+
+module bdi (
+	input             clk,
+	input             clken,       // CPU clock enable
+	input             reset_n,
+
+	// Bus, already qualified: only asserted while TR-DOS is paged in
+	input             enable,
+	input      [7:0]  a,
+	input             wr_n,
+	input             rd_n,
+	input      [7:0]  din,
+	output reg [7:0]  dout,
+
+	// Is there an image to read at all
+	input             disk_present,
+
+	// Where in the image the next byte is. The read itself is done by
+	// the top level on the CPU's own data-register read, holding the CPU
+	// on WAIT exactly as an ordinary memory access does - the same
+	// path the ROM slots are read back through, and already proven.
+	output reg [19:0] img_addr,
+	output            img_busy
+);
+
+	// --- register file ------------------------------------------------
+	reg [7:0] r_track  = 8'h00;
+	reg [7:0] r_sector = 8'h01;
+	reg [7:0] r_data   = 8'h00;
+	reg [7:0] r_system = 8'h00;   // $FF: drive, side, density, reset
+
+	// Head position, kept separately from the track register: TR-DOS
+	// writes the track register itself during a seek, and the two only
+	// agree once the seek has finished.
+	reg [7:0] head     = 8'h00;
+
+	reg       intrq    = 1'b0;
+	reg       drq      = 1'b0;
+	reg       busy     = 1'b0;
+	reg       seek_err = 1'b0;
+	reg       crc_err  = 1'b0;
+	reg       rec_nf   = 1'b0;
+
+	wire      side     = ~r_system[4];   // $FF bit 4 is side select, active low
+	// The Beta decode: A7 low picks a controller register with A6:A5,
+	// A7 high is the system port. Written as a[6:0] comparisons instead,
+	//  matched the data register as well - its low seven bits ARE
+	//  - and since data was tested first, every poll of  for intrq
+	// and drq came back with the data register. tr-dos waited on flags it
+	// was never shown, which is why list hung without an error.
+	wire      sel_cmd  = ~a[7] & (a[6:5] == 2'b00);
+	wire      sel_trk  = ~a[7] & (a[6:5] == 2'b01);
+	wire      sel_sec  = ~a[7] & (a[6:5] == 2'b10);
+	wire      sel_dat  = ~a[7] & (a[6:5] == 2'b11);
+	wire      sel_sys  =  a[7];
+
+	// --- sector transfer ----------------------------------------------
+	//
+	// A .trd is (track * sides + side) * 16 sectors of 256 bytes, and
+	// TR-DOS numbers sectors from 1. Sixteen 256-byte sectors is exactly
+	// 4K a side, so the arithmetic is shifts.
+	wire [19:0] trk_off  = {r_track, 12'h000};      // track * 4096
+	wire [19:0] side_off = side ? 20'h01000 : 20'h00000;
+	wire [19:0] sec_off  = {8'h00, (r_sector - 8'd1), 8'h00}; // (sector-1)*256
+
+	reg  [7:0]  xfer_cnt = 8'h00;     // bytes left in this sector
+	reg         reading  = 1'b0;
+	assign      img_busy = reading;
+
+	// --- command decode -------------------------------------------------
+	localparam CMD_RESTORE = 4'h0, CMD_SEEK = 4'h1,
+	           CMD_STEP    = 4'h2, CMD_STEPI = 4'h4, CMD_STEPO = 4'h6,
+	           CMD_RDSEC   = 4'h8, CMD_RDADR = 4'hC, CMD_FORCE = 4'hD;
+
+	always @(posedge clk or negedge reset_n) begin
+		if (reset_n == 1'b0) begin
+			r_track  <= 8'h00;
+			r_sector <= 8'h01;
+			r_data   <= 8'h00;
+			r_system <= 8'h00;
+			head     <= 8'h00;
+			intrq    <= 1'b0;
+			drq      <= 1'b0;
+			busy     <= 1'b0;
+			seek_err <= 1'b0;
+			crc_err  <= 1'b0;
+			rec_nf   <= 1'b0;
+			reading  <= 1'b0;
+			xfer_cnt <= 8'h00;
+			img_addr <= 20'h00000;
+		end else begin
+			if (clken == 1'b1 && enable == 1'b1 && wr_n == 1'b0) begin
+				if (sel_trk) r_track  <= din;
+				if (sel_sec) r_sector <= din;
+				if (sel_dat) r_data   <= din;
+				if (sel_sys) r_system <= din;
+
+				if (sel_cmd) begin
+					intrq <= 1'b0;
+					case (din[7:4])
+					CMD_RESTORE: begin
+						head  <= 8'h00;
+						r_track <= 8'h00;
+						intrq <= 1'b1;
+						seek_err <= 1'b0;   // a head can always seek
+					end
+					CMD_SEEK: begin
+						head  <= r_data;
+						r_track <= r_data;
+						intrq <= 1'b1;
+						seek_err <= 1'b0;   // a head can always seek
+					end
+					CMD_STEPI: begin
+						head <= head + 8'd1;
+						if (din[4]) r_track <= r_track + 8'd1;
+						intrq <= 1'b1;
+					end
+					CMD_STEPO: begin
+						head <= head - 8'd1;
+						if (din[4]) r_track <= r_track - 8'd1;
+						intrq <= 1'b1;
+					end
+					CMD_STEP: begin
+						intrq <= 1'b1;
+					end
+					CMD_RDSEC: begin
+						if (disk_present == 1'b0) begin
+							rec_nf <= 1'b1;
+							intrq  <= 1'b1;
+						end else begin
+							rec_nf   <= 1'b0;
+							crc_err  <= 1'b0;
+							busy     <= 1'b1;
+							reading  <= 1'b1;
+							xfer_cnt <= 8'h00;    // 256 bytes, wraps to 0
+							img_addr <= trk_off + side_off + sec_off;
+						end
+					end
+					CMD_FORCE: begin
+						busy    <= 1'b0;
+						reading <= 1'b0;
+						drq     <= 1'b0;
+						intrq   <= 1'b1;
+					end
+					default: intrq <= 1'b1;
+					endcase
+				end
+			end
+
+			// Reading the data register takes the byte and asks for the
+			// next one, until the sector is done.
+			if (clken == 1'b1 && enable == 1'b1 && rd_n == 1'b0 && sel_dat) begin
+				if (reading == 1'b1) begin
+					if (xfer_cnt == 8'hff) begin
+						reading <= 1'b0;
+						busy    <= 1'b0;
+						intrq   <= 1'b1;
+					end else begin
+						xfer_cnt <= xfer_cnt + 8'd1;
+						img_addr <= img_addr + 20'd1;
+					end
+				end
+			end
+
+			// Reading the status register clears INTRQ, as a 1793 does.
+			if (clken == 1'b1 && enable == 1'b1 && rd_n == 1'b0 && sel_cmd)
+				intrq <= 1'b0;
+
+			// $FF bit 2 low resets the controller
+			if (clken == 1'b1 && enable == 1'b1 && wr_n == 1'b0 && sel_sys
+			    && din[2] == 1'b0) begin
+				busy    <= 1'b0;
+				reading <= 1'b0;
+				drq     <= 1'b0;
+				intrq   <= 1'b0;
+			end
+		end
+	end
+
+	// --- what the CPU reads ---------------------------------------------
+	//
+	// Status, type I: bit 7 not ready, 6 protect, 5 head loaded,
+	// 4 seek error, 3 CRC, 2 track 0, 1 index, 0 busy.
+	// Type II: 7 not ready, 5 write fault, 4 record not found, 3 CRC,
+	// 2 lost data, 1 DRQ, 0 busy.
+	// Bit 7 is NOT READY, and it stays clear: a real drive with no disk
+	// in it is still ready - the motor turns - and software finds out
+	// there is no disk by failing to find a sector. Reporting not-ready
+	// instead left TR-DOS polling for a drive that would never arrive,
+	// so LIST simply never came back and printed no error at all.
+	wire [7:0] status_t1 = {1'b0, 1'b0, 1'b1, seek_err, crc_err,
+	                        (head == 8'h00), 1'b0, busy};
+	wire [7:0] status_t2 = {1'b0, 1'b0, 1'b0, rec_nf, crc_err,
+	                        1'b0, drq, busy};
+
+	always @* begin
+		if (sel_cmd)      dout = reading ? status_t2 : status_t1;
+		else if (sel_trk) dout = r_track;
+		else if (sel_sec) dout = r_sector;
+		else if (sel_dat) dout = r_data;
+		else if (sel_sys) dout = {intrq, drq, 6'b111111};
+		else              dout = 8'hff;
+	end
+
+endmodule

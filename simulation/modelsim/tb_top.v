@@ -180,15 +180,27 @@ module tb_top;
 	// edge falls - so the wait was pure cost, about an hour a run.
 	reg [31:0] forceint_us;
 	integer    fi_mark = -1;
+	integer    fi_n = 0;
 	initial begin
 		if ($value$plusargs("FORCEINT=%d", forceint_us)) begin
 			#(forceint_us * 1000);
 			fi_mark = ob_ts;
-			$display("[%0t] FORCED INT: nIRQ low, ob_ts=%0d h=%0d line=%0d",
-				$time, ob_ts, dut.vid.hcounter, dut.vid.vcounter[9:1]);
-			force dut.vid.nIRQ = 1'b0;
-			#9143;
-			release dut.vid.nIRQ;
+			// Fired repeatedly, and spaced by something that is NOT a
+			// multiple of four T-states, so successive interrupts walk
+			// every phase of the 4-T grid the CPU polls INT on out of
+			// HALT. One pulse only ever samples one phase, which is not
+			// enough to tell a legal 0..3 wait from a 2..5 one.
+			// The time unit here is 1ns, and a T-state at 3.5MHz is 285.7ns.
+			// The period below is 401 T-states: 401 mod 4 is 1, so the
+			// phase advances by exactly one T-state each time round.
+			for (fi_n = 0; fi_n < 16; fi_n = fi_n + 1) begin
+				$display("[%0t] FORCED INT #%0d: nIRQ low, h=%0d line=%0d",
+					$time, fi_n, dut.vid.hcounter, dut.vid.vcounter[9:1]);
+				force dut.vid.nIRQ = 1'b0;
+				#9143;
+				release dut.vid.nIRQ;
+				#105428;
+			end
 		end
 	end
 
@@ -1195,13 +1207,173 @@ module tb_top;
 				int_wait <= 0;
 			end else if (iw_run && dut.cpu.u0.IntCycle == 1'b1) begin
 				iw_run <= 1'b0;
-				if (iw_shown < 6) begin
+				if (iw_shown < 40) begin
 					iw_shown <= iw_shown + 1;
 					$display("[%0t] INT WAIT: %0d T-states before the acknowledge (halted=%b) - HALT allows 0..3",
 						 $time, int_wait, dut.cpu.u0.Halt_FF);
 				end
 			end else if (iw_run && dut.cpu_clken_gated == 1'b1)
 				int_wait <= int_wait + 1;
+		end
+	end
+
+	// --- +SLOTBOOT: the board's own path, with nothing forced --------
+	//
+	// slotboot.hex writes a slot through the port and marks it filled,
+	// exactly as the loader does. Then this pulses reset, so rom_from_sd
+	// latches from flags the design set for itself rather than from
+	// forced ones - which is the only thing simulation had been skipping.
+	// The machine is forced, because there is no keyboard here and the
+	// LED on the board already proves that part works.
+	initial begin
+		if ($test$plusargs("SLOTBOOT")) begin
+			// Triggered by the design marking the slot, not by a timer.
+			// A fixed delay had to be longer than the boot copy and the
+			// page clear, and by then the run was over.
+			wait (dut.rom_slot_filled !== 4'b0000);
+			$display("[%0t] SLOTBOOT: slot marked filled by the program", $time);
+			repeat (200) @(posedge dut.clock);
+			force dut.machine = 2'd1;      // MACHINE_S128
+			$display("[%0t] SLOTBOOT: machine 128K, pulsing reset", $time);
+			force dut.key_f11 = 1'b1;
+			repeat (2000) @(posedge dut.clock);
+			release dut.key_f11;
+			$display("[%0t] SLOTBOOT: reset released", $time);
+		end
+	end
+
+	// --- +SLOTDUMP: read a slot back after the port writes ------------
+	//
+	// Reading a slot was proven with poked contents and the board still
+	// hangs when it boots from one, which leaves the WRITE. porttest.hex
+	// sends four recognisable bytes; this says where they landed. Slot 0
+	// is rom_addr $00000 and cpu_addr puts ROM in the top half, so
+	// $100000.
+	integer sd_i;
+	initial begin
+		if ($test$plusargs("SLOTDUMP")) begin
+			#2_000_000;
+			$display("SLOT 0 after the port writes - want 11 22 33 44:");
+			$write("  $100000:");
+			for (sd_i = 0; sd_i < 8; sd_i = sd_i + 1)
+				$write(" %02x", peek(25'h100000 + sd_i));
+			$display("");
+			$display("  DivMMC ROM at $180000, must be untouched: %02x %02x %02x",
+				 peek(25'h180000), peek(25'h180001), peek(25'h180002));
+		end
+	end
+
+// --- +SLOT1=<file>: does a ROM loaded into a slot actually RUN? ---
+	//
+	// The write path is proven - the loader reports the right byte count
+	// for all three images. What has never been tested is the read: a
+	// machine fetching its own ROM out of SDRAM. On the board every
+	// attempt ended up in the 48K BASIC, and the suspicion is that
+	// DivMMC's automapper answers the reset fetch at $0000 before the
+	// loaded image gets a look in.
+	//
+	// This skips the card and ESXDOS entirely: the image goes straight
+	// into the slot with poke(), the flag and the machine are forced,
+	// and trace_top.log then says what the CPU actually fetched.
+	reg [7:0]   slot1img [0:32767];
+	reg [255:0] slot1file;
+	integer     sl;
+	initial begin
+		if ($value$plusargs("SLOT1=%s", slot1file)) begin
+			$readmemh(slot1file, slot1img);
+			wait (dut.boot_copy_active === 1'b0);
+			@(posedge dut.clock);
+			// slot 1 is rom_addr $08000, and cpu_addr puts ROM in the
+			// top half: {1'b1, rom_addr} = $108000.
+			for (sl = 0; sl < 32768; sl = sl + 1)
+				poke(25'h108000 + sl, slot1img[sl]);
+			force dut.rom_slot_filled = 4'b0010;   // slot 1
+			force dut.machine = 2'd3;              // MACHINE_PENT
+			$display("[%0t] SLOT1: %0s poked into slot 1, machine forced to Pentagon",
+				 $time, slot1file);
+		end
+	end
+
+	// --- +ROM48=<file>: run a 16K image out of the 48K ROM socket ---
+	//
+	// The demos under investigation are 16K images meant to sit at 0x0000
+	// where the 48K ROM does - esh1sim.hex is the birds demo in that
+	// form. +ROM= cannot carry them: it loads 8K into the DivMMC ROM
+	// window, and the DivMMC pages 8K, so a 16K image never fitted and a
+	// run with it produced no border writes at all.
+	//
+	// rom48.v is an altsyncram initialised from 48.hex at elaboration, so
+	// there is nothing to poke. This overrides its output instead, which
+	// leaves the real ROM in place for every other run and needs no
+	// change to the design. Registered on the clock to match the real
+	// part's output register - driven combinationally the ROM would
+	// answer a T-state early and the timings under measurement would be
+	// the testbench's, not the machine's.
+	reg [7:0]   rom48img [0:16383];
+	reg [255:0] rom48file;
+	reg [7:0]   rom48_q = 8'h00;
+	reg         rom48_on = 1'b0;
+	always @(posedge dut.clock)
+		if (rom48_on) rom48_q <= rom48img[dut.rom_addr[13:0]];
+	initial begin
+		if ($value$plusargs("ROM48=%s", rom48file)) begin
+			$readmemh(rom48file, rom48img);
+			rom48_on = 1'b1;
+			force dut.rom_do = rom48_q;
+			// Two things have to be got out of the way or the CPU never
+			// reaches this image at all. The machine powers up as Pentagon,
+			// and divmmc.v treats the very first fetch at 0x0000 as an
+			// automapper trap, so the CPU runs ESXDOS instead. A 60ms run
+			// with neither of these produced no interrupt and no border
+			// write whatsoever.
+			force dut.machine = 2'd0;          // MACHINE_S48
+			force dut.divmmc_paged_in = 1'b0;
+			$display("[%0t] ROM48: 48K ROM overridden from %0s, machine forced to 48K, DivMMC held out", $time, rom48file);
+		end
+	end
+
+	// --- What the acknowledge alone costs --------------------------
+	//
+	// A Z80 takes 19 T-states from accepting an IM2 interrupt to the
+	// first opcode of the handler, and 13 in IM1: 7 for the acknowledge
+	// M1, 3+3 for the two pushes and, in IM2, 3+3 for the vector.
+	// (FUSE z80/z80.c, z80_interrupt: `tstates += 7` then the writes.)
+	//
+	// PREAMBLE below walks Tact Meter's whole path and comes out at 203,
+	// which is right - but 203 is a sum, and a wrong acknowledge with a
+	// compensating error elsewhere would read the same. This measures the
+	// acknowledge on its own.
+	//
+	// It matters because of what the board shows for the birds demo: the
+	// top border only ever lands on a 4-T-state grid (it syncs on HALT),
+	// and correct sits 2 T-states off that grid. Nothing that moves the
+	// interrupt or either contention window can reach it - they all pick
+	// a grid point rather than move the grid. A wrong acknowledge cost
+	// would do exactly that: it delays everything after the accept
+	// without touching when the accept happens.
+	integer ack_ts = 0;
+	integer ack_shown = 0;
+	reg     ack_run = 1'b0, ack_ic = 1'b0, ack_halt = 1'b0;
+	always @(posedge dut.clock) begin
+		ack_ic <= dut.cpu.u0.IntCycle;
+		if (dut.reset_n === 1'b1) begin
+			if (dut.cpu.u0.IntCycle == 1'b1 && ack_ic == 1'b0) begin
+				ack_run  <= 1'b1;
+				ack_ts   <= 0;
+				ack_halt <= dut.cpu.u0.Halt_FF;
+			end else if (ack_run && dut.cpu_clken_gated == 1'b1) begin
+				if (dut.cpu.u0.IntCycle == 1'b0
+				    && dut.cpu.u0.MCycle == 3'd1
+				    && dut.cpu.u0.TState == 3'd1) begin
+					ack_run <= 1'b0;
+					if (ack_shown < 40) begin
+						ack_shown <= ack_shown + 1;
+						$display("[%0t] INT ACK: %0d T-states from accept to the handler's first fetch (IM=%0d halted=%b) - Z80 wants 19 in IM2, 13 in IM1",
+							 $time, ack_ts, dut.cpu.u0.IStatus, ack_halt);
+					end
+				end else
+					ack_ts <= ack_ts + 1;
+			end
 		end
 	end
 

@@ -91,7 +91,13 @@ module T80se (
 	// needs to see where a cycle begins rather than inferring it from a
 	// strobe that arrives a T-state later.
 	MC,
-	TS
+	TS,
+	// The microcode's own "this machine cycle is an IO cycle" flag, true
+	// from T1. IORQ_n cannot serve: T80se registers it at the edge ending
+	// T1, so a walk keyed on the pin starts a T-state after the cycle
+	// really began - which is the phase error the ULA contention model
+	// was compensating for with a second window.
+	IO_CYC
 );
 
 	parameter Mode = 0;    // 0 => Z80, 1 => Fast Z80, 2 => 8080, 3 => GB
@@ -118,6 +124,7 @@ module T80se (
 	output  [7:0]   DO;
 	output  [2:0]   MC;
 	output  [2:0]   TS;
+	output          IO_CYC;
 
 	wire            IntCycle_n;
 	wire            NoRead;
@@ -129,6 +136,7 @@ module T80se (
 
 	assign MC = MCycle;
 	assign TS = TState;
+	assign IO_CYC = IORQ;
 
 	T80 #(
 		.Mode(Mode),

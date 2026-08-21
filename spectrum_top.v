@@ -199,6 +199,16 @@ module spectrum_top (
 	wire    [3:0]   divmmc_sram_page;
 	wire            divmmc_mapram;
 	wire            divmmc_conmem;
+	wire    [15:0]  divmmc_trap_addr;
+	// Declared here rather than where it is driven, a thousand lines
+	// down: the DivMMC instance needs it to know who owns $3Dxx, and
+	// Quartus tolerates using a net before its declaration where
+	// ModelSim does not.
+	wire            trdos_avail;
+	// Same reason: the DivMMC instance above needs to know whether the
+	// machine ROM is coming from the slots, and that is decided a
+	// thousand lines below.
+	reg             rom_from_sd = 1'b0;
 	wire            key_f11;
 	wire            key_f8;
 	wire            key_f12;
@@ -213,6 +223,7 @@ module spectrum_top (
 	wire            key_end;
 	wire            key_kpsub;
 	wire            key_kpadd;
+	wire            key_space;
 	reg             key_kpsub_d = 1'b0;
 	reg             key_kpadd_d = 1'b0;
 	reg             key_pgup_d = 1'b0;
@@ -232,34 +243,18 @@ module spectrum_top (
 	// variables is enough to break it.
 	reg     [1:0]   cpu_speed_req = 2'd0;
 	reg     [1:0]   cpu_speed     = 2'd0;
-	// The interrupt trims are gone - F1..F4 are the speed now, and the
-	// interrupt sits at the position the published 14336 T-states give.
-	// video.v keeps the inputs; they are tied off below.
-	// -4 counts = one CPU T-state earlier (four hcounter counts to a
-	// T-state), compensating cpu_irq_n_sync.
-	//
-	// That register resamples vid_irq_n on the CPU's own enable so the
-	// interrupt edge cannot land mid-T-state - it has to stay, demos
-	// that count T-states from the interrupt shimmer without it. But it
-	// costs one T-state of latency a real Z80 does not have, so
-	// everything a program does after the interrupt happens one T-state
-	// - two pixels - late. That is invisible on the screen lines, where
-	// a program has other things to synchronise against, and shows up in
-	// the top border, which is the 64 lines immediately after the
-	// interrupt where a program has nothing to go on but its own count.
-	// Which is exactly where the bird demo's stripes are displaced and
-	// its lower-border stripes are not.
-	//
-	// Moving the interrupt a T-state earlier to cancel that latency was
-	// tried on hardware and **does not fix it**: the bird demo's top
-	// border stripes moved the two pixels as intended and were still in
-	// the wrong place. The displacement is therefore not one T-state of
-	// interrupt latency, and since this trim shifts the whole frame
-	// alike it can only cost the lower border and the screen lines,
-	// which are already correct. Back to 0. Do not retry as a fix for
-	// the border displacement - the resampler's T-state is real, but it
-	// is not this fault.
+	// The interrupt sits where the published 14336 T-states put it and is
+	// not adjustable. The keypad trim that was here proved the point it
+	// was built for - every value moves the top border in jumps of eight
+	// pixels, never the four that are missing - and then only got in the
+	// way. See the memory note on the HALT poll grid.
 	wire signed [7:0] int_adj = 8'sd0;
+	// Which trim the four-digit display is showing, set by whichever trim
+	// key was pressed last. A fixed priority used to decide it, and setting
+	// a trim the display was not on looked exactly like the keys being
+	// dead - see the note by any_trim.
+	//   0 = contention window   1 = IO window   2 = interrupt phase
+	reg [1:0] trim_show = 2'd0;
 	// Vertical trim: where the frame sits against the raster, stepped by
 	// Page Up / Page Down. video.v takes this in sixteenths of a line
 	// (INT_VADJ >>> 4), so a step of 16 is exactly one line.
@@ -429,6 +424,7 @@ module spectrum_top (
 	wire            divmmc_wait_n;
 	wire    [2:0]   cpu_mc;
 	wire    [2:0]   cpu_ts;
+	wire            cpu_io_cyc;
 	wire            cpu_wait_all_n;
 	wire            cpu_irq_n;
 	wire            cpu_nmi_n;
@@ -717,12 +713,11 @@ module spectrum_top (
 	//   LED1, leftmost  - SD card access
 	//   LED4, rightmost - Pentagon 1024K extension on
 	//   LED2, LED3      - unused
-	assign LED[3] = divmmc_cs;
-	// contention mode on LED2 and LED3: both dark = full, LED2 = memory
-	// only, LED3 = off
-	assign LED[2] = ~(cont_mode == 2'd1);
-	assign LED[1] = ~(cont_mode == 2'd0);
-	assign LED[0] = ~ext1024;
+	// The lamps are driven from the diagnostic block down beside the
+	// seven-segment display, where every signal they report on has
+	// already been declared. Driving them from here meant reaching
+	// forward to regs declared a thousand lines further down - Quartus
+	// allows that, ModelSim does not.
 
 	// ULA "ear" input (tape in) - no tape hardware on this board, keep idle
 	assign ula_ear_in = 1'b1;
@@ -763,10 +758,11 @@ module spectrum_top (
 		btn_div <= btn_div + 17'd1;
 		if (btn_div == 17'd0) begin
 			btn_prev <= KEY[3:2];
-			if (btn_prev[0] == 1'b1 && KEY[2] == 1'b0)
-				cont_adj <= cont_adj - 5'd1;
-			else if (btn_prev[1] == 1'b1 && KEY[3] == 1'b0)
-				cont_adj <= cont_adj + 5'd1;
+			if (btn_prev[0] == 1'b1 && KEY[2] == 1'b0) begin
+				cont_adj <= cont_adj - 5'd1; trim_show <= 2'd0;
+			end else if (btn_prev[1] == 1'b1 && KEY[3] == 1'b0) begin
+				cont_adj <= cont_adj + 5'd1; trim_show <= 2'd0;
+			end
 		end
 		key_f10_d <= key_f10;
 		if (key_f10 == 1'b1 && key_f10_d == 1'b0)
@@ -780,10 +776,11 @@ module spectrum_top (
 		// was running.
 		key_kpsub_d <= key_kpsub;
 		key_kpadd_d <= key_kpadd;
-		if (key_kpsub == 1'b1 && key_kpsub_d == 1'b0)
-			io_adj <= io_adj - 5'd1;
-		else if (key_kpadd == 1'b1 && key_kpadd_d == 1'b0)
-			io_adj <= io_adj + 5'd1;
+		if (key_kpsub == 1'b1 && key_kpsub_d == 1'b0) begin
+			io_adj <= io_adj - 5'd1; trim_show <= 2'd1;
+		end else if (key_kpadd == 1'b1 && key_kpadd_d == 1'b0) begin
+			io_adj <= io_adj + 5'd1; trim_show <= 2'd1;
+		end
 		key_pgup_d <= key_pgup;
 		key_pgdn_d <= key_pgdn;
 		if (key_pgup == 1'b1 && key_pgup_d == 1'b0)
@@ -876,28 +873,38 @@ module spectrum_top (
 		.DI(cpu_di),
 		.DO(cpu_do),
 		.MC(cpu_mc),
-		.TS(cpu_ts)
+		.TS(cpu_ts),
+		.IO_CYC(cpu_io_cyc)
 	);
 	// VSYNC interrupt routed to CPU
 	// (tested disabling this entirely as a diagnostic - made no
 	// difference on real hardware, ruled out)
-	// Presented to the CPU only on its own clock edges, as zx-sizif-512
-	// does (cpld/rtl/cpu.sv: `else if (clkcpu_ck) n_int <= n_int_next`).
 	//
-	// nIRQ is generated in the video domain, on the 14MHz enable, so its
-	// edges land wherever they land inside a T-state - half the time in
-	// the middle of one. Demos that draw in the border count T-states
-	// from the interrupt, and that is exactly where a half-T-state of
-	// slack turns into a picture that will not stand still. Both
-	// zx-sizif-512 and the mist-board core run this demo without
-	// shimmer, and this is the difference between them and us that
-	// bears on when the interrupt is seen.
-	reg cpu_irq_n_sync = 1'b1;
-	always @(posedge clock) begin
-		if (cpu_clken == 1'b1)
-			cpu_irq_n_sync <= vid_irq_n;
-	end
-	assign cpu_irq_n = cpu_irq_n_sync;
+	// Fed straight to the core. There used to be a resampler here, a
+	// register clocking vid_irq_n on the CPU's own enable, on the
+	// argument that nIRQ is made in the video domain and its edges land
+	// wherever they land inside a T-state.
+	//
+	// T80 already does exactly that. Its own input stage is
+	// `INT_s <= ~INT_n` on CEN, which is this CPU enable, so the edge was
+	// being sampled onto the CPU's grid twice and cost a T-state for it.
+	// Measured: from this signal to the acknowledge came out 2, 3 and 5
+	// T-states over the phases, where a Z80 out of HALT can only ever
+	// give 0..3.
+	//
+	// The shimmer that put the resampler here was really 840ab94's bug:
+	// the pulse was a window compared against hcounter, so trimming right
+	// clipped it against the end of the line and 128 counts came out as
+	// 14. The CPU caught it or missed it by luck. The pulse is counted
+	// out by length now and holds its full 32 T-states, which is what
+	// that register was covering for.
+	//
+	// Those two T-states are what 4fac427 and 219544b were cancelling by
+	// moving the interrupt in video.v. That worked - it took the birds
+	// demo from twelve pixels to four - but it paid for a CPU fault out
+	// of the raster geometry, which then no longer matched the published
+	// 14336. Fixed here, the geometry can stay at the reference value.
+	assign cpu_irq_n = vid_irq_n;
 	// ULA contention, after zx-sizif-512's cpu.sv.
 	//
 	// The ULA holds the CPU while it is fetching, but only when the CPU
@@ -925,7 +932,24 @@ module spectrum_top (
 	// most wrong: high byte 0x7F is contended and A0 is one, so it is
 	// due four delays and was given none, and a 128K demo writes it
 	// every frame.
-	wire io_cyc     = (~cpu_ioreq_n) & cpu_m1_n & (machine != MACHINE_S3);
+	//
+	// Keyed on the microcode's IO_CYC, true from T1, and not on IORQ_n,
+	// which T80se registers at the edge ending T1 and so cannot be seen
+	// until T2. FUSE settles what the right reference is: it keeps one
+	// contention table indexed by the absolute T-state and charges IO at
+	// T1 and T2 of the IO cycle (peripherals/ula.c, ula_contend_port_early
+	// and _late) out of that same table, on the same phase reference
+	// memory uses. The published "IO is a T-state different" is not a
+	// second window - it is only where in the cycle the two checks fall.
+	//
+	// Starting at T1 also stops a second charge nothing had noticed. The
+	// walk used to begin in T2, so at T1 of an IO cycle io_cyc was still
+	// low and cont_mem below saw an ordinary machine cycle beginning with
+	// the port address on the bus. For OUT ($40FE),A - high byte inside
+	// the contended page - that charged a memory delay on top of the two
+	// the IO table already gives. That is the C:1,C:3 row, the one row
+	// this design had never measured.
+	wire io_cyc     = cpu_io_cyc & cpu_m1_n & (machine != MACHINE_S3);
 	// The port's high byte is contended on the same rule as memory: 0x40-
 	// 0x7F always, and 0xC0-0xFF when the bank paged at 0xC000 is a
 	// contended one. Only the first half was here, so on a 128K a port
@@ -1039,11 +1063,11 @@ module spectrum_top (
 	// as many as four of them and they are separate: each waits for the
 	// window afresh, so two delays cost more than one twice as long.
 	//
-	// The walk starts where IORQ is first seen, which is a T-state after
-	// the machine cycle really begins - nothing marks that boundary on
-	// the bus. The delays therefore sit one T-state later than the table
-	// puts them, but there are exactly as many, which is what decides
-	// what an OUT costs.
+	// The walk starts at T1 of the IO machine cycle, off the microcode's
+	// IO_CYC rather than off IORQ_n - see io_cyc above. It used to start
+	// at IORQ, a T-state later, and every delay sat a T-state later than
+	// the table puts it. There were exactly as many, which is why the
+	// cost of an OUT looked right while its phase was not.
 	//
 	// The port is latched at the start: A0 and the high byte have to
 	// keep their values through a walk that outlives IORQ itself in the
@@ -1074,10 +1098,31 @@ module spectrum_top (
 	wire [2:0] io_idx = io_start ? 3'd0 : io_seq;
 	wire       io_ha0 = io_start ? cpu_a[0]   : io_a0;
 	wire       io_hh  = io_start ? io_hi_cont : io_hic;
-	// Delay count by case: one when A0 is zero, plus one more when the
-	// high byte is contended, plus two more when both hold.
-	wire       io_point = (io_idx == 3'd0) ? (io_hh | ~io_ha0) :
-	                      (io_idx == 3'd1) ? io_hh :
+	// WHICH T-state each delay falls on, not just how many there are.
+	// Taken straight off FUSE's periph.c:writeport(), which is
+	//
+	//   ula_contend_port_early:  if page contended, check;  then +1
+	//   ula_contend_port_late:   if A0==0, check, +2
+	//                            else if page contended, check,+1,
+	//                                 check,+1, check
+	//                            else +2
+	//   then +1
+	//
+	// so the four rows fall out as:
+	//
+	//   page contended, A0=0 : T1, T2                 - C:1, C:3
+	//   page contended, A0=1 : T1, T2, T3, T4         - C:1 four times
+	//   page plain,     A0=0 : T2 only                - N:1, C:3
+	//   page plain,     A0=1 : none                   - N:4
+	//
+	// The ULA-port check is the LATE one and belongs on T2. It used to
+	// sit on T1 here, which is right for nothing and wrong for the one
+	// case that matters most: OUT ($xxFE),A with the high byte outside
+	// the contended page is the N:1,C:3 row, and it is what every demo
+	// drawing the border does. A T-state early on that check draws the
+	// delay from the wrong step of the 6,5,4,3,2,1,0,0 group.
+	wire       io_point = (io_idx == 3'd0) ? io_hh :
+	                      (io_idx == 3'd1) ? (io_hh | ~io_ha0) :
 	                                         (io_hh & io_ha0);
 
 	// The MREQ term is not optional either. Without it the address bus
@@ -1172,6 +1217,7 @@ module spectrum_top (
 		.PGDN(key_pgdn),
 		.HOME(key_home),
 		.END(key_end),
+		.SPACEKEY(key_space),
 		.KPSUB(key_kpsub),
 		.KPADD(key_kpadd),
 		.ROW_ANY(kb_row_any)
@@ -1377,6 +1423,7 @@ module spectrum_top (
 		.reset_n(reset_n),
 		.clken(psg_clken),
 		.enable(divmmc_enable),
+		.stand_down(rom_from_sd),
 		.a(cpu_a),
 		.wr_n(cpu_wr_n),
 		.rd_n(cpu_rd_n),
@@ -1392,7 +1439,8 @@ module spectrum_top (
 		.sd_sck(divmmc_sclk),
 		.sd_mosi(divmmc_mosi),
 		.sd_miso(divmmc_miso),
-		.wait_n(divmmc_wait_n)
+		.wait_n(divmmc_wait_n),
+		.trap_addr(divmmc_trap_addr)
 	);
 	assign SD_CS = divmmc_cs;
 	assign SD_SCK = divmmc_sclk;
@@ -1447,6 +1495,243 @@ module spectrum_top (
 	assign psg_enable = (~cpu_ioreq_n) & cpu_m1_n & cpu_a[0] & cpu_a[15] & ~cpu_a[1];
 	assign kempston_enable = (~cpu_ioreq_n) & cpu_m1_n & ~cpu_a[7] & ~cpu_a[6] & ~cpu_a[5] & cpu_a[4] & cpu_a[3] & cpu_a[2] & cpu_a[1] & cpu_a[0];
 	assign divmmc_enable = esxdos_downloaded[1] & (~cpu_ioreq_n) & cpu_m1_n & cpu_a[7] & cpu_a[6] & cpu_a[5] & ~cpu_a[4] & cpu_a[0];
+
+	// Beta Disk ports, live only while the TR-DOS ROM is paged in - that
+	// is how a real interface behaves, and it keeps $1F, $3F, $5F, $7F
+	// and $FF out of everyone else's way the rest of the time. All of
+	// them are odd, so the ULA's even-port decode never collides.
+	wire       bdi_enable = trdos_active & (~cpu_ioreq_n) & cpu_m1_n & cpu_a[0];
+	wire [7:0]  bdi_do;
+	wire [19:0] bdi_img_addr;
+	wire        bdi_img_busy;
+	// A read of the data register while a sector is in progress is an
+	// SDRAM read of the image, served by the arbiter exactly like any
+	// other CPU access - the CPU waits on WAIT until the byte is there.
+	// Same path the ROM slots are read back through.
+	wire        bdi_img_rd = bdi_enable & ~cpu_rd_n & cpu_m1_n
+	                         & ~cpu_a[7] & (cpu_a[6:5] == 2'b11) & bdi_img_busy;
+	bdi u_bdi (
+		.clk(clock),
+		.clken(cpu_clken_gated),
+		.reset_n(reset_n),
+		.enable(bdi_enable),
+		.a(cpu_a[7:0]),
+		.wr_n(cpu_wr_n),
+		.rd_n(cpu_rd_n),
+		.din(cpu_do),
+		.dout(bdi_do),
+		// No image yet: the controller answers, and says there is no
+		// disk in the drive. That is enough for software to find TR-DOS,
+		// which it cannot do at all while the ports are dead.
+		.disk_present(disk_loaded),
+		.img_addr(bdi_img_addr),
+		.img_busy(bdi_img_busy)
+	);
+
+	// --- ROM loader channel ------------------------------------------
+	//
+	// 128K and Pentagon ROM images come off the SD card, read by ESXDOS,
+	// which already has the FAT drivers - none of that belongs in logic.
+	// What the hardware provides is a way in, and it is deliberately NOT
+	// a writable ROM window: 0x0000-0x3FFF stays unwritable from the
+	// memory map at all times, with no enable bit, so a program cannot
+	// overwrite the ROM it is executing from. Bytes arrive through a port
+	// instead.
+	//
+	//   0x9B write : [1:0] slot, [2] reset counter, [3] mark filled,
+	//                [4] clear filled
+	//   0x9B read  : [3:0] the filled flags
+	//   0x9F write : one byte, the counter steps on its own
+	//
+	// Ports chosen clear of everything already decoded: A0=1 keeps them
+	// off the ULA, A1=1 off the AY and the paging register, A4=1 off
+	// DivMMC's 1110 group, and neither is 0x1F.
+	wire romld_ctl_enable = (~cpu_ioreq_n) & cpu_m1_n & (cpu_a[7:0] == 8'h9b);
+	wire romld_dat_enable = (~cpu_ioreq_n) & cpu_m1_n & (cpu_a[7:0] == 8'h9f);
+	wire romld_write      = romld_dat_enable & ~cpu_wr_n;
+	// Slot 3 is a disk image, not a ROM, and it goes in the RAM half of
+	// SDRAM rather than the ROM half: a .trd is 640K and the ROM half has
+	// only the gap between the slots and DivMMC. Based at $40000 so a
+	// 768K image still fits inside twenty bits of address.
+	wire disk_slot        = (romld_slot == 2'd3);
+	// Reading the data port hands back the byte the counter is pointing
+	// at, and steps it, so software can read a slot back and compare it
+	// with the file it came from. Everything up to here was verified in
+	// simulation and the board still would not boot from a slot, which
+	// left one thing nobody could see: what 32768 writes actually put
+	// there. Now it can be measured on the board instead of guessed at.
+	wire       romld_read       = romld_dat_enable & ~cpu_rd_n;
+
+	// Where each slot sits, in units of 32K of rom_addr space. Bit 19 of
+	// rom_addr is DivMMC's; every base here leaves it clear, so the two
+	// cannot overlap by construction rather than by arithmetic.
+	//
+	//   slot 0  128K      rom_addr 0x00000  32K
+	//   slot 1  Pentagon  rom_addr 0x08000  32K
+	//   slot 2  TR-DOS    rom_addr 0x10000  16K
+	function [4:0] slot_base(input [1:0] s);
+		slot_base = (s == 2'd0) ? 5'd0 :
+		            (s == 2'd1) ? 5'd1 : 5'd2;
+	endfunction
+
+	reg [1:0]  romld_slot      = 2'd0;
+	reg [19:0] romld_cnt       = 20'd0;
+	reg [3:0]  rom_slot_filled = 4'b0000;
+	reg        romld_wr_d      = 1'b0;
+	always @(posedge clock or negedge reset_n) begin
+		if (reset_n == 1'b0) begin
+			romld_slot      <= 2'd0;
+			romld_cnt       <= 20'd0;
+			romld_wr_d      <= 1'b0;
+		end else begin
+			if (cpu_clken_gated == 1'b1) begin
+				if (romld_ctl_enable == 1'b1 && cpu_wr_n == 1'b0) begin
+					romld_slot <= cpu_do[1:0];
+					if (cpu_do[2] == 1'b1) romld_cnt <= 20'd0;
+				end
+				// Stepped when the write ENDS, not while it is asserted: the
+				// CPU is held through the arbiter's grant and the level would
+				// otherwise count the same byte several times over.
+				romld_wr_d <= romld_write | romld_read;
+				if (romld_wr_d == 1'b1 && (romld_write | romld_read) == 1'b0)
+					romld_cnt <= romld_cnt + 20'd1;
+			end
+		end
+	end
+
+	// A machine reads its ROM out of SDRAM only once its slot says it has
+	// been filled. Unfilled, it falls back to the 48K image in block RAM -
+	// which is the behaviour before any of this existed, so a card with no
+	// ROM files on it still boots and can print the error saying so.
+	wire [1:0] mach_slot   = (machine == MACHINE_PENT) ? 2'd1 : 2'd0;
+	// The filled flags get a block of their own, with NO reset in it.
+	//
+	// They have to survive a reset: switching machine and pressing reset
+	// is how a loaded ROM is brought up, and a slot that forgot it was
+	// loaded would send the CPU into an empty window at the very moment
+	// it starts. They used to live in the block above with the async
+	// reset, simply left out of its reset branch - which means "hold" to
+	// a simulator but leaves synthesis free to clear them with everything
+	// else in the block. That is exactly what split the board from the
+	// model: in simulation the flags were forced and stayed set, so the
+	// machine booted its slot; on the board they cleared on the reset that
+	// was supposed to bring the new ROM up, rom_sd_ready went to zero with
+	// them, and the 48K image came back instead.
+	//
+	// Cleared only by reconfiguring the FPGA - a power cycle - which is
+	// the documented way back to ESXDOS.
+	// Reset with SPACE held forgets the loaded slots, which lets DivMMC
+	// come back up. Without it, loading the images was a one-way door:
+	// the flags survive a reset by design, so every reset afterwards came
+	// up on the slot ROM with the automapper stood down, and only a power
+	// cycle got ESXDOS back.
+	//
+	// The write is NOT gated by the CPU clock enable. IORQ, WR, the port
+	// address and the data all stay put for the whole of the OUT's bus
+	// cycle, so setting the same bit on every clock of it is idempotent -
+	// while gating on the clock enable made the one bit that decides
+	// which ROM the machine boots depend on where a contention stall
+	// happened to fall. That is a coin toss, not a decode.
+	always @(posedge clock) begin
+		if (key_f11 == 1'b1 && key_space == 1'b1)
+			rom_slot_filled <= 4'b0000;
+		else if (romld_ctl_enable == 1'b1 && cpu_wr_n == 1'b0) begin
+			if (cpu_do[3] == 1'b1) rom_slot_filled[cpu_do[1:0]] <= 1'b1;
+			if (cpu_do[4] == 1'b1) rom_slot_filled[cpu_do[1:0]] <= 1'b0;
+		end
+	end
+
+	// Whether a loaded slot is used at all, on keypad 5.
+	//
+	// Without it, loading the images was a one-way door: the flags
+	// survive a reset by design, so every reset afterwards came up on the
+	// slot ROM with DivMMC stood down, and the only way back to ESXDOS
+	// was a power cycle. Now the choice is a keypress and a reset, in
+	// either direction, and the slots keep their contents either way.
+	wire       disk_loaded  = rom_slot_filled[3];
+	wire       rom_sd_ready = ((machine == MACHINE_S128) & rom_slot_filled[0])
+	                        | ((machine == MACHINE_PENT) & rom_slot_filled[1]);
+
+	// Which ROM the machine runs can only change across a reset.
+	//
+	// It used to follow rom_sd_ready directly, and that swapped the ROM
+	// out from under whatever was executing. The loader marks the Pentagon
+	// slot filled while it is still running, and Pentagon is the power-up
+	// machine, so the swap happened mid-command - and since the interrupt
+	// handler lives in the ROM at $0038, the very next frame vectored into
+	// a different ROM's handler. The screen filled with rubbish there and
+	// then. The dot command itself survived because it executes at $2000
+	// in DivMMC RAM, which is why it could still finish printing.
+	//
+	// Held in the reset branch, so it tracks while reset is asserted and
+	// freezes when it lifts: load the images, pick the machine, press
+	// reset, and the new ROM is what comes up.
+	// Clocked, not asynchronous. Written the obvious way -
+	//
+	//   always @(posedge clock or negedge reset_n)
+	//       if (reset_n == 1'b0) rom_from_sd <= rom_sd_ready;
+	//
+	// it assigns a SIGNAL in the asynchronous reset branch rather than a
+	// constant, which is outside the pattern synthesis recognises.
+	// ModelSim runs it exactly as intended and Quartus inferred a latch
+	// from it (Warning 10240), on combinational feedback with no timing
+	// closed - and the board went back to filling the screen with rubbish
+	// while simulation stayed clean. The clock does not stop during
+	// reset, so a plain clocked register does the same job properly.
+	always @(posedge clock) begin
+		if (reset_n == 1'b0)
+			rom_from_sd <= rom_sd_ready;
+	end
+	wire [4:0] mach_base   = slot_base(mach_slot);
+
+	// TR-DOS paging, the Beta Disk rule: the ROM comes in on an opcode
+	// fetch at $3Dxx while 48 BASIC is the selected half, and goes out
+	// on the first fetch outside the ROM area.
+	//
+	// Gated on rom_from_sd, which is what makes it safe. TR-DOS and
+	// DivMMC both trap $3Dxx, and an earlier attempt armed this whenever
+	// slot 2 was filled - so it fired while ESXDOS was still running, ate
+	// its own entry and the card would not initialise. But rom_from_sd is
+	// exactly the state in which divmmc_maps has already stood the
+	// automapper down, so in here there is nobody to conflict with.
+	reg  trdos_paged = 1'b0;
+	assign trdos_avail = rom_from_sd & (machine == MACHINE_PENT)
+	                     & rom_slot_filled[2];
+
+	// The fetch that triggers the entry has to come from the TR-DOS ROM
+	// ALREADY. $3D00 is the address programs CALL to reach TR-DOS, and
+	// if that first byte still comes from the BASIC ROM the caller gets
+	// the character set - $3D00 there is the blank for "space", eight
+	// zero bytes, which decode as NOPs and run on into $3D08 without
+	// complaining. Everything downstream then happens one byte out of
+	// step, and a program that enters TR-DOS to ask whether it is there
+	// gets an answer built from the wrong first byte.
+	//
+	// A latch cannot deliver that byte. It takes effect on the following
+	// clock, and this one was gated by the CPU clock enable on top, so
+	// it landed a whole T-state after T80 had already latched what it
+	// read. Same defect, and the same fix, as the DivMMC $3Dxx entry in
+	// divmmc.v - which had to become combinational for exactly this
+	// reason and for exactly this address.
+	//
+	// The exit keeps its register: it fires on a fetch at $4000 or above,
+	// and that fetch reads RAM whichever way the ROM is switched, so
+	// nothing depends on it being immediate.
+	wire trdos_now = trdos_avail & (~cpu_m1_n) & (~cpu_mreq_n) & (~cpu_rd_n)
+	                 & (cpu_a[15:8] == 8'h3d) & page_rom_sel;
+	wire trdos_active = trdos_paged | trdos_now;
+
+	always @(posedge clock) begin
+		if (reset_n == 1'b0)
+			trdos_paged <= 1'b0;
+		else if (cpu_m1_n == 1'b0 && cpu_mreq_n == 1'b0 && cpu_rd_n == 1'b0) begin
+			if (trdos_now == 1'b1)
+				trdos_paged <= 1'b1;
+			else if (cpu_a[15] == 1'b1 || cpu_a[14] == 1'b1)
+				trdos_paged <= 1'b0;
+		end
+	end
+
 
 	generate
 	if (MODEL != 2) begin : addr_decode_128k
@@ -1524,9 +1809,27 @@ module spectrum_top (
 		divmmc_sram_page[1] & divmmc_sram_page[0]);
 	wire divmmc_write = (~cpu_a[13] & divmmc_lo_write) |
 		(cpu_a[13] & divmmc_hi_write);
-	wire ext_ram_write = (rom_enable & esxdos_downloaded[1] & divmmc_paged_in & divmmc_write) & ~cpu_wr_n;
+	// DivMMC's automapper stands down while the machine is running a ROM
+	// out of a slot.
+	//
+	// It traps the reset fetch at $0000, and the trace says it wins it
+	// outright: the first fetch after reset reads $0000 with paged_in
+	// clear, and by the second the DivMMC page is in and the CPU is off
+	// into ESXDOS. A loaded Pentagon or 128K image therefore never got
+	// control at all, which is why every attempt on the board ended up in
+	// the 48K BASIC no matter what had been loaded.
+	//
+	// The two cannot both own the reset vector, and once an image has
+	// been loaded and the machine deliberately switched to it, that image
+	// is what the user asked to run - ESXDOS has already done its job of
+	// fetching it off the card. It comes back on a power cycle, which
+	// clears the slot flags; a plain reset does not, so switching machine
+	// and resetting brings the loaded ROM up rather than ESXDOS again.
+	wire divmmc_maps = divmmc_paged_in & ~rom_from_sd;
+
+	wire ext_ram_write = (rom_enable & esxdos_downloaded[1] & divmmc_maps & divmmc_write) & ~cpu_wr_n;
 	wire int_ram_write = ram_enable & ~cpu_wr_n;
-	wire ram_write = int_ram_write | ext_ram_write;
+	wire ram_write = int_ram_write | ext_ram_write | romld_write;
 
 	// ---------------------------------------------------------------
 	// CPU/video SDRAM arbiter, after zx-sizif-512's ram_arbiter
@@ -1575,8 +1878,13 @@ module spectrum_top (
 	// esxdos_downloaded gates the DivMMC ROM because before the boot
 	// copy has run there is nothing in SDRAM to fetch.
 	wire cpu_needs_sdram = ram_enable |
-		(rom_enable & divmmc_paged_in & esxdos_downloaded[1]);
-	wire cpu_mem_active  = (~cpu_mreq_n) & ((~cpu_rd_n) | (~cpu_wr_n)) & cpu_needs_sdram;
+		(rom_enable & divmmc_maps & esxdos_downloaded[1]) |
+		(rom_enable & (rom_from_sd | trdos_active));
+	// The loader's port write is served by the same arbiter as a memory
+	// cycle - it is a write to SDRAM like any other, and the CPU is held
+	// on WAIT until it is granted, exactly as it would be for a store.
+	wire cpu_mem_active  = ((~cpu_mreq_n) & ((~cpu_rd_n) | (~cpu_wr_n)) & cpu_needs_sdram)
+	                       | romld_write | romld_read | bdi_img_rd;
 	// A CPU cycle is in flight while either the cycle running now or
 	// the one that just ended belongs to the CPU - its answer only
 	// lands two clocks after that cycle finishes.
@@ -1642,7 +1950,7 @@ module spectrum_top (
 				// q==3, from whatever oe/we say at that moment. Live
 				// signals that change in between turn one transaction
 				// into half of two.
-				cpu_oe_held   <= (~cpu_mreq_n) & (~cpu_rd_n);
+				cpu_oe_held   <= ((~cpu_mreq_n) & (~cpu_rd_n)) | romld_read | bdi_img_rd;  // a slot read-back is an IO cycle, so mreq_n is high
 				cpu_we_held   <= ram_write;
 				cpu_di_held   <= cpu_do;
 			end
@@ -1706,7 +2014,13 @@ module spectrum_top (
 		// System RAM
 		(ram_enable == 1'b1) ? mem_do :
 		// DIVMMC memory mapped into ROM area
-		((rom_enable == 1'b1) && (divmmc_paged_in == 1'b1) && (esxdos_downloaded[1] == 1'b1)) ? mem_do :
+		((rom_enable == 1'b1) && (divmmc_maps == 1'b1) && (esxdos_downloaded[1] == 1'b1)) ? mem_do :
+		// a machine ROM loaded from the card lives in SDRAM too
+		((rom_enable == 1'b1) && ((rom_from_sd == 1'b1) || (trdos_active == 1'b1))) ? mem_do :
+		// the loader's status, so software can tell a missing file from
+		// a loaded one before it switches machine
+		(romld_read == 1'b1) ? mem_do :
+		(romld_ctl_enable == 1'b1) ? {4'b0000, rom_slot_filled} :
 		// Internal ROM
 		(rom_enable == 1'b1) ? rom_do :
 		// IO ports
@@ -1719,6 +2033,8 @@ module spectrum_top (
 		// apart, so this returned register data for both and Test 4.3
 		// reported the port wrong.
 		((psg_enable == 1'b1) && (cpu_a[14] == 1'b1)) ? psg_do :
+		(bdi_img_rd == 1'b1) ? mem_do :
+		(bdi_enable == 1'b1) ? bdi_do :
 		(divmmc_enable == 1'b1) ? divmmc_do :
 		// map kempston joystick port - no joystick hardware on this board, idle
 		(kempston_enable == 1'b1) ? 8'b00000000 :
@@ -1749,8 +2065,41 @@ module spectrum_top (
 		// Gated on esxdos_downloaded so this can't page into SDRAM before
 		// the ESXDOS ROM copy (see boot_copy_* above) has actually finished.
 		assign rom_addr =
-			((esxdos_downloaded[1] == 1'b1) && (divmmc_paged_in == 1'b1)) ? {1'b1, divmmc_addr} :
+			// The loader's write goes FIRST, ahead of the DivMMC mapping.
+			//
+			// It used to sit below it, and that was silently fatal: a dot
+			// command runs with DivMMC paged in, so every byte it sent to
+			// the port was addressed as DivMMC RAM instead of as the slot
+			// - which is exactly the memory the command itself is
+			// executing from. It overwrote its own code and ESXDOS's
+			// workspace from the first byte, and being SDRAM the damage
+			// survived a reset.
+			//
+			// The same two lines typed at the BASIC prompt worked
+			// perfectly, because there DivMMC is not paged in and the
+			// slot address won. That difference is what identified it.
+			// romld_cnt[14:0], not romld_cnt.
+			//
+			// rom_addr is 20 bits and a slot is 32K, so the counter
+			// contributes fifteen of them. Written with the whole 20-bit
+			// counter the concatenation came to twenty-five bits, and
+			// Verilog trims a too-wide value from the TOP - so
+			// slot_base fell off the front and every slot was written at
+			// address zero, one image on top of the last. Reads still
+			// used the proper base, so the 128K slot came back holding
+			// whatever had been written there last and the Pentagon and
+			// TR-DOS slots came back holding nothing at all. No warning,
+			// no error: the widths just quietly did not add up.
+			//
+			// The counter is 20 bits wide because the disk image needs
+			// that reach, and the disk slot takes its own path through
+			// cpu_addr rather than this one.
+			(romld_write | romld_read) ? {slot_base(romld_slot), romld_cnt[14:0]} :
+			trdos_active ? {slot_base(2'd2), 1'b0, cpu_a[13:0]} :
+			((esxdos_downloaded[1] == 1'b1) && (divmmc_maps == 1'b1)) ? {1'b1, divmmc_addr} :
 			// Otherwise access the internal ROM
+			// a loaded 128K or Pentagon image, 32K via page_rom_sel
+			rom_from_sd ? {mach_base, page_rom_sel, cpu_a[13:0]} :
 			{6'b000000, cpu_a[13:0]};
 	end
 	endgenerate
@@ -1771,7 +2120,7 @@ module spectrum_top (
 		assign rom_addr =
 			// all DIVMMC mapping (even ram) happens in the ROM
 			// address space (0x0000-0x3fff)
-			((esxdos_downloaded[1] == 1'b1) && (divmmc_paged_in == 1'b1)) ? {1'b1, divmmc_addr} :
+			((esxdos_downloaded[1] == 1'b1) && (divmmc_maps == 1'b1)) ? {1'b1, divmmc_addr} :
 			// Otherwise access the internal ROMs
 			{5'b00000, page_rom_sel, cpu_a[13:0]};
 	end
@@ -1793,7 +2142,7 @@ module spectrum_top (
 		assign rom_addr =
 			// all DIVMMC mapping (even ram) happens in the ROM
 			// address space (0x0000-0x3fff)
-			((esxdos_downloaded[1] == 1'b1) && (divmmc_paged_in == 1'b1)) ? {1'b1, divmmc_addr} :
+			((esxdos_downloaded[1] == 1'b1) && (divmmc_maps == 1'b1)) ? {1'b1, divmmc_addr} :
 
 			// Otherwise access the internal ROMs
 			{4'b0000, plus3_page[1], page_rom_sel, cpu_a[13:0]};
@@ -1806,7 +2155,11 @@ module spectrum_top (
 	// it captures cpu_addr into cpu_addr_held when it grants the cycle -
 	// and doing it here as well only made the address the arbiter
 	// captured a stale one.
-	assign cpu_addr = (ram_enable == 1'b1) ? {1'b0, ram_addr} : {1'b1, rom_addr};
+	wire [19:0] disk_addr = 20'h40000 + romld_cnt;
+	assign cpu_addr =
+		bdi_img_rd ? {1'b0, 20'h40000 + bdi_img_addr} :
+		((romld_write | romld_read) & disk_slot) ? {1'b0, disk_addr} :
+		(ram_enable == 1'b1) ? {1'b0, ram_addr} : {1'b1, rom_addr};
 
 	// Video from bank 7 (128K/+3)
 	// Video from bank 5
@@ -1860,7 +2213,14 @@ module spectrum_top (
 				prom_sel <= cpu_do[4];
 				pshadow_scr <= cpu_do[3];
 				pram_sel <= cpu_do[2:0];
-				pram_hi  <= cpu_do[7:5];
+				// Bits 7:5 are an extended bank number only when the
+				// 1024K extension is on. On a plain 128K or a Pentagon
+				// bit 5 is the paging lock and 6:7 mean nothing, so
+				// taking them as bank bits regardless moved the bank at
+				// $C000 by eight the moment anything wrote the lock -
+				// and the machine lost the RAM out from under itself.
+				// Test v4.3 hung exactly there, on its $7FFD test.
+				pram_hi  <= ext1024 ? cpu_do[7:5] : 3'b000;
 			end
 		end
 	end
@@ -2006,10 +2366,7 @@ module spectrum_top (
 	//   E0nn  IO contention window, keypad - and +, a T-state a press
 	wire any_trim = (cont_adj != 5'd0) || (cont_model != 2'd1)
 	                || (io_adj != 5'd0);
-	// Off zero, the IO trim takes the display: the keys being pressed
-	// and the number being shown then name the same thing, which is the
-	// mistake the note above describes.
-	wire show_io = (io_adj != 5'd0);
+
 
 	// The left pair carries the CPU speed: 3.5, 7.0, 14, 28. The two
 	// slower ones take a decimal point after the first digit, which is
@@ -2021,8 +2378,150 @@ module spectrum_top (
 	                    (cpu_speed == 2'd1) ? 4'd0 :
 	                    (cpu_speed == 2'd2) ? 4'd4 : 4'd8;
 
-	wire [3:0] nibble = any_trim ?
-	                    (show_io ?
+	// Diagnostic: where the CPU is, and whether it is still moving.
+	//
+	// The four digits carry the FULL address of the last opcode fetch.
+	// The high byte alone said Test v4.3 stops somewhere in the ROM; it
+	// takes all sixteen bits to say where in it.
+	//
+	// While the CPU is running the reading is a sample refreshed twice a
+	// second, so it flickers across whatever is executing. Once nothing
+	// has been fetched for about a third of a second the CPU is not
+	// running at all, and the display freezes on the last fetch it
+	// managed - the address it died at. The decimal points come on to
+	// say the number is frozen rather than sampled, so a still display
+	// cannot be mistaken for a slow one.
+	//
+	// A frozen reading also says something the value itself cannot: the
+	// CPU is stopped part-way through an instruction, not looping. A
+	// loop of even two instructions would show a different one of them
+	// at each refresh.
+	// Every lamp below reports the same shape of fact - "this has been
+	// true without a break for about a third of a second" - so a steady
+	// lamp means a fault and a dark one means health. The first version
+	// mixed live signals in with latched ones, and a lamp that is lit
+	// half the time in normal running says nothing at all.
+	localparam DIAG_GAP = 24'd9000000;   // ~1/3 second at 28MHz
+
+	reg [15:0] opa_last = 16'h0000;
+	reg [15:0] opa_show = 16'h0000;
+	reg [23:0] pc_div   = 24'd0;
+	reg        m1_now_d = 1'b0;
+	reg [23:0] m1_gap   = 24'd0;   // clocks since a fetch last STARTED
+	reg [23:0] wt_gap   = 24'd0;   // clocks the arbiter has held WAIT
+	reg [23:0] dw_gap   = 24'd0;   // clocks the SPI has held WAIT
+	reg [23:0] dm_gap   = 24'd0;   // clocks DivMMC has stayed paged in
+	reg [23:0] ce_gap   = 24'd0;   // clocks since the CPU was last clocked
+	reg        cpu_dead = 1'b0;
+	reg        arb_hold = 1'b0;
+	reg        spi_hold = 1'b0;
+	reg        dm_stuck = 1'b0;
+	reg        ce_dead  = 1'b0;
+	wire       m1_now   = (cpu_mreq_n == 1'b0) & (cpu_rd_n == 1'b0)
+	                      & (cpu_m1_n == 1'b0);
+	always @(posedge clock) begin
+		m1_now_d <= m1_now;
+
+		// The START of a fetch, not the fact that one is in progress.
+		// While the CPU is held on WAIT, MREQ, RD and M1 all stay
+		// asserted for as long as it is stopped, so testing the level
+		// reports a frozen CPU as a healthy one - which is precisely
+		// what the first version of this did, and why it showed a
+		// stable address with the "stopped" lamp dark.
+		if (m1_now == 1'b1 && m1_now_d == 1'b0) begin
+			opa_last <= cpu_a;
+			m1_gap   <= 24'd0;
+			cpu_dead <= 1'b0;
+		end else if (m1_gap >= DIAG_GAP) begin
+			cpu_dead <= 1'b1;
+		end else begin
+			m1_gap <= m1_gap + 24'd1;
+		end
+
+		// Which of the two WAIT sources is doing it. They are wired
+		// together into one pin, so from the CPU's side they are
+		// indistinguishable, and they have nothing in common as faults.
+		if (cpu_wait_n == 1'b1) begin
+			wt_gap   <= 24'd0;
+			arb_hold <= 1'b0;
+		end else if (wt_gap >= DIAG_GAP) begin
+			arb_hold <= 1'b1;
+		end else begin
+			wt_gap <= wt_gap + 24'd1;
+		end
+
+		if (divmmc_wait_n == 1'b1) begin
+			dw_gap   <= 24'd0;
+			spi_hold <= 1'b0;
+		end else if (dw_gap >= DIAG_GAP) begin
+			spi_hold <= 1'b1;
+		end else begin
+			dw_gap <= dw_gap + 24'd1;
+		end
+
+		// DivMMC paged in is normal - it is paged in for every ESXDOS
+		// call - but paged in without a break for a third of a second
+		// while an ordinary program runs means its exit was missed, and
+		// the machine is reading ESXDOS's RAM where it believes it is
+		// reading ROM. When that happens the digits stop showing the PC
+		// and show the address of the fetch that armed the automapper
+		// instead, which says whether a trap fired that should not have
+		// or an exit was lost.
+		if (divmmc_paged_in == 1'b0) begin
+			dm_gap   <= 24'd0;
+			dm_stuck <= 1'b0;
+		end else if (dm_gap >= DIAG_GAP) begin
+			dm_stuck <= 1'b1;
+		end else begin
+			dm_gap <= dm_gap + 24'd1;
+		end
+
+		// And whether it is being clocked at all. A stopped clock enable
+		// and a CPU held on WAIT look identical from outside - both stop
+		// fetching - so the two are worth telling apart before guessing.
+		if (cpu_clken_gated == 1'b1) begin
+			ce_gap  <= 24'd0;
+			ce_dead <= 1'b0;
+		end else if (ce_gap >= DIAG_GAP) begin
+			ce_dead <= 1'b1;
+		end else begin
+			ce_gap <= ce_gap + 24'd1;
+		end
+
+		pc_div <= pc_div + 24'd1;
+		if (cpu_dead == 1'b1 || pc_div >= 24'd13999999) begin
+			pc_div   <= 24'd0;
+			opa_show <= opa_last;
+		end
+	end
+	wire [15:0] diag_show = dm_stuck ? divmmc_trap_addr : opa_show;
+	wire [3:0] pc_nibble = (digit_scan == 2'd3) ? diag_show[15:12] :
+	                       (digit_scan == 2'd2) ? diag_show[11:8]  :
+	                       (digit_scan == 2'd1) ? diag_show[7:4]   :
+	                                              diag_show[3:0];
+
+	// Silkscreen numbering runs opposite to the LED[] index, so LED[3] is
+	// the leftmost lamp (silkscreen LED1) and LED[0] the rightmost
+	// (LED4). Active low.
+	//
+	// The four lamps are now the four slot flags. Whether a machine comes
+	// up on a ROM loaded from the card is decided by these four bits and
+	// nothing else, so when a menu does not appear this is the first
+	// thing worth seeing. They are set by the loader, and cleared only by
+	// reconfiguring the FPGA or by F11 with SPACE held down.
+	//
+	//   LED1, leftmost  - 128K slot filled
+	//   LED2            - Pentagon slot filled
+	//   LED3            - TR-DOS slot filled
+	//   LED4, rightmost - disk image slot filled
+	assign LED[3] = ~rom_slot_filled[0];
+	assign LED[2] = ~rom_slot_filled[1];
+	assign LED[1] = ~rom_slot_filled[2];
+	assign LED[0] = ~rom_slot_filled[3];
+
+	wire [3:0] nibble = pc_nibble;
+	wire [3:0] nibble_unused = any_trim ?
+	                    ((trim_show == 2'd1) ?
 	                     ((digit_scan == 2'd3) ? 4'he :  // E, IO window
 	                      (digit_scan == 2'd2) ? 4'd0 :
 	                      (digit_scan == 2'd1) ? {3'b000, io_adj[4]} :
@@ -2036,13 +2535,31 @@ module spectrum_top (
 	                    (digit_scan == 2'd1) ? pg_tens :
 	                                           pg_units;
 
-	wire digit_blank = any_trim ? 1'b0 :
+	wire digit_blank = 1'b0;
+	wire digit_blank_unused = any_trim ? 1'b0 :
 	                   ((digit_scan == 2'd1) && (page_ram_sel < 6'd10));
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in
 	// Point after the first digit only where the speed has a fraction -
 	// "3.5" and "7.0" - not on "14" or "28".
-	wire digit_dp    = ((digit_scan == 2'd3) &&
+	// The decimal points are four more free bits: the point is scanned
+	// per digit like the segments are, so each one can carry something
+	// different. What they say is which memory the address on the digits
+	// above them actually belongs to - the same number means completely
+	// different things depending on what is paged in, and reading it
+	// wrong is how an address in ESXDOS's own RAM gets looked up in a
+	// ROM listing.
+	//
+	//   point 1, leftmost  - the digits are the DivMMC trap address, not
+	//                        the PC: the automapper has been stuck on
+	//   point 2            - DivMMC is paged in ($2000-$3FFF is its RAM)
+	//   point 3            - the TR-DOS ROM is paged in
+	//   point 4, rightmost - the machine ROM is coming from the SD slots
+	wire digit_dp    = (digit_scan == 2'd3) ? dm_stuck        :
+	                   (digit_scan == 2'd2) ? divmmc_paged_in :
+	                   (digit_scan == 2'd1) ? trdos_active    :
+	                                          rom_from_sd;
+	wire digit_dp_unused = ((digit_scan == 2'd3) &&
 	                    (any_trim || (cpu_speed == 2'd0) || (cpu_speed == 2'd1))) ||
 	                   (divmmc_paged_in && (digit_scan == 2'd0));
 

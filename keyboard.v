@@ -81,6 +81,7 @@ module keyboard (
 	END,
 	KPSUB,
 	KPADD,
+	SPACEKEY,
 	ROW_ANY
 );
 
@@ -117,6 +118,9 @@ module keyboard (
 	// T-state a press, without touching the memory window.
 	output reg      KPSUB;
 	output reg      KPADD;
+	// Space, brought out so a reset can be told to forget the loaded
+	// slots and let DivMMC come back up.
+	output reg      SPACEKEY;
 	// Per-row 'something is held in this row', for finding a stuck bit
 	output  [7:0]   ROW_ANY;
 
@@ -205,6 +209,7 @@ module keyboard (
 			END  <= 1'b0;
 			KPSUB  <= 1'b0;
 			KPADD  <= 1'b0;
+			SPACEKEY <= 1'b0;
 		end else begin
 			if (keyb_valid == 1'b1) begin
 				if (keyb_data == 8'he0) begin
@@ -295,7 +300,10 @@ module keyboard (
 						8'h3b: keys[6][3] <= release_key; // J
 						8'h33: keys[6][4] <= release_key; // H
 
-						8'h29: keys[7][0] <= release_key; // SPACE
+						8'h29: begin // SPACE
+							keys[7][0] <= release_key;
+							SPACEKEY   <= ~release_key;
+						end
 						8'h14: keys[7][1] <= release_key; // CTRL (Symbol Shift)
 						8'h3a: keys[7][2] <= release_key; // M
 						8'h31: keys[7][3] <= release_key; // N

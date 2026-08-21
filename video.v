@@ -287,40 +287,37 @@ module video (
 	assign CONTENTION = vpicture & ~hc_cont[9]
 	                    & (hc_cont[4:2] < cont_span);
 
-	// A second window for IO, one T-state earlier than the memory one.
+	// The IO window, kept as a separate signal only so IO_ADJ can trim it.
 	//
-	// The two need to differ now, where before they did not. Memory
-	// contention is charged against T1 of the machine cycle, taken from
-	// the CPU's own T-state count. IO contention has nothing to key on
-	// but IORQ, which a Z80 asserts in T2 - so its charge lands a
-	// T-state after the cycle it belongs to began, and against a single
-	// shared window every IO delay came out one T-state short of the
-	// published table. Measured directly: a program writing the border
-	// at a fixed instruction spacing was charged 3 T-states where the
-	// table gives 4, at every phase with real statistics behind it.
+	// It was genuinely a second window for a while, offset from memory,
+	// because memory is charged against T1 of the machine cycle while IO
+	// was charged off IORQ, which T80se does not show until T2. Against a
+	// shared window every IO delay then came out a T-state short of the
+	// published table - measured, a program writing the border at a fixed
+	// instruction spacing was charged 3 where the table gives 4, at every
+	// phase with real statistics behind it. The window was moved to +8 on
+	// the board to make up for it.
 	//
-	// Splitting the window was tried once before and reverted, correctly
-	// at the time: back then memory was charged off MREQ, which T80se
-	// also produces in T2, so the two genuinely did agree and giving
-	// them separate windows introduced a difference the hardware does
-	// not have. Moving memory onto T1 is what made them disagree.
-	// The lead was -4 counts, one T-state ahead of the memory window.
-	// It is +8 - two T-states behind it - and that was found on the
-	// board, not derived: with the trim brought out on the keypad the
-	// stripes in ula48 line up at IO_ADJ +3 from the old value, and the
-	// bird demo's border stops leaning right at and below the raster on
-	// the same setting.
+	// That was treating the symptom. The walk now starts at the IO cycle's
+	// real T1 (spectrum_top.v, io_cyc off the microcode's IO_CYC), so the
+	// missing T-state is gone at its source and the offset below is zero.
 	//
-	// It is only the window's position that was wrong, not the pattern.
-	// ioscan.hex sweeps an OUT to $02FE - high byte outside the
-	// contended page, the case ula48 uses and the one nothing here had
-	// ever measured - across every phase, and the delays come out
-	// 4,3,2,1 on phases 1..4 and 0 on phase 6, which is the published
-	// N:1,C:3 row exactly. A pattern that is already right in the wrong
-	// place is what displaces a stream of OUTs progressively along the
-	// line, and that is the shape the squares demo showed: one edge out
-	// by four pixels, the next by eight.
-	wire signed [12:0] hi_sum  = hc_sum + 13'sd8
+	// The pattern was never the problem. ioscan.hex sweeps an OUT to
+	// $02FE - high byte outside the contended page, the case ula48 uses -
+	// across every phase, and the delays come out 4,3,2,1 on phases 1..4
+	// and 0 on phase 6, the published N:1,C:3 row exactly. A right pattern
+	// in the wrong place is what displaces a stream of OUTs progressively
+	// along the line, which is the shape the squares demo showed: one edge
+	// out by four pixels, the next by eight.
+	//
+	// FUSE, where both of these demos render right, has no second window
+	// at all: machines/spec48.c gives contend_delay and contend_delay_no_
+	// mreq as the same function, machine.c fills both tables from it, and
+	// memory and IO index that one table with the same absolute T-state.
+	// IO_ADJ stays because the board is the only thing that can answer a
+	// question, but it is a trim now and not a correction: if the model is
+	// right it reads zero.
+	wire signed [12:0] hi_sum  = hc_sum
 	                             + {{6{IO_ADJ[4]}}, IO_ADJ, 2'b00};
 	wire signed [12:0] hi_wrap =
 		(hi_sum < 0)      ? (hi_sum + hline) :
@@ -456,6 +453,7 @@ module video (
 	assign nHCSYNC = (VGA == 1'b0) ? ~(vsync ^ hsync) : ~hsync;
 	assign SCANLINE = vcounter[0];
 
+
 	// Determine the pixel colour
 	assign dot = pixels[9] ^ (flashcounter[4] & attr[7]); // Combine delayed pixel with FLASH attr and clock state
 	assign red = (picture == 1'b1 && dot == 1'b1) ? attr[1] :
@@ -582,8 +580,7 @@ module video (
 	// counts - two T-states - into the tail of the previous line. See
 	// int_hpos_base.
 	wire [8:0] int_line_base =
-		(MACHINE == MACHINE_PENT) ? 9'd239 :
-		(MACHINE == MACHINE_S48)  ? 9'd247 : 9'd248;
+		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd248;
 	// Interrupt position. The table entry is zx-sizif-512's converted;
 	// Pentagon's was then set on the board, where the picture drawn in
 	// the border shows it directly.
@@ -627,9 +624,29 @@ module video (
 	// 247 rather than 248 above. What the CPU is shown is now 14338
 	// before the first pixel, and it acknowledges where a Z80 handed the
 	// interrupt at 14336 would.
+	// 48K is back at the value b1e517e DERIVED rather than tuned: a 48K
+	// puts exactly 14336 T-states between the interrupt and the first
+	// pixel, and 64 whole lines at the picture's own horizontal start is
+	// 64 * 896 = 57344 counts = 14336 T. Line 248, position 8.
+	//
+	// It had since been walked back four T-states in two steps - 8 -> 0
+	// (4fac427) and then 0 -> 888 with the line at 247 (219544b) - each
+	// time to cancel the CPU-side latency before the interrupt. That
+	// reasoning does not hold for a demo that synchronises on HALT.
+	// Moving the interrupt and removing latency enter the acceptance as
+	// the same sum, so they are interchangeable; but the acceptance lands
+	// on the CPU's 4-T-state poll grid either way, so neither can move it
+	// by less than four. Measured on the board with the phase brought out
+	// on keypad 0 and . : four consecutive trim values change nothing at
+	// all, then it jumps eight pixels. Compensating here bought a jump
+	// between grid points and was read as progress.
+	//
+	// So the compensation comes out and the derived figure goes back in.
+	// What is left over after it - four pixels on the birds demo - is not
+	// in the acceptance at all, and no value here will reach it.
 	wire [9:0] int_hpos_base =
 		(MACHINE == MACHINE_PENT) ? 10'd622 :
-		(MACHINE == MACHINE_S48)  ? 10'd888 :
+		(MACHINE == MACHINE_S48)  ? 10'd8   :
 		lines228                  ? 10'd8   :
 		                            10'd0;
 	// Wrapped into the line rather than added raw.

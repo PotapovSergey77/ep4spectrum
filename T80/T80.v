@@ -1035,7 +1035,19 @@ module T80 (
 								if (NMI_s == 1'b1 && Prefix == 2'b00) begin
 									NMICycle <= 1'b1;
 									IntE_FF1 <= 1'b0;
-								end else if ((IntE_FF1 == 1'b1 && INT_s == 1'b1) && Prefix == 2'b00 && SetEI == 1'b0) begin
+								// INT is tested live here, not through INT_s.
+								//
+								// A Z80 samples INT on the clock edge that ends the last
+								// T-state of an instruction. INT_s is that pin one CEN
+								// old, so testing it made the core a whole T-state late -
+								// measured out of HALT as a 2..5 T-state wait where a Z80
+								// can only give 0..3.
+								//
+								// Safe to read directly here: INT_n comes from the video
+								// counter on this same clock, so there is no asynchronous
+								// crossing for INT_s to have been guarding. INT_s is left
+								// in place for a core fed a genuinely async pin.
+								end else if ((IntE_FF1 == 1'b1 && INT_n == 1'b0) && Prefix == 2'b00 && SetEI == 1'b0) begin
 									IntCycle <= 1'b1;
 									IntE_FF1 <= 1'b0;
 									IntE_FF2 <= 1'b0;
