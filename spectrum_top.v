@@ -1600,17 +1600,24 @@ module spectrum_top (
 
 	// Where each drive lives.
 	//
-	//   A  rom_addr $14000, 48K - the boot image, write protected so a
-	//      stray seek cannot walk into B and so it survives a format
-	//   B  rom_addr $20000, 640K - a full double-sided disk, empty at
-	//      power-up and writable. This is the RAM disk: it costs the
-	//      machine none of its own memory and survives a reset.
+	//   A  rom_addr $14000, 32K - the boot image
+	//   B  rom_addr $1C000, 640K - a full double-sided disk, empty at
+	//      power-up. This is the RAM disk: it costs the machine none of
+	//      its own memory and survives a reset.
 	//   C, D  nothing. Reporting no disk beats showing a third and
 	//      fourth copy of A, which is what ignoring the drive select
 	//      produced.
-	wire [19:0] drive_base = (bdi_drive == 2'd0) ? 20'h14000 : 20'h20000;
+	//
+	// Neither is write protected. A was, as a cheap way to stop a stray
+	// seek on the small drive walking into the big one - and TR-DOS put
+	// "Read Only" on the screen for it, which is worse than the problem
+	// it solved. The offset is masked to A's own 32K instead, so it is
+	// confined by arithmetic rather than by refusing to write.
+	wire [19:0] drive_base = (bdi_drive == 2'd0) ? 20'h14000 : 20'h1C000;
+	wire [19:0] drive_off  = (bdi_drive == 2'd0) ? {5'd0, bdi_img_addr[14:0]}
+	                                             : bdi_img_addr;
 	wire [3:0]  drive_present = {2'b00, 1'b1, disk_loaded};
-	wire [3:0]  drive_wprot   = {2'b00, 1'b0, 1'b1};
+	wire [3:0]  drive_wprot   = 4'b0000;
 	bdi u_bdi (
 		.clk(clock),
 		.clken(cpu_clken_gated),
@@ -2288,7 +2295,7 @@ module spectrum_top (
 	// Proteus loads goes to its RAM disk, not through here.
 	wire [19:0] disk_addr = 20'h14000 + romld_cnt;
 	assign cpu_addr =
-		(bdi_img_rd | bdi_img_wr) ? {1'b1, drive_base + bdi_img_addr} :
+		(bdi_img_rd | bdi_img_wr) ? {1'b1, drive_base + drive_off} :
 		((romld_write | romld_read) & disk_slot) ? {1'b1, disk_addr} :
 		(ram_enable == 1'b1) ? {1'b0, ram_addr} : {1'b1, rom_addr};
 

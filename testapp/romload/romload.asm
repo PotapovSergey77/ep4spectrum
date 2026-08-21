@@ -49,12 +49,9 @@ SLOT_DISK       equ 3
 
 SCRWIDTH        equ 32
 
-; The disk slot lives in the RAM half of SDRAM at $40000 and the byte
-; counter is 20 bits. The image now lives in the ROM half at $14000,
-; below DivMMC at $80000, so 432K is what fits there. Counted
-; in 256-byte blocks, because a byte count that large does not fit in
-; the 16-bit arithmetic the rest of this uses.
-DISK_MAXBLK     equ 1728
+; The boot image goes into drive A, which is 32K at rom_addr $14000 -
+; drive B starts right after it. Counted in 256-byte blocks.
+DISK_MAXBLK     equ 128
 
 
 ; Buffers live in the command's own space, which is what the 8K at
