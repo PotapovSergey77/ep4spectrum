@@ -101,6 +101,13 @@ module spectrum_top (
 	// 2 = +2A/+3
 	parameter MODEL = 0;
 
+	// Simulation only. The boot zeroes 131072 SDRAM locations one per
+	// slot, which is 75ms of modelled time and about five minutes of
+	// waiting per run - all of it before anything interesting happens.
+	// Hardware needs every one of them; a simulator starts its memory
+	// from a known value anyway.
+	parameter SIM = 0;
+
 	// The AY-3-8912 (via YM2149) is wired in unconditionally below, even
 	// though real 48K Spectrums didn't have one - same "48K + AY" hybrid
 	// used by Pentagon and other clones, chosen because a real 128K ROM
@@ -205,6 +212,9 @@ module spectrum_top (
 	// Quartus tolerates using a net before its declaration where
 	// ModelSim does not.
 	wire            trdos_avail;
+	wire            trdos_active;
+	wire            disk_loaded;
+	reg     [1:0]   romld_slot = 2'd0;
 	// Same reason: the DivMMC instance above needs to know whether the
 	// machine ROM is coming from the slots, and that is decided a
 	// thousand lines below.
@@ -594,13 +604,30 @@ module spectrum_top (
 	// The write request is presented for a whole CPU slot rather than
 	// pulsed, so address and data stay put for the entire SDRAM
 	// transaction (see the pacing comment on the state machine below).
-	wire        boot_copy_wr = boot_copy_active & boot_settle_done;
+	// ZERO FIRST, THEN COPY. It used to be the other way round, and the
+	// two passes overlapped: the zeroing covers DivMMC RAM pages 0 to 15
+	// as {2'b11, 2'b01, page, offset}, and the mapram copy writes
+	// {2'b11, 6'b010011, offset} - which for page 3 is the same eight
+	// leading bits, 11010011. So the copy carefully seeded bank 3 with
+	// the ESXDOS image and the zeroing then wiped it, every boot, and the
+	// mapram pass was doing nothing at all.
+	//
+	// Nothing noticed because nothing used bank 3: MAPRAM was never set.
+	// The moment it was, $0000-$1FFF became eight kilobytes of zeros and
+	// the machine came up with a black screen.
+	//
+	// Simulation could not have caught it either - tb_top.v pokes the
+	// image into both locations itself and then forces the copy counter
+	// to the end, so bank 3 is populated there whatever the hardware
+	// does.
+	wire        boot_copy_wr = boot_copy_active & ~boot_zero_active
+	                           & boot_settle_done;
 
 	// Second boot phase: zero the DivMMC sram pages (see the state
 	// machine below for why).
 	reg         boot_zero_active = 1'b1;
 	reg  [16:0] boot_zero_addr   = 17'd0;
-	wire        boot_zero_wr = boot_zero_active & ~boot_copy_active & boot_settle_done;
+	wire        boot_zero_wr = boot_zero_active & boot_settle_done;
 
 	// During the boot copy the ROM follows the copy counter; afterwards
 	// it follows the CPU, so the DivMMC fixed 8K can be served straight
@@ -636,9 +663,9 @@ module spectrum_top (
 			boot_zero_addr      <= 17'd0;
 		end else begin
 			if (slot_tick == 1'b1
-			    && boot_copy_active == 1'b0 && boot_zero_active == 1'b1
+			    && boot_zero_active == 1'b1
 			    && boot_settle_done == 1'b1) begin
-				// Clear the 16 DivMMC sram pages once the ROM is in place.
+				// Clear the 16 DivMMC sram pages BEFORE the ROM copy runs.
 				//
 				// ESXDOS keeps tables in this window and expects to find
 				// zeroed entries in them. Launching a TRD hangs without
@@ -650,13 +677,14 @@ module spectrum_top (
 				// at 0x034C-0x0354 with the DivMMC ROM paged in. Real
 				// DivMMC SRAM powers up arbitrarily too, so this is the
 				// sort of thing that works by luck rather than by design.
-				if (boot_zero_addr == 17'd131071)
+				if (boot_zero_addr == (SIM ? 17'd1023 : 17'd131071))
 					boot_zero_active <= 1'b0;
 				else
 					boot_zero_addr <= boot_zero_addr + 17'd1;
 			end
 			if (slot_tick == 1'b1
-			    && boot_copy_active == 1'b1 && boot_settle_done == 1'b1) begin
+			    && boot_copy_active == 1'b1 && boot_zero_active == 1'b0
+			    && boot_settle_done == 1'b1) begin
 				if (boot_copy_addr == 15'd16383)
 					boot_copy_active <= 1'b0;
 				else
@@ -1575,7 +1603,6 @@ module spectrum_top (
 		            (s == 2'd1) ? 5'd1 : 5'd2;
 	endfunction
 
-	reg [1:0]  romld_slot      = 2'd0;
 	reg [19:0] romld_cnt       = 20'd0;
 	reg [3:0]  rom_slot_filled = 4'b0000;
 	reg        romld_wr_d      = 1'b0;
@@ -1655,7 +1682,7 @@ module spectrum_top (
 	// slot ROM with DivMMC stood down, and the only way back to ESXDOS
 	// was a power cycle. Now the choice is a keypress and a reset, in
 	// either direction, and the slots keep their contents either way.
-	wire       disk_loaded  = rom_slot_filled[3];
+	assign     disk_loaded  = rom_slot_filled[3];
 	wire       rom_sd_ready = ((machine == MACHINE_S128) & rom_slot_filled[0])
 	                        | ((machine == MACHINE_PENT) & rom_slot_filled[1]);
 
@@ -1726,7 +1753,7 @@ module spectrum_top (
 	// nothing depends on it being immediate.
 	wire trdos_now = trdos_avail & (~cpu_m1_n) & (~cpu_mreq_n) & (~cpu_rd_n)
 	                 & (cpu_a[15:8] == 8'h3d) & page_rom_sel;
-	wire trdos_active = trdos_paged | trdos_now;
+	assign trdos_active = trdos_paged | trdos_now;
 
 	always @(posedge clock) begin
 		if (reset_n == 1'b0)

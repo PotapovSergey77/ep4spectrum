@@ -42,7 +42,7 @@ module tb_top;
 	wire PS2_CLK  = 1'b1;
 	wire PS2_DATA = 1'b1;
 
-	spectrum_top dut (
+	spectrum_top #(.SIM(1)) dut (
 		.CLOCK_50(CLOCK_50),
 		.RESET_BTN(RESET_BTN),
 		.KEY(KEY),
@@ -475,8 +475,10 @@ module tb_top;
 	reg [255:0] flname;
 	reg flm1_d = 1'b0;
 	initial begin
-		if ($value$plusargs("FETCHLOG=%s", flname))
-			fl = $fopen(flname, "w");
+		// Fixed name: a plusarg string arrives padded with leading NULs
+		// and $fopen quietly gives back a handle that does not work.
+		if ($test$plusargs("FETCHLOG"))
+			fl = $fopen("fetch.log", "w");
 	end
 	always @(posedge dut.clock) begin
 		if (fl != 0 && dut.reset_n === 1'b1) begin
@@ -2184,5 +2186,54 @@ end
 		                    : chip.mem[byte_addr[24:1]][7:0];
 	end
 	endfunction
+
+
+	// --- The $3Dxx entry during the DivMMC boot -------------------------
+	//
+	// Setting MAPRAM there, which the specification says the entry does,
+	// gave a dead machine. The suspicion is that bank 3 - what MAPRAM
+	// puts under $0000-$1FFF - is still empty when the boot first passes
+	// through the page, so the swap lands the CPU in unwritten SDRAM.
+	//
+	// Bank 3 of DivMMC RAM is cpu_addr $1A6000-$1A7FFF, so its top eight
+	// bits are $D3. This counts writes that land there, and reports the
+	// tally at the first $3Dxx fetch - which either confirms the theory
+	// outright or kills it.
+	integer b3_writes = 0;
+	integer dm_writes = 0;
+	integer n_fetch   = 0;
+	reg     seen_3d   = 1'b0;
+	reg     m1_e3     = 1'b0;
+	always @(posedge dut.clock) begin
+		if (dut.reset_n === 1'b1) begin
+			if (dut.slot_tick_d2 === 1'b1 && dut.prev_own === 2'd1
+			    && dut.cpu_we_held === 1'b1) begin
+				if (dut.cpu_addr_held[20:13] === 8'hD3)
+					b3_writes = b3_writes + 1;
+				if (dut.cpu_addr_held[20] === 1'b1)
+					dm_writes = dm_writes + 1;
+			end
+
+			if (!dut.cpu_m1_n && !dut.cpu_mreq_n && !dut.cpu_rd_n) begin
+				if (!m1_e3) begin
+					n_fetch = n_fetch + 1;
+					if (dut.cpu_a[15:8] === 8'h3d && !seen_3d) begin
+						seen_3d = 1'b1;
+						$display("[%0t] FIRST 3Dxx: addr=%04h fetch#%0d bank3_writes=%0d romhalf_writes=%0d mapram=%b conmem=%b page=%h paged_in=%b",
+							$time, dut.cpu_a, n_fetch, b3_writes, dm_writes,
+							dut.divmmc_mapram, dut.divmmc_conmem,
+							dut.divmmc_sram_page, dut.divmmc_paged_in);
+					end
+				end
+				m1_e3 <= 1'b1;
+			end else
+				m1_e3 <= 1'b0;
+		end
+	end
+	initial begin
+		#(run_len_us(0) * 1000 - 1_000);
+		$display("BOOT SUMMARY: fetches=%0d first3d=%b bank3_writes=%0d romhalf_writes=%0d",
+			n_fetch, seen_3d, b3_writes, dm_writes);
+	end
 
 endmodule
