@@ -657,7 +657,23 @@ module video (
 	// pixels, which is what two T-states look like.
 	wire [9:0] int_hpos_base =
 		(MACHINE == MACHINE_PENT) ? 10'd630 :
-		(MACHINE == MACHINE_S48)  ? 10'd8   :
+		// 48K moves 8 -> 0: four pixels LEFT, the mirror of Pentagon.
+		//
+		// ula48 draws its border with timed OUTs and its raster from
+		// screen memory, so a border sitting four pixels right of the
+		// raster is the phase between the interrupt and the sweep, not
+		// where the picture starts - moving the display origin would
+		// carry both and change nothing between them. Eight steps is two
+		// T-states, and two T-states is what the CPU used to lose before
+		// taking an interrupt.
+		//
+		// Worth saying plainly: 8 was put here as the figure derived
+		// from 14336 and checked against libspectrum, so zero is two
+		// T-states away from the reference. Either the derivation has an
+		// end-point off by that much or our sweep starts two T-states
+		// early - the board says the border is four pixels out, and
+		// that is the measurement in hand.
+		(MACHINE == MACHINE_S48)  ? 10'd0   :
 		lines228                  ? 10'd8   :
 		                            10'd0;
 	// Wrapped into the line rather than added raw.
