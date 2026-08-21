@@ -1585,18 +1585,24 @@ module spectrum_top (
 			romld_cnt       <= 20'd0;
 			romld_wr_d      <= 1'b0;
 		end else begin
-			if (cpu_clken_gated == 1'b1) begin
-				if (romld_ctl_enable == 1'b1 && cpu_wr_n == 1'b0) begin
-					romld_slot <= cpu_do[1:0];
-					if (cpu_do[2] == 1'b1) romld_cnt <= 20'd0;
-				end
-				// Stepped when the write ENDS, not while it is asserted: the
-				// CPU is held through the arbiter's grant and the level would
-				// otherwise count the same byte several times over.
-				romld_wr_d <= romld_write | romld_read;
-				if (romld_wr_d == 1'b1 && (romld_write | romld_read) == 1'b0)
-					romld_cnt <= romld_cnt + 20'd1;
+			// Not gated by the CPU clock enable, for the same reason as
+			// the filled flags: the port, the data and WR hold for the
+			// whole OUT, so acting on every clock of it is idempotent,
+			// while waiting for an enable pulse made it depend on where
+			// a contention stall happened to fall. A ROM survived that
+			// because a miscount only shifts one image; a disk image is
+			// hundreds of blocks and a single miscounted byte moves
+			// every sector after it.
+			if (romld_ctl_enable == 1'b1 && cpu_wr_n == 1'b0) begin
+				romld_slot <= cpu_do[1:0];
+				if (cpu_do[2] == 1'b1) romld_cnt <= 20'd0;
 			end
+			// Stepped when the write ENDS, not while it is asserted: the
+			// CPU is held through the arbiter's grant and the level would
+			// otherwise count the same byte several times over.
+			romld_wr_d <= romld_write | romld_read;
+			if (romld_wr_d == 1'b1 && (romld_write | romld_read) == 1'b0)
+				romld_cnt <= romld_cnt + 20'd1;
 		end
 	end
 

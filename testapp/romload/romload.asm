@@ -45,8 +45,23 @@ CTL_FILL        equ $08         ; bit 3: mark this slot filled
 SLOT_128        equ 0
 SLOT_PENT       equ 1
 SLOT_TRDOS      equ 2
+SLOT_DISK       equ 3
 
 SCRWIDTH        equ 32
+
+; The disk slot lives in the RAM half of SDRAM at $40000 and the byte
+; counter is 20 bits, so 640K - a full double-sided 80-track TRD - is
+; the most that will fit before it would run into anything else. Counted
+; in 256-byte blocks, because a byte count that large does not fit in
+; the 16-bit arithmetic the rest of this uses.
+DISK_MAXBLK     equ 2560
+
+; The bar for a disk cannot mean percent: a .trd is whatever length it
+; is, and nothing here knows that before reading it. It is an activity
+; bar instead - one star per eight blocks, 2K a star - and it is topped
+; up to the full width when the file ends, so the line still finishes
+; flush right and still means done.
+DISK_BLKPERSTAR equ 8
 
 
 ; Buffers live in the command's own space, which is what the 8K at
@@ -90,6 +105,11 @@ start:
                 ld      a,SLOT_TRDOS
                 call    one_rom
 
+                ; The disk last, and optional: a machine with TR-DOS but
+                ; no disk in the drive is a perfectly ordinary machine,
+                ; and it is how the board came up before slot 3 existed.
+                call    one_disk
+
                 ; Nothing loaded at all is the case worth spelling out.
                 ; Three bare "not on card" lines say what happened but
                 ; not what to do about it.
@@ -119,25 +139,7 @@ done:           or      a               ; carry clear: no error to ESXDOS
 ; ---------------------------------------------------------------------
 one_rom:        ld      (slot),a
                 ld      (want),de
-
-                ; The name, then one space. What is left of the line is
-                ; the bar, so its width is measured rather than fixed -
-                ; "pentagon.rom" leaves five columns fewer than
-                ; "trdos.rom" and would otherwise wrap and scroll.
-                push    hl
-                call    print
-                pop     hl
-                call    namelen         ; A = length, HL kept
-                push    hl
-                ld      b,a
-                ld      a,' '
-                call    putc
-                ld      a,SCRWIDTH-1
-                sub     b
-                ld      l,a
-                ld      h,0
-                ld      (bar_w),hl
-                pop     hl
+                call    hdr
 
                 ; ESXDOS takes the filename in IX, and the string can stay
                 ; where it is - a dot command's own memory is readable by
@@ -288,6 +290,127 @@ shut:           ld      a,(handle)
                 ret
 
 ; ---------------------------------------------------------------------
+; HL = filename. Prints it and a space, and sets the bar width to
+; whatever is left of the 32-column line, so a long name simply gets a
+; coarser bar instead of wrapping and scrolling. HL comes back unchanged.
+; ---------------------------------------------------------------------
+hdr:            push    hl
+                call    print
+                pop     hl
+                call    namelen         ; A = length, HL kept
+                push    hl
+                ld      b,a
+                ld      a,' '
+                call    putc
+                ld      a,SCRWIDTH-1
+                sub     b
+                ld      l,a
+                ld      h,0
+                ld      (bar_w),hl
+                pop     hl
+                ret
+
+; ---------------------------------------------------------------------
+; one_disk: the TR-DOS disk image, into slot 3.
+;
+; Unlike a ROM this has no size to check against. A .trd is as long as
+; it is - the 640K of a full double-sided image, or the 16K of one that
+; carries a single program - and both are perfectly valid, so anything
+; that arrives is taken and only the 640K ceiling is enforced. A missing
+; file is not an error either: a TR-DOS machine with an empty drive is
+; an ordinary machine.
+; ---------------------------------------------------------------------
+one_disk:       ld      a,SLOT_DISK
+                ld      (slot),a
+                ld      hl,fn_disk
+                call    hdr
+
+                push    hl
+                pop     ix
+                ld      a,'*'           ; default drive
+                ld      b,FA_READ
+                rst     $08
+                defb    F_OPEN
+                jp      c,no_file
+                ld      (handle),a
+
+                ld      a,SLOT_DISK|CTL_RESET
+                out     (PORT_CTL),a
+
+                ld      hl,0
+                ld      (dblk),hl
+                ld      (bar_done),hl
+
+dsk_chunk:      ld      a,(handle)
+                ld      hl,buffer
+                ld      ix,buffer
+                ld      bc,RDLEN
+                rst     $08
+                defb    F_READ
+                jp      c,rd_error
+                ld      a,b
+                or      c
+                jr      z,dsk_end       ; end of the file
+
+                ; The ceiling. Past it the image would run out of the
+                ; space set aside for it and into whatever is next.
+                ld      hl,(dblk)
+                ld      de,DISK_MAXBLK
+                or      a
+                sbc     hl,de
+                jr      nc,dsk_end      ; full: keep what fits
+
+                push    bc
+                ld      a,SLOT_DISK     ; re-select, WITHOUT the reset bit
+                out     (PORT_CTL),a
+                pop     bc
+
+                ld      hl,buffer
+dsk_byte:       ld      a,(hl)
+                inc     hl
+                out     (PORT_DAT),a
+                dec     bc
+                ld      a,b
+                or      c
+                jr      nz,dsk_byte
+
+                ld      hl,(dblk)
+                inc     hl
+                ld      (dblk),hl
+                call    dsk_bar
+                jr      dsk_chunk
+
+dsk_end:        call    shut
+                ld      hl,(dblk)
+                ld      a,h
+                or      l
+                jr      z,dsk_empty     ; opened, but nothing in it
+
+                ld      a,SLOT_DISK|CTL_FILL
+                out     (PORT_CTL),a
+                jp      bar_fill
+
+dsk_empty:      call    nl
+                ld      hl,msg_empty
+                jp      print
+
+; One star per eight blocks, and never past the width of the bar.
+dsk_bar:        ld      a,(dblk)        ; low byte is enough for the test
+                and     DISK_BLKPERSTAR-1
+                ret     nz
+                ld      hl,(bar_done)
+                ld      de,(bar_w)
+                or      a
+                sbc     hl,de
+                ret     nc
+                ld      a,'*'
+                call    putc
+                ld      hl,(bar_done)
+                inc     hl
+                ld      (bar_done),hl
+                ret
+
+; ---------------------------------------------------------------------
 ; The progress bar.
 ;
 ; Bresenham, so no multiply and no divide: each block adds the bar's
@@ -405,8 +528,10 @@ lead:           defb    0
 fn_128:         defb    "128.rom",0
 fn_pent:        defb    "pentagon.rom",0
 fn_trdos:       defb    "trdos.rom",0
+fn_disk:        defb    "disk.trd",0
 
 msg_nofile:     defb    "not on card",13,0
+msg_empty:      defb    "empty",13,0
 msg_rderr:      defb    "read error",13,0
 msg_short:      defb    "wrong size, got ",0
 msg_wanted:     defb    ", wanted ",0
@@ -418,6 +543,8 @@ msg_howto:      defb    13
                 defb    "  128.rom       32768 bytes",13
                 defb    "  pentagon.rom  32768 bytes",13
                 defb    "  trdos.rom     16384 bytes",13,13
+                defb    "disk.trd is optional - a TR-DOS",13
+                defb    "image to put in the drive.",13,13
                 defb    "Staying on the 48K ROM.",13,0
 
 slot:           defb    0
@@ -425,6 +552,7 @@ handle:         defb    0
 loaded_any:     defb    0
 want:           defw    0
 count:          defw    0
+dblk:           defw    0
 bar_w:          defw    0
 blk_tot:        defw    0
 bar_done:       defw    0
