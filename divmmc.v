@@ -105,7 +105,26 @@ reg paged_in_r;
 // cycle that asks, at any speed. The other triggers are deliberately
 // left alone: they are specified as taking effect AFTER their cycle,
 // and moving them is what broke 14MHz in an earlier attempt.
-wire auto_now = (!mreq_n && !rd_n && !m1_n && a[15:8] == 8'h3D && !beta_owns_3d);
+// The $3Dxx entry, switched off.
+//
+// It is a DivIDE feature meant for TR-DOS emulation, and DivMMC boards
+// commonly leave it out. The evidence says this one should too. On a
+// real 48K with a real DivMMC the same test probes for TR-DOS, does not
+// find it - correctly, there is none there - and carries on. Here the
+// probe armed the automapper, and nothing ever disarmed it: the exit is
+// an opcode fetch at $1FF8-$1FFF, and a probe that reads and returns
+// never executes one. From that moment DivMMC's RAM covers $2000-$3FFF
+// for the rest of the program, the top half of the 48K ROM is gone, and
+// the next call into it runs ESXDOS's data as code. That is the hang at
+// $35AA, and it is why the machine dies a screen AFTER the probe rather
+// than at it.
+//
+// Left in place rather than deleted: if the boot turns out to need it,
+// this is one line to put back.
+localparam TRAP_3D = 1'b0;
+
+wire auto_now = (TRAP_3D && !mreq_n && !rd_n && !m1_n
+                 && a[15:8] == 8'h3D && !beta_owns_3d);
 assign paged_in = paged_in_r | auto_now;
 
 // Declared before use: Quartus accepts use-before-declaration,
@@ -242,7 +261,7 @@ always @(posedge clk) begin
 			// activate automapper after this cycle
 			m1_trigger <= 1'b1;
 			trap_addr  <= a;
-		end else if (!mreq_n && !rd_n && !m1_n && a[15:8]==8'h3D
+		end else if (TRAP_3D && !mreq_n && !rd_n && !m1_n && a[15:8]==8'h3D
 		             && !beta_owns_3d) begin
 			// activate automapper immediately
 			paged_in_r <= 1'b1;
