@@ -273,6 +273,7 @@ set_global_assignment -name VERILOG_FILE ps2_intf.v
 set_global_assignment -name VERILOG_FILE spectrum_top.v
 set_global_assignment -name VERILOG_FILE ula_port.v
 set_global_assignment -name VERILOG_FILE bdi.v
+set_global_assignment -name VERILOG_FILE zcontroller.v
 set_global_assignment -name VERILOG_FILE video.v
 set_global_assignment -name VERILOG_FILE rom48.v
 set_global_assignment -name VERILOG_FILE rom128.v

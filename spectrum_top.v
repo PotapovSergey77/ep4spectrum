@@ -1471,9 +1471,40 @@ module spectrum_top (
 		.wait_n(divmmc_wait_n),
 		.trap_addr(divmmc_trap_addr)
 	);
-	assign SD_CS = divmmc_cs;
-	assign SD_SCK = divmmc_sclk;
-	assign SD_MOSI = divmmc_mosi;
+	// --- Z-Controller ---------------------------------------------------
+	//
+	// The Pentagon way to the card: two ports, $77 for power and /CS and
+	// $57 for a byte, and no involvement in the memory map at all. It is
+	// what lets Proteus - already running from the disk image in slot 3 -
+	// read the SD card itself, which puts the whole of the FAT work in
+	// software that exists rather than in logic or in a dot command.
+	//
+	// Live only on a machine running a ROM out of the slots, which is
+	// where DivMMC is stood down anyway. That keeps exactly one owner of
+	// the card at a time and makes the pin mux below a single choice
+	// rather than an arbitration.
+	wire       zc_enable = rom_from_sd & (~cpu_ioreq_n) & cpu_m1_n;
+	wire [7:0] zc_do;
+	wire       zc_cs_n, zc_sck, zc_mosi, zc_wait_n;
+	zcontroller u_zc (
+		.clk(clock),
+		.reset_n(reset_n),
+		.enable(zc_enable),
+		.a(cpu_a[7:0]),
+		.wr_n(cpu_wr_n),
+		.rd_n(cpu_rd_n),
+		.din(cpu_do),
+		.dout(zc_do),
+		.sd_cs_n(zc_cs_n),
+		.sd_sck(zc_sck),
+		.sd_mosi(zc_mosi),
+		.sd_miso(SD_MISO),
+		.wait_n(zc_wait_n)
+	);
+
+	assign SD_CS   = rom_from_sd ? zc_cs_n : divmmc_cs;
+	assign SD_SCK  = rom_from_sd ? zc_sck  : divmmc_sclk;
+	assign SD_MOSI = rom_from_sd ? zc_mosi : divmmc_mosi;
 	assign divmmc_miso = SD_MISO;
 
 	// Asynchronous reset
@@ -2046,7 +2077,7 @@ module spectrum_top (
 
 	// What T80 is actually given: held by the arbiter or by an in-flight
 	// DivMMC SPI transfer, whichever wants it.
-	assign cpu_wait_all_n = cpu_wait_n & divmmc_wait_n;
+	assign cpu_wait_all_n = cpu_wait_n & divmmc_wait_n & zc_wait_n;
 
 	// CPU data bus mux
 	assign cpu_di =
@@ -2074,6 +2105,14 @@ module spectrum_top (
 		((psg_enable == 1'b1) && (cpu_a[14] == 1'b1)) ? psg_do :
 		(bdi_img_rd == 1'b1) ? mem_do :
 		(bdi_enable == 1'b1) ? bdi_do :
+		// After the Beta, not before it. $57 and $77 both fall inside
+		// the Beta's register decode - A7 low with A6:A5 picking the
+		// register - so while the TR-DOS ROM is paged the disk wins,
+		// exactly as it does on real hardware. Programs that talk to
+		// the card have paged TR-DOS out by then, which happens on
+		// their first fetch at $4000 or above.
+		((zc_enable == 1'b1) && ((cpu_a[7:0] == 8'h57)
+		                      || (cpu_a[7:0] == 8'h77))) ? zc_do :
 		(divmmc_enable == 1'b1) ? divmmc_do :
 		// map kempston joystick port - no joystick hardware on this board, idle
 		(kempston_enable == 1'b1) ? 8'b00000000 :
