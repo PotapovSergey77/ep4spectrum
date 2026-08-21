@@ -88,6 +88,42 @@ module bdi (
 	reg         reading  = 1'b0;
 	assign      img_busy = reading;
 
+	// --- READ ADDRESS ---------------------------------------------------
+	//
+	// Six bytes: track, side, sector, sector-length code, and two CRC
+	// bytes. TR-DOS uses this to find out what is under the head, and
+	// with nothing answering it decides there is no disk - which is what
+	// CAT and LIST were both reporting. It is served from here rather
+	// than out of the image, so img_busy stays low and the top level
+	// leaves the data register to us.
+	reg  [2:0]  adr_idx = 3'd0;
+	reg         rd_adr  = 1'b0;
+	wire [7:0]  adr_byte = (adr_idx == 3'd0) ? r_track       :
+	                       (adr_idx == 3'd1) ? {7'd0, side}  :
+	                       (adr_idx == 3'd2) ? 8'd1          :  // sector 1
+	                       (adr_idx == 3'd3) ? 8'd1          :  // 256 bytes
+	                                           8'h00;           // CRC
+
+	// --- index pulse ----------------------------------------------------
+	//
+	// A drive with a disk in it produces one index pulse per revolution,
+	// 300rpm, so 200ms apart and about 4ms long. TR-DOS watches for them
+	// to decide whether there is anything in the drive at all, and a
+	// status bit wired permanently to zero says the disk is not turning.
+	// That is a different answer from "not ready" and reaches the same
+	// place: No disk.
+	//
+	// Gated on there being an image, so an empty drive still reports an
+	// empty drive - truthfully this time, rather than by omission.
+	localparam IDX_PERIOD = 23'd5599999;   // 200ms at 28MHz
+	localparam IDX_WIDTH  = 23'd112000;    // 4ms
+	reg  [22:0] idx_cnt = 23'd0;
+	wire        index   = disk_present & (idx_cnt < IDX_WIDTH);
+	always @(posedge clk) begin
+		if (idx_cnt >= IDX_PERIOD) idx_cnt <= 23'd0;
+		else                       idx_cnt <= idx_cnt + 23'd1;
+	end
+
 	// --- command decode -------------------------------------------------
 	localparam CMD_RESTORE = 4'h0, CMD_SEEK = 4'h1,
 	           CMD_STEP    = 4'h2, CMD_STEPI = 4'h4, CMD_STEPO = 4'h6,
@@ -107,6 +143,8 @@ module bdi (
 			crc_err  <= 1'b0;
 			rec_nf   <= 1'b0;
 			reading  <= 1'b0;
+			rd_adr   <= 1'b0;
+			adr_idx  <= 3'd0;
 			xfer_cnt <= 8'h00;
 			img_addr <= 20'h00000;
 		end else begin
@@ -153,13 +191,36 @@ module bdi (
 							crc_err  <= 1'b0;
 							busy     <= 1'b1;
 							reading  <= 1'b1;
+							// DRQ, which nothing here ever set before.
+							// The 1793 raises it to say a byte is
+							// waiting, and the driver reads the data
+							// register only when it sees it. There is no
+							// mechanism here to make a byte late - the
+							// image is in SDRAM - so it is true from the
+							// moment the command is taken until the
+							// sector is done.
+							drq      <= 1'b1;
 							xfer_cnt <= 8'h00;    // 256 bytes, wraps to 0
 							img_addr <= trk_off + side_off + sec_off;
+						end
+					end
+					CMD_RDADR: begin
+						if (disk_present == 1'b0) begin
+							rec_nf <= 1'b1;
+							intrq  <= 1'b1;
+						end else begin
+							rec_nf  <= 1'b0;
+							crc_err <= 1'b0;
+							busy    <= 1'b1;
+							rd_adr  <= 1'b1;
+							adr_idx <= 3'd0;
+							drq     <= 1'b1;
 						end
 					end
 					CMD_FORCE: begin
 						busy    <= 1'b0;
 						reading <= 1'b0;
+						rd_adr  <= 1'b0;
 						drq     <= 1'b0;
 						intrq   <= 1'b1;
 					end
@@ -175,10 +236,20 @@ module bdi (
 					if (xfer_cnt == 8'hff) begin
 						reading <= 1'b0;
 						busy    <= 1'b0;
+						drq     <= 1'b0;
 						intrq   <= 1'b1;
 					end else begin
 						xfer_cnt <= xfer_cnt + 8'd1;
 						img_addr <= img_addr + 20'd1;
+					end
+				end else if (rd_adr == 1'b1) begin
+					if (adr_idx == 3'd5) begin
+						rd_adr <= 1'b0;
+						busy   <= 1'b0;
+						drq    <= 1'b0;
+						intrq  <= 1'b1;
+					end else begin
+						adr_idx <= adr_idx + 3'd1;
 					end
 				end
 			end
@@ -192,6 +263,7 @@ module bdi (
 			    && din[2] == 1'b0) begin
 				busy    <= 1'b0;
 				reading <= 1'b0;
+				rd_adr  <= 1'b0;
 				drq     <= 1'b0;
 				intrq   <= 1'b0;
 			end
@@ -210,15 +282,15 @@ module bdi (
 	// instead left TR-DOS polling for a drive that would never arrive,
 	// so LIST simply never came back and printed no error at all.
 	wire [7:0] status_t1 = {1'b0, 1'b0, 1'b1, seek_err, crc_err,
-	                        (head == 8'h00), 1'b0, busy};
+	                        (head == 8'h00), index, busy};
 	wire [7:0] status_t2 = {1'b0, 1'b0, 1'b0, rec_nf, crc_err,
 	                        1'b0, drq, busy};
 
 	always @* begin
-		if (sel_cmd)      dout = reading ? status_t2 : status_t1;
+		if (sel_cmd)      dout = (reading | rd_adr) ? status_t2 : status_t1;
 		else if (sel_trk) dout = r_track;
 		else if (sel_sec) dout = r_sector;
-		else if (sel_dat) dout = r_data;
+		else if (sel_dat) dout = rd_adr ? adr_byte : r_data;
 		else if (sel_sys) dout = {intrq, drq, 6'b111111};
 		else              dout = 8'hff;
 	end
