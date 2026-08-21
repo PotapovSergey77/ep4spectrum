@@ -2414,8 +2414,9 @@ module spectrum_top (
 	// is one register's worth of history.
 	reg [15:0] caller   = 16'h0000;
 	reg [23:0] pc_div   = 24'd0;
-	reg [2:0]  ph_cnt   = 3'd0;
-	reg        diag_phase = 1'b0;
+	reg [2:0]  ph_cnt     = 3'd0;
+	reg [1:0]  diag_frame = 2'd0;
+	reg [7:0]  op_last    = 8'h00;  // the byte the last fetch was given
 	reg        m1_now_d = 1'b0;
 	reg [23:0] m1_gap   = 24'd0;   // clocks since a fetch last STARTED
 	reg [23:0] wt_gap   = 24'd0;   // clocks the arbiter has held WAIT
@@ -2449,11 +2450,20 @@ module spectrum_top (
 				caller <= opa_last;
 			m1_gap   <= 24'd0;
 			cpu_dead <= 1'b0;
-		end else if (m1_gap >= DIAG_GAP) begin
+		end
+		else if (m1_gap >= DIAG_GAP) begin
 			cpu_dead <= 1'b1;
 		end else begin
 			m1_gap <= m1_gap + 24'd1;
 		end
+
+		// The byte, taken on the level rather than the edge: at the
+		// start of a fetch the bus has not answered yet. For a fetch
+		// that completes this settles on the real byte; for one that
+		// never completes it holds whatever the bus last carried, which
+		// is why it is only worth reading next to the "CPU stopped" bit.
+		if (m1_now == 1'b1)
+			op_last <= cpu_di;
 
 		// Which of the two WAIT sources is doing it. They are wired
 		// together into one pin, so from the CPU's side they are
@@ -2505,23 +2515,43 @@ module spectrum_top (
 			ce_gap <= ce_gap + 24'd1;
 		end
 
-		// The digits alternate: two seconds on the address the CPU last
-		// fetched from, two seconds on the address the $3Dxx page was
-		// entered from. Point 2 says which of the two is showing, so
-		// there is nothing to guess and nothing to count.
+		// Three frames of two seconds each: the last fetch address, the
+		// address the $3Dxx page was entered from, and a word of state.
+		// Points 1 and 2 are the frame number and nothing else - a point
+		// that means "frame 2" on one turn and "TR-DOS paged" on the
+		// next is how a reading gets misread, and this display has
+		// already been misread twice.
 		pc_div <= pc_div + 24'd1;
 		if (pc_div >= 24'd13999999) begin
 			pc_div <= 24'd0;
 			ph_cnt <= ph_cnt + 3'd1;
 			if (ph_cnt == 3'd3) begin
 				ph_cnt     <= 3'd0;
-				diag_phase <= ~diag_phase;
+				diag_frame <= (diag_frame == 2'd2) ? 2'd0
+				                                   : diag_frame + 2'd1;
 			end
 		end
 		if (cpu_dead == 1'b1 || pc_div >= 24'd13999999)
 			opa_show <= opa_last;
 	end
-	wire [15:0] diag_show = diag_phase ? caller : opa_show;
+	// Frame 2, the state word, reading left to right:
+	//
+	//   digit 3  bit3 CPU stopped fetching   bit2 arbiter holding WAIT
+	//            bit1 CPU not being clocked  bit0 SPI holding WAIT
+	//   digit 2  bit3 TR-DOS ROM paged in    bit2 TR-DOS available here
+	//            bit1 ROM from the SD slots  bit0 48 BASIC half selected
+	//   digits 1-0  the byte the last fetch was given
+	//
+	// The byte is what settles which ROM answered: $FF is TR-DOS padding,
+	// $4D is LD C,L in the 48 BASIC ROM's string routine, $45 is the
+	// keyword table in the 128 menu ROM. The same address means a
+	// different thing in each.
+	wire [15:0] diag_stat = {cpu_dead, arb_hold, ce_dead, spi_hold,
+	                         trdos_active, trdos_avail, rom_from_sd,
+	                         page_rom_sel, op_last};
+
+	wire [15:0] diag_show = (diag_frame == 2'd0) ? opa_show :
+	                        (diag_frame == 2'd1) ? caller   : diag_stat;
 	wire [3:0] pc_nibble = (digit_scan == 2'd3) ? diag_show[15:12] :
 	                       (digit_scan == 2'd2) ? diag_show[11:8]  :
 	                       (digit_scan == 2'd1) ? diag_show[7:4]   :
@@ -2577,16 +2607,16 @@ module spectrum_top (
 	// wrong is how an address in ESXDOS's own RAM gets looked up in a
 	// ROM listing.
 	//
-	//   point 1, leftmost  - the CPU has stopped fetching: the digits are
-	//                        where it stopped, not where it is looping
-	//   point 2            - the digits are the address the $3Dxx page
-	//                        was entered FROM, not the last fetch
-	//   point 3            - the TR-DOS ROM is paged in
-	//   point 4, rightmost - the machine ROM is coming from the SD slots
-	wire digit_dp    = (digit_scan == 2'd3) ? cpu_dead     :
-	                   (digit_scan == 2'd2) ? diag_phase   :
-	                   (digit_scan == 2'd1) ? trdos_active :
-	                                          rom_from_sd;
+	//   no points        - frame 0, the address of the last opcode fetch
+	//   point 1 only     - frame 1, the address $3Dxx was entered from
+	//   point 2 only     - frame 2, the state word decoded above
+	//
+	// Points 3 and 4 stay dark. Everything they used to carry has moved
+	// into the state word, where it is read as a number instead of being
+	// squinted at.
+	wire digit_dp    = (digit_scan == 2'd3) ? (diag_frame == 2'd1) :
+	                   (digit_scan == 2'd2) ? (diag_frame == 2'd2) :
+	                                          1'b0;
 	wire digit_dp_unused = ((digit_scan == 2'd3) &&
 	                    (any_trim || (cpu_speed == 2'd0) || (cpu_speed == 2'd1))) ||
 	                   (divmmc_paged_in && (digit_scan == 2'd0));
