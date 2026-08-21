@@ -2597,8 +2597,8 @@ module spectrum_top (
 	//
 	//   digit 3  bit3 CPU stopped fetching   bit2 arbiter holding WAIT
 	//            bit1 CPU is HALTed           bit0 DivMMC paged in
-	//   digit 2  bit3 TR-DOS ROM paged in    bit2 TR-DOS available here
-	//            bit1 ROM from the SD slots  bit0 48 BASIC half selected
+	//   digit 2  bit3 DivMMC CONMEM            bit2 DivMMC MAPRAM
+	//            bits 1-0 which DivMMC RAM page is at $2000-$3FFF
 	//   digits 1-0  the byte the last fetch was given
 	//
 	// The byte is what settles which ROM answered: $FF is TR-DOS padding,
@@ -2606,8 +2606,8 @@ module spectrum_top (
 	// keyword table in the 128 menu ROM. The same address means a
 	// different thing in each.
 	wire [15:0] diag_stat = {cpu_dead, arb_hold, ~cpu_halt_n, divmmc_paged_in,
-	                         trdos_active, trdos_avail, rom_from_sd,
-	                         page_rom_sel, op_last};
+	                         divmmc_conmem, divmmc_mapram,
+	                         divmmc_sram_page[1:0], op_last};
 
 	// Six frames now. Frames 0, 3, 4 and 5 are four consecutive opcode
 	// fetches, newest first, so a loop can be read off the display
