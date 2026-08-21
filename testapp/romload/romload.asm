@@ -330,23 +330,52 @@ one_disk:       ld      a,SLOT_DISK
                 ld      a,SLOT_DISK|CTL_RESET
                 out     (PORT_CTL),a
 
+                ; Measure the file before loading it, so the bar is
+                ; scaled to THIS image rather than to a guess.
+                ;
+                ; Both guesses were wrong in opposite directions. One
+                ; star per eight blocks put the whole bar in the first
+                ; 40K, so a 640K image filled the line at once and then
+                ; sat motionless. Scaling to the 640K ceiling instead
+                ; means a 32K image moves the bar one star and then jumps
+                ; to full at the end. Neither shows what is happening.
+                ;
+                ; Nothing here knows a .trd's length in advance, and
+                ; asking ESXDOS for it means the stat call and its
+                ; structure layout, which is one more thing to get wrong
+                ; blind. Counting the blocks by reading them is exact,
+                ; needs no API beyond what is already in use, and for a
+                ; boot image of a few tens of K costs a fraction of a
+                ; second - the file is read from the card twice, and the
+                ; second pass is the one that loads.
+                call    dsk_count       ; blk_tot = length in blocks
+                jp      c,rd_error
+
+                ; Close and reopen rather than seek: the file has been
+                ; read to its end and has to start again, and reopening
+                ; is one call where seeking is one call plus its mode
+                ; argument and the chance of getting that wrong.
+                ld      a,(handle)
+                rst     $08
+                defb    F_CLOSE
+
+                ld      hl,fn_disk      ; freshly loaded - F_OPEN and
+                push    hl              ; F_READ have both had HL since
+                pop     ix
+                ld      a,'*'
+                ld      b,FA_READ
+                rst     $08
+                defb    F_OPEN
+                jp      c,no_file
+                ld      (handle),a
+
+                ld      a,SLOT_DISK|CTL_RESET
+                out     (PORT_CTL),a
+
                 ld      hl,0
                 ld      (dblk),hl
                 ld      (bar_done),hl
                 ld      (acc),hl
-
-                ; Scale the bar to the largest image a .trd can be, and
-                ; let the same Bresenham the ROMs use spread the stars
-                ; evenly over it.
-                ;
-                ; It used to print one star per eight blocks, which put
-                ; the whole bar in the first 40K. For a 640K image - and
-                ; proteus.trd is exactly 640K, the maximum - that meant
-                ; the bar filled up in the first few percent and then sat
-                ; there motionless for the remaining 600K, which reads as
-                ; a hang rather than as progress.
-                ld      hl,DISK_MAXBLK
-                ld      (blk_tot),hl
 
 dsk_chunk:      ld      a,(handle)
                 ld      hl,buffer
@@ -400,6 +429,37 @@ dsk_end:        call    shut
 dsk_empty:      call    nl
                 ld      hl,msg_empty
                 jp      print
+
+; ---------------------------------------------------------------------
+; dsk_count: read the open file to its end, counting 256-byte blocks
+; into blk_tot. Carry set on a read error. The file is left at EOF, so
+; the caller has to reopen it.
+;
+; Capped at the slot's ceiling, so a file longer than the slot still
+; gives a bar that reaches the right-hand edge at the point the load
+; actually stops rather than somewhere past it.
+; ---------------------------------------------------------------------
+dsk_count:      ld      hl,0
+                ld      (blk_tot),hl
+dc_loop:        ld      a,(handle)
+                ld      hl,buffer
+                ld      ix,buffer
+                ld      bc,RDLEN
+                rst     $08
+                defb    F_READ
+                ret     c
+                ld      a,b
+                or      c
+                jr      z,dc_done       ; end of the file
+                ld      hl,(blk_tot)
+                inc     hl
+                ld      (blk_tot),hl
+                ld      de,DISK_MAXBLK
+                or      a
+                sbc     hl,de
+                jr      c,dc_loop
+dc_done:        or      a               ; carry clear
+                ret
 
 ; ---------------------------------------------------------------------
 ; The progress bar.

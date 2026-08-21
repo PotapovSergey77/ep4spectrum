@@ -206,8 +206,6 @@ module spectrum_top (
 	wire    [3:0]   divmmc_sram_page;
 	wire            divmmc_mapram;
 	wire            divmmc_conmem;
-	wire    [15:0]  divmmc_trap_addr;
-	// Declared here rather than where it is driven, a thousand lines
 	// down: the DivMMC instance needs it to know who owns $3Dxx, and
 	// Quartus tolerates using a net before its declaration where
 	// ModelSim does not.
@@ -739,13 +737,13 @@ module spectrum_top (
 	// (silkscreen LED4). Active low.
 	//
 	//   LED1, leftmost  - SD card access
+	//   LED2, LED3      - contention mode: both dark full, LED2 memory
+	//                     only, LED3 off
 	//   LED4, rightmost - Pentagon 1024K extension on
-	//   LED2, LED3      - unused
-	// The lamps are driven from the diagnostic block down beside the
-	// seven-segment display, where every signal they report on has
-	// already been declared. Driving them from here meant reaching
-	// forward to regs declared a thousand lines further down - Quartus
-	// allows that, ModelSim does not.
+	assign LED[3] = divmmc_cs;
+	assign LED[2] = ~(cont_mode == 2'd1);
+	assign LED[1] = ~(cont_mode == 2'd0);
+	assign LED[0] = ~ext1024;
 
 	// ULA "ear" input (tape in) - no tape hardware on this board, keep idle
 	assign ula_ear_in = 1'b1;
@@ -1476,8 +1474,7 @@ module spectrum_top (
 		.sd_sck(divmmc_sclk),
 		.sd_mosi(divmmc_mosi),
 		.sd_miso(divmmc_miso),
-		.wait_n(divmmc_wait_n),
-		.trap_addr(divmmc_trap_addr)
+		.wait_n(divmmc_wait_n)
 	);
 	// --- Z-Controller ---------------------------------------------------
 	//
@@ -2476,232 +2473,7 @@ module spectrum_top (
 	                    (cpu_speed == 2'd1) ? 4'd0 :
 	                    (cpu_speed == 2'd2) ? 4'd4 : 4'd8;
 
-	// Diagnostic: where the CPU is, and whether it is still moving.
-	//
-	// The four digits carry the FULL address of the last opcode fetch.
-	// The high byte alone said Test v4.3 stops somewhere in the ROM; it
-	// takes all sixteen bits to say where in it.
-	//
-	// While the CPU is running the reading is a sample refreshed twice a
-	// second, so it flickers across whatever is executing. Once nothing
-	// has been fetched for about a third of a second the CPU is not
-	// running at all, and the display freezes on the last fetch it
-	// managed - the address it died at. The decimal points come on to
-	// say the number is frozen rather than sampled, so a still display
-	// cannot be mistaken for a slow one.
-	//
-	// A frozen reading also says something the value itself cannot: the
-	// CPU is stopped part-way through an instruction, not looping. A
-	// loop of even two instructions would show a different one of them
-	// at each refresh.
-	// Every lamp below reports the same shape of fact - "this has been
-	// true without a break for about a third of a second" - so a steady
-	// lamp means a fault and a dark one means health. The first version
-	// mixed live signals in with latched ones, and a lamp that is lit
-	// half the time in normal running says nothing at all.
-	localparam DIAG_GAP = 24'd9000000;   // ~1/3 second at 28MHz
-
-	reg [15:0] opa_last = 16'h0000;
-	reg [15:0] opa_prev = 16'h0000;
-	reg [15:0] opa_show = 16'h0000;
-	// Where the $3Dxx page was entered FROM. Knowing the machine stops
-	// at $3D2A says almost nothing on its own - that address is the
-	// middle of an operand in the TR-DOS ROM, so nothing can be calling
-	// it deliberately, and it is the same number in both machines. What
-	// decides this is which instruction jumped into the page, and that
-	// is one register's worth of history.
-	reg [15:0] caller   = 16'h0000;
-	reg [15:0] ring0 = 16'h0000, ring1 = 16'h0000;
-	reg [15:0] ring2 = 16'h0000, ring3 = 16'h0000;
-	reg [15:0] sh0   = 16'h0000, sh1   = 16'h0000;
-	reg [15:0] sh2   = 16'h0000, sh3   = 16'h0000;
-	reg [23:0] pc_div   = 24'd0;
-	reg [2:0]  ph_cnt     = 3'd0;
-	reg [2:0]  diag_frame = 3'd0;
-	reg [7:0]  op_last    = 8'h00;  // the byte the last fetch was given
-	reg        m1_now_d = 1'b0;
-	reg [23:0] m1_gap   = 24'd0;   // clocks since a fetch last STARTED
-	reg [23:0] wt_gap   = 24'd0;   // clocks the arbiter has held WAIT
-	reg [23:0] dw_gap   = 24'd0;   // clocks the SPI has held WAIT
-	reg [23:0] dm_gap   = 24'd0;   // clocks DivMMC has stayed paged in
-	reg [23:0] ce_gap   = 24'd0;   // clocks since the CPU was last clocked
-	reg        cpu_dead = 1'b0;
-	reg        arb_hold = 1'b0;
-	reg        spi_hold = 1'b0;
-	reg        dm_stuck = 1'b0;
-	reg        ce_dead  = 1'b0;
-	wire       m1_now   = (cpu_mreq_n == 1'b0) & (cpu_rd_n == 1'b0)
-	                      & (cpu_m1_n == 1'b0);
-	always @(posedge clock) begin
-		m1_now_d <= m1_now;
-
-		// The START of a fetch, not the fact that one is in progress.
-		// While the CPU is held on WAIT, MREQ, RD and M1 all stay
-		// asserted for as long as it is stopped, so testing the level
-		// reports a frozen CPU as a healthy one - which is precisely
-		// what the first version of this did, and why it showed a
-		// stable address with the "stopped" lamp dark.
-		if (m1_now == 1'b1 && m1_now_d == 1'b0) begin
-			opa_prev <= opa_last;
-			opa_last <= cpu_a;
-			// Four fetches deep, so the loop can be read rather than
-			// guessed at. One address told us the CPU sits at $35AA with
-			// $70 under it, and $70 is LD (HL),B - an instruction that
-			// cannot jump anywhere, so it cannot be the whole loop. Four
-			// consecutive fetches, snapshotted together, are the loop.
-			ring0 <= cpu_a;
-			ring1 <= ring0;
-			ring2 <= ring1;
-			ring3 <= ring2;
-			// The first fetch of a run inside $3Dxx: remember what was
-			// executing just before it. Fetches that were already in
-			// the page do not overwrite it, so this keeps the way in
-			// rather than the last step of the wander that follows.
-			if (cpu_a[15:8] == 8'h3d && opa_last[15:8] != 8'h3d)
-				caller <= opa_last;
-			m1_gap   <= 24'd0;
-			cpu_dead <= 1'b0;
-		end
-		else if (m1_gap >= DIAG_GAP) begin
-			cpu_dead <= 1'b1;
-		end else begin
-			m1_gap <= m1_gap + 24'd1;
-		end
-
-		// The byte, taken on the level rather than the edge: at the
-		// start of a fetch the bus has not answered yet. For a fetch
-		// that completes this settles on the real byte; for one that
-		// never completes it holds whatever the bus last carried, which
-		// is why it is only worth reading next to the "CPU stopped" bit.
-		if (m1_now == 1'b1)
-			op_last <= cpu_di;
-
-		// Which of the two WAIT sources is doing it. They are wired
-		// together into one pin, so from the CPU's side they are
-		// indistinguishable, and they have nothing in common as faults.
-		if (cpu_wait_n == 1'b1) begin
-			wt_gap   <= 24'd0;
-			arb_hold <= 1'b0;
-		end else if (wt_gap >= DIAG_GAP) begin
-			arb_hold <= 1'b1;
-		end else begin
-			wt_gap <= wt_gap + 24'd1;
-		end
-
-		if (divmmc_wait_n == 1'b1) begin
-			dw_gap   <= 24'd0;
-			spi_hold <= 1'b0;
-		end else if (dw_gap >= DIAG_GAP) begin
-			spi_hold <= 1'b1;
-		end else begin
-			dw_gap <= dw_gap + 24'd1;
-		end
-
-		// DivMMC paged in is normal - it is paged in for every ESXDOS
-		// call - but paged in without a break for a third of a second
-		// while an ordinary program runs means its exit was missed, and
-		// the machine is reading ESXDOS's RAM where it believes it is
-		// reading ROM. When that happens the digits stop showing the PC
-		// and show the address of the fetch that armed the automapper
-		// instead, which says whether a trap fired that should not have
-		// or an exit was lost.
-		if (divmmc_paged_in == 1'b0) begin
-			dm_gap   <= 24'd0;
-			dm_stuck <= 1'b0;
-		end else if (dm_gap >= DIAG_GAP) begin
-			dm_stuck <= 1'b1;
-		end else begin
-			dm_gap <= dm_gap + 24'd1;
-		end
-
-		// And whether it is being clocked at all. A stopped clock enable
-		// and a CPU held on WAIT look identical from outside - both stop
-		// fetching - so the two are worth telling apart before guessing.
-		if (cpu_clken_gated == 1'b1) begin
-			ce_gap  <= 24'd0;
-			ce_dead <= 1'b0;
-		end else if (ce_gap >= DIAG_GAP) begin
-			ce_dead <= 1'b1;
-		end else begin
-			ce_gap <= ce_gap + 24'd1;
-		end
-
-		// Three frames of two seconds each: the last fetch address, the
-		// address the $3Dxx page was entered from, and a word of state.
-		// Points 1 and 2 are the frame number and nothing else - a point
-		// that means "frame 2" on one turn and "TR-DOS paged" on the
-		// next is how a reading gets misread, and this display has
-		// already been misread twice.
-		pc_div <= pc_div + 24'd1;
-		if (pc_div >= 24'd13999999) begin
-			pc_div <= 24'd0;
-			ph_cnt <= ph_cnt + 3'd1;
-			if (ph_cnt == 3'd3) begin
-				ph_cnt     <= 3'd0;
-				diag_frame <= (diag_frame == 3'd5) ? 3'd0
-				                                   : diag_frame + 3'd1;
-			end
-		end
-		if (cpu_dead == 1'b1 || pc_div >= 24'd13999999) begin
-			opa_show <= opa_last;
-			// All four together, so they really are four consecutive
-			// fetches and not a mixture of two passes round the loop.
-			sh0 <= ring0;
-			sh1 <= ring1;
-			sh2 <= ring2;
-			sh3 <= ring3;
-		end
-	end
-	// Frame 2, the state word, reading left to right:
-	//
-	//   digit 3  bit3 CPU stopped fetching   bit2 arbiter holding WAIT
-	//            bit1 CPU is HALTed           bit0 DivMMC paged in
-	//   digit 2  bit3 DivMMC CONMEM            bit2 DivMMC MAPRAM
-	//            bits 1-0 which DivMMC RAM page is at $2000-$3FFF
-	//   digits 1-0  the byte the last fetch was given
-	//
-	// The byte is what settles which ROM answered: $FF is TR-DOS padding,
-	// $4D is LD C,L in the 48 BASIC ROM's string routine, $45 is the
-	// keyword table in the 128 menu ROM. The same address means a
-	// different thing in each.
-	wire [15:0] diag_stat = {cpu_dead, arb_hold, ~cpu_halt_n, divmmc_paged_in,
-	                         divmmc_conmem, divmmc_mapram,
-	                         divmmc_sram_page[1:0], op_last};
-
-	// Six frames now. Frames 0, 3, 4 and 5 are four consecutive opcode
-	// fetches, newest first, so a loop can be read off the display
-	// instead of inferred from one address.
-	wire [15:0] diag_show = (diag_frame == 3'd0) ? sh0       :
-	                        (diag_frame == 3'd1) ? caller    :
-	                        (diag_frame == 3'd2) ? diag_stat :
-	                        (diag_frame == 3'd3) ? sh1       :
-	                        (diag_frame == 3'd4) ? sh2       : sh3;
-	wire [3:0] pc_nibble = (digit_scan == 2'd3) ? diag_show[15:12] :
-	                       (digit_scan == 2'd2) ? diag_show[11:8]  :
-	                       (digit_scan == 2'd1) ? diag_show[7:4]   :
-	                                              diag_show[3:0];
-
-	// Silkscreen numbering runs opposite to the LED[] index, so LED[3] is
-	// the leftmost lamp (silkscreen LED1) and LED[0] the rightmost
-	// (LED4). Active low.
-	//
-	// The four lamps are now the four slot flags. Whether a machine comes
-	// up on a ROM loaded from the card is decided by these four bits and
-	// nothing else, so when a menu does not appear this is the first
-	// thing worth seeing. They are set by the loader, and cleared only by
-	// reconfiguring the FPGA or by F11 with SPACE held down.
-	//
-	//   LED1, leftmost  - 128K slot filled
-	//   LED2            - Pentagon slot filled
-	//   LED3            - TR-DOS slot filled
-	//   LED4, rightmost - disk image slot filled
-	assign LED[3] = ~rom_slot_filled[0];
-	assign LED[2] = ~rom_slot_filled[1];
-	assign LED[1] = ~rom_slot_filled[2];
-	assign LED[0] = ~rom_slot_filled[3];
-
-	wire [3:0] nibble = pc_nibble;
-	wire [3:0] nibble_unused = any_trim ?
+	wire [3:0] nibble = any_trim ?
 	                    ((trim_show == 2'd1) ?
 	                     ((digit_scan == 2'd3) ? 4'he :  // E, IO window
 	                      (digit_scan == 2'd2) ? 4'd0 :
@@ -2716,36 +2488,13 @@ module spectrum_top (
 	                    (digit_scan == 2'd1) ? pg_tens :
 	                                           pg_units;
 
-	wire digit_blank = 1'b0;
-	wire digit_blank_unused = any_trim ? 1'b0 :
+	wire digit_blank = any_trim ? 1'b0 :
 	                   ((digit_scan == 2'd1) && (page_ram_sel < 6'd10));
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in
 	// Point after the first digit only where the speed has a fraction -
 	// "3.5" and "7.0" - not on "14" or "28".
-	// The decimal points are four more free bits: the point is scanned
-	// per digit like the segments are, so each one can carry something
-	// different. What they say is which memory the address on the digits
-	// above them actually belongs to - the same number means completely
-	// different things depending on what is paged in, and reading it
-	// wrong is how an address in ESXDOS's own RAM gets looked up in a
-	// ROM listing.
-	//
-	//   no points        - frame 0, the address of the last opcode fetch
-	//   point 1 only     - frame 1, the address $3Dxx was entered from
-	//   point 2 only     - frame 2, the state word decoded above
-	//
-	// Points 3 and 4 stay dark. Everything they used to carry has moved
-	// into the state word, where it is read as a number instead of being
-	// squinted at.
-	// The frame number in binary across the first three points: point 1
-	// is bit 0, point 2 is bit 1, point 3 is bit 2. Nothing else uses
-	// them, so a point never means two things.
-	wire digit_dp    = (digit_scan == 2'd3) ? diag_frame[0] :
-	                   (digit_scan == 2'd2) ? diag_frame[1] :
-	                   (digit_scan == 2'd1) ? diag_frame[2] :
-	                                          1'b0;
-	wire digit_dp_unused = ((digit_scan == 2'd3) &&
+	wire digit_dp    = ((digit_scan == 2'd3) &&
 	                    (any_trim || (cpu_speed == 2'd0) || (cpu_speed == 2'd1))) ||
 	                   (divmmc_paged_in && (digit_scan == 2'd0));
 

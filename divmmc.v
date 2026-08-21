@@ -63,15 +63,7 @@ module divmmc (
 	// Low while an SPI transfer this module started is still shifting.
 	// See the comment above the assign at the bottom for what it is for
 	// and for the two earlier attempts that did not work.
-	output         wait_n,
-
-	// Diagnostic: the address of the fetch that last armed the
-	// automapper. The automapper being on is not by itself a fault - it
-	// is on for every ESXDOS call - but one that is on while an ordinary
-	// program runs means either a trap fired that should not have, or an
-	// exit was missed, and those two have nothing in common as faults.
-	// The entry address separates them at a glance.
-	output reg [15:0] trap_addr
+	output         wait_n
 );
 
 reg m1_trigger;
@@ -163,7 +155,6 @@ always @(posedge clk) begin
 		by_3d <= 1'b0;
 		sd_cs <= 1'b1;
 		seen_busy <= 1'b0;
-		trap_addr <= 16'h0000;
 	end else begin
 		spi_rx_strobe = 1'b0;
 		spi_tx_strobe = 1'b0;
@@ -251,14 +242,12 @@ always @(posedge clk) begin
 			 (a==16'h0066) || (a==16'h04C6) || (a==16'h0562))) begin
 			// activate automapper after this cycle
 			m1_trigger <= 1'b1;
-			trap_addr  <= a;
 			by_3d      <= 1'b0;
 		end else if (TRAP_3D && !mreq_n && !rd_n && !m1_n && a[15:8]==8'h3D
 		             && !beta_owns_3d) begin
 			// activate automapper immediately
 			paged_in_r <= 1'b1;
 			m1_trigger <= 1'b1;
-			trap_addr  <= a;
 			by_3d      <= 1'b1;
 		end else if (!mreq_n && !rd_n && !m1_n && {a[15:3],3'd0} == 16'h1ff8) begin
 			// deactivate automapper after this cycle
