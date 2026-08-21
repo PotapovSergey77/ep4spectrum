@@ -1912,7 +1912,6 @@ module spectrum_top (
 	// build - which is exactly the behaviour seen on the board, where two
 	// builds differing only in which signal drove an LED behaved
 	// completely differently. Clocking it from the real 28MHz clock and
-	assign ram_addr = {ram_page, cpu_a[13:0]};
 	// instant while putting the path under proper timing analysis.
 	// Captured one clock after the end of the CPU's slot, not on the edge
 	// itself: sdram_ep4ce.v now latches read data internally at its q==0,
@@ -1921,7 +1920,21 @@ module spectrum_top (
 	// byte - on the board that showed as the CPU fetching a constant
 	// wrong value and spinning on address 0000 forever, with opcode
 	// fetches still happening (so not a reset).
-	assign ram_addr = {3'b000, ram_page, cpu_a[13:0]};
+	// ram_page is six bits and cpu_a[13:0] is fourteen, which is exactly
+	// the twenty ram_addr holds.
+	//
+	// There were TWO of these, both unconditional, one of them written
+	// {3'b000, ram_page, cpu_a[13:0]} - twenty-three bits into a
+	// twenty-bit net. Verilog trims from the top, so that one dropped
+	// ram_page[5:3] and left only the bottom eight banks reachable: the
+	// 1024K extension addressed nothing above 128K. Two drivers on one
+	// net on top of that, so which of them won was the fitter's business
+	// rather than the design's.
+	//
+	// The same shape of fault as the ROM slot address, and from the same
+	// cause - a line dropped into the middle of an unrelated comment
+	// block by an editing script.
+	assign ram_addr = {ram_page, cpu_a[13:0]};
 
 	// Moved above the arbiter, which reads ram_write: Quartus
 	// accepts use-before-declaration, ModelSim does not.
