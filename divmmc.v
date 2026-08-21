@@ -157,22 +157,8 @@ reg  seen_busy = 1'b0;
 
 always @(posedge clk) begin
 	if(reset_n == 1'b0) begin
-		// Out of reset the automapper is ON, as it is in the reference
-		// CPLD: divmmc_is_autopaged and divmmc_autopage_status_after_m1
-		// both reset to 1'b1 there. Ours reset to zero and leaned on the
-		// $0000 trap instead, which works only because the ESXDOS image
-		// and the 48K ROM happen to share their first byte - $F3, DI -
-		// so the handover at $0001 lands aligned by luck.
-		//
-		// It matters because it decides the state every LATER $3Dxx
-		// arrives in. On the reference the boot gets there with the
-		// mapper already on, so that entry never needs to latch and is
-		// free to be the one-cycle window it is meant to be. With ours
-		// starting off, the boot arrived there paged out and depended on
-		// the entry sticking - and an entry that sticks is what left
-		// DivMMC's RAM over $2000-$3FFF for the rest of every program.
-		m1_trigger <= 1'b1;
-		paged_in_r <= 1'b1;
+		m1_trigger <= 1'b0;
+		paged_in_r <= 1'b0;
 		ctrl <= 8'h00;
 		by_3d <= 1'b0;
 		sd_cs <= 1'b1;
@@ -269,35 +255,37 @@ always @(posedge clk) begin
 			by_3d      <= 1'b0;
 		end else if (TRAP_3D && !mreq_n && !rd_n && !m1_n && a[15:8]==8'h3D
 		             && !beta_owns_3d) begin
-			// $3Dxx maps the page for THIS CYCLE ONLY, and latches
-			// nothing.
-			//
-			// auto_now above already does the mapping combinationally,
-			// which is the whole of what this entry is meant to do. It
-			// used to set paged_in_r and m1_trigger here as well, and
-			// that is what has been killing Test 4.3: the automapper
-			// stayed on for good afterwards.
-			//
-			// The reference is divtiesus_mcleod.v, the CPLD in the real
-			// DivMMC this machine is compared against. Its $3Dxx branch
-			// sets divmmc_is_autopaged and pointedly does NOT set
-			// divmmc_autopage_status_after_m1 - so at the end of the M1
-			// the deferred status, still zero, puts it straight back.
-			// Every fetch inside the page re-triggers it, so code
-			// running there keeps getting DivMMC bytes; step outside the
-			// page and the mapping is simply gone.
-			//
-			// That is self-limiting in exactly the way we needed. A
-			// probe that reads $3Dxx, finds no TR-DOS and returns to its
-			// own code leaves nothing behind. The ESXDOS boot is
-			// unaffected because it arrives with the automapper already
-			// on, having come in through $0000 - which is why removing
-			// this entry outright broke the boot while leaving it
-			// un-latched does not.
+			// activate automapper immediately
+			paged_in_r <= 1'b1;
+			m1_trigger <= 1'b1;
 			trap_addr  <= a;
+			by_3d      <= 1'b1;
 		end else if (!mreq_n && !rd_n && !m1_n && {a[15:3],3'd0} == 16'h1ff8) begin
 			// deactivate automapper after this cycle
 			m1_trigger <= 1'b0;
+			by_3d      <= 1'b0;
+		end else if (by_3d && !mreq_n && !rd_n && !m1_n
+		             && (a[15] | a[14])) begin
+			// Armed through $3Dxx, and now fetching outside the ROM
+			// area: let go.
+			//
+			// The documented exit is $1FF8-$1FFF and nothing else, which
+			// is fine for a caller that goes in and comes back out
+			// through the stub. It is not fine for a program that only
+			// PROBES the page - reads what is there, finds it is not
+			// TR-DOS, and returns to its own code. Nothing disarms the
+			// automapper then, DivMMC's RAM covers $2000-$3FFF for the
+			// rest of the run, and the next call into the top half of
+			// the 48K ROM runs ESXDOS's data as code. That is what
+			// killed Test 4.3 a screen after the probe.
+			//
+			// Removing the entry instead was tried and stopped ESXDOS
+			// booting: the boot uses it. So keep the entry and give it
+			// the Beta's exit rule, which is the paging this entry
+			// exists to emulate in the first place. It costs the boot
+			// nothing - that runs inside $0000-$3FFF throughout.
+			m1_trigger <= 1'b0;
+			paged_in_r <= 1'b0;
 			by_3d      <= 1'b0;
 		end
 	
