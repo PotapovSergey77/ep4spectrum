@@ -372,7 +372,15 @@ module video (
 	// counts. The phase is set to the display's own character grid: the
 	// picture turns on at hcounter[2:1] == 2'b11, which puts cell
 	// boundaries at count 7 of every sixteen.
-	localparam [3:0] BORDER_PHASE = 4'd7;
+	// Phase 15, one step on from the character grid.
+	//
+	// A write takes effect at the next boundary after it, so where the
+	// boundary sits decides which group a given write lands in - and a
+	// write sitting just past a boundary waits nearly a whole group,
+	// which is eight pixels of displacement for a few counts of
+	// difference. Birds came out right at 7; the demos that are still
+	// eight pixels right are the ones whose writes fall just after it.
+	localparam [3:0] BORDER_PHASE = 4'd15;
 	reg     [2:0]   border_latched = 3'b000;
 	wire            border_update = (MACHINE == MACHINE_PENT)
 	                                ? (hcounter[0] == 1'b1)
@@ -1044,31 +1052,15 @@ module video (
 			case (hcounter[9:4])
 				// Blanking starts at 304
 				6'b100110: hblanking <= 1'b1;
+				// Sync starts at 328
+				6'b101001: hsync <= 1'b1;
+				// Sync ends at 360
+				6'b101101: hsync <= 1'b0;
 				// Blanking ends at 400
 				6'b110010: hblanking <= 1'b0;
 				default: begin
 				end
 			endcase
-
-			// Sync moved one step later on the Sinclair machines, which
-			// puts the whole picture eight pixels left on the monitor.
-			//
-			// This is where a whole-image shift belongs, and nowhere
-			// else. Moving the picture window instead would change when
-			// pixels are fetched relative to contention and to the
-			// border grid - the two things that were just got right -
-			// while the monitor cannot tell the difference. A step of
-			// hcounter[9:4] is sixteen counts, which is eight pixels
-			// exactly, so the amount asked for is one step.
-			//
-			// Pentagon keeps its own position: its border was set on the
-			// board this evening and its picture sits where it should.
-			if (hcounter[9:4] == ((MACHINE == MACHINE_PENT) ? 6'b101001
-			                                                : 6'b101010))
-				hsync <= 1'b1;
-			if (hcounter[9:4] == ((MACHINE == MACHINE_PENT) ? 6'b101101
-			                                                : 6'b101110))
-				hsync <= 1'b0;
 
 			// Frame interrupt: one window on one line, the same shape
 			// for every machine. Kept separate from the vsync case
