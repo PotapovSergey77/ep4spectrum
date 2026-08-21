@@ -2452,9 +2452,13 @@ module spectrum_top (
 	// decides this is which instruction jumped into the page, and that
 	// is one register's worth of history.
 	reg [15:0] caller   = 16'h0000;
+	reg [15:0] ring0 = 16'h0000, ring1 = 16'h0000;
+	reg [15:0] ring2 = 16'h0000, ring3 = 16'h0000;
+	reg [15:0] sh0   = 16'h0000, sh1   = 16'h0000;
+	reg [15:0] sh2   = 16'h0000, sh3   = 16'h0000;
 	reg [23:0] pc_div   = 24'd0;
 	reg [2:0]  ph_cnt     = 3'd0;
-	reg [1:0]  diag_frame = 2'd0;
+	reg [2:0]  diag_frame = 3'd0;
 	reg [7:0]  op_last    = 8'h00;  // the byte the last fetch was given
 	reg        m1_now_d = 1'b0;
 	reg [23:0] m1_gap   = 24'd0;   // clocks since a fetch last STARTED
@@ -2481,6 +2485,15 @@ module spectrum_top (
 		if (m1_now == 1'b1 && m1_now_d == 1'b0) begin
 			opa_prev <= opa_last;
 			opa_last <= cpu_a;
+			// Four fetches deep, so the loop can be read rather than
+			// guessed at. One address told us the CPU sits at $35AA with
+			// $70 under it, and $70 is LD (HL),B - an instruction that
+			// cannot jump anywhere, so it cannot be the whole loop. Four
+			// consecutive fetches, snapshotted together, are the loop.
+			ring0 <= cpu_a;
+			ring1 <= ring0;
+			ring2 <= ring1;
+			ring3 <= ring2;
 			// The first fetch of a run inside $3Dxx: remember what was
 			// executing just before it. Fetches that were already in
 			// the page do not overwrite it, so this keeps the way in
@@ -2566,12 +2579,19 @@ module spectrum_top (
 			ph_cnt <= ph_cnt + 3'd1;
 			if (ph_cnt == 3'd3) begin
 				ph_cnt     <= 3'd0;
-				diag_frame <= (diag_frame == 2'd2) ? 2'd0
-				                                   : diag_frame + 2'd1;
+				diag_frame <= (diag_frame == 3'd5) ? 3'd0
+				                                   : diag_frame + 3'd1;
 			end
 		end
-		if (cpu_dead == 1'b1 || pc_div >= 24'd13999999)
+		if (cpu_dead == 1'b1 || pc_div >= 24'd13999999) begin
 			opa_show <= opa_last;
+			// All four together, so they really are four consecutive
+			// fetches and not a mixture of two passes round the loop.
+			sh0 <= ring0;
+			sh1 <= ring1;
+			sh2 <= ring2;
+			sh3 <= ring3;
+		end
 	end
 	// Frame 2, the state word, reading left to right:
 	//
@@ -2589,8 +2609,14 @@ module spectrum_top (
 	                         trdos_active, trdos_avail, rom_from_sd,
 	                         page_rom_sel, op_last};
 
-	wire [15:0] diag_show = (diag_frame == 2'd0) ? opa_show :
-	                        (diag_frame == 2'd1) ? caller   : diag_stat;
+	// Six frames now. Frames 0, 3, 4 and 5 are four consecutive opcode
+	// fetches, newest first, so a loop can be read off the display
+	// instead of inferred from one address.
+	wire [15:0] diag_show = (diag_frame == 3'd0) ? sh0       :
+	                        (diag_frame == 3'd1) ? caller    :
+	                        (diag_frame == 3'd2) ? diag_stat :
+	                        (diag_frame == 3'd3) ? sh1       :
+	                        (diag_frame == 3'd4) ? sh2       : sh3;
 	wire [3:0] pc_nibble = (digit_scan == 2'd3) ? diag_show[15:12] :
 	                       (digit_scan == 2'd2) ? diag_show[11:8]  :
 	                       (digit_scan == 2'd1) ? diag_show[7:4]   :
@@ -2653,8 +2679,12 @@ module spectrum_top (
 	// Points 3 and 4 stay dark. Everything they used to carry has moved
 	// into the state word, where it is read as a number instead of being
 	// squinted at.
-	wire digit_dp    = (digit_scan == 2'd3) ? (diag_frame == 2'd1) :
-	                   (digit_scan == 2'd2) ? (diag_frame == 2'd2) :
+	// The frame number in binary across the first three points: point 1
+	// is bit 0, point 2 is bit 1, point 3 is bit 2. Nothing else uses
+	// them, so a point never means two things.
+	wire digit_dp    = (digit_scan == 2'd3) ? diag_frame[0] :
+	                   (digit_scan == 2'd2) ? diag_frame[1] :
+	                   (digit_scan == 2'd1) ? diag_frame[2] :
 	                                          1'b0;
 	wire digit_dp_unused = ((digit_scan == 2'd3) &&
 	                    (any_trim || (cpu_speed == 2'd0) || (cpu_speed == 2'd1))) ||
