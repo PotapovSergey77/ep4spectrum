@@ -264,6 +264,8 @@ module spectrum_top (
 	// dead - see the note by any_trim.
 	//   0 = contention window   1 = IO window   2 = interrupt phase
 	reg [1:0] trim_show = 2'd0;
+	// Border group phase, on keypad - and +, shown as "b" and the value.
+	reg [3:0] bord_phase = 4'd7;
 	// Vertical trim: where the frame sits against the raster, stepped by
 	// Page Up / Page Down. video.v takes this in sixteenths of a line
 	// (INT_VADJ >>> 4), so a step of 16 is exactly one line.
@@ -817,10 +819,19 @@ module spectrum_top (
 		// was running.
 		key_kpsub_d <= key_kpsub;
 		key_kpadd_d <= key_kpadd;
+		// Now the border group phase: which sixteenth of a group the
+		// boundary sits on, and so which group a border write lands
+		// in. Sixteen values, wrapping, and a whole group is eight
+		// pixels - so this is the knob that moves a border edge by a
+		// group without touching anything else.
+		//
+		// It took the IO window trim's keys. That window is measured
+		// right - 3.0 and 1.9 T-states against a table giving 3 and 2 -
+		// so it is not the live question and this is.
 		if (key_kpsub == 1'b1 && key_kpsub_d == 1'b0) begin
-			io_adj <= io_adj - 5'd1; trim_show <= 2'd1;
+			bord_phase <= bord_phase - 4'd1; trim_show <= 2'd3;
 		end else if (key_kpadd == 1'b1 && key_kpadd_d == 1'b0) begin
-			io_adj <= io_adj + 5'd1; trim_show <= 2'd1;
+			bord_phase <= bord_phase + 4'd1; trim_show <= 2'd3;
 		end
 		key_pgup_d <= key_pgup;
 		key_pgdn_d <= key_pgdn;
@@ -1320,6 +1331,7 @@ module spectrum_top (
 		.INT_VADJ(int_vadj),
 		.CONT_ADJ(cont_adj),
 		.IO_ADJ(io_adj),
+		.BORD_PHASE(bord_phase),
 		.PORT_FF_ACTIVE(vid_port_ff_active),
 		.PORT_FF_DATA(vid_port_ff_data),
 		.VID_A(vid_a),
@@ -2533,7 +2545,7 @@ module spectrum_top (
 	// which variant is running can be read off the board.
 	//   E0nn  IO contention window, keypad - and +, a T-state a press
 	wire any_trim = (cont_adj != 5'd0) || (cont_model != 2'd1)
-	                || (io_adj != 5'd0);
+	                || (io_adj != 5'd0) || (trim_show == 2'd3);
 
 
 	// The left pair carries the CPU speed: 3.5, 7.0, 14, 28. The two
@@ -2547,7 +2559,13 @@ module spectrum_top (
 	                    (cpu_speed == 2'd2) ? 4'd4 : 4'd8;
 
 	wire [3:0] nibble = any_trim ?
-	                    ((trim_show == 2'd1) ?
+	                    ((trim_show == 2'd3) ?
+	                     // b, then the border group phase in hex
+	                     ((digit_scan == 2'd3) ? 4'hb :
+	                      (digit_scan == 2'd2) ? 4'd0 :
+	                      (digit_scan == 2'd1) ? 4'd0 :
+	                                             bord_phase) :
+	                     (trim_show == 2'd1) ?
 	                     ((digit_scan == 2'd3) ? 4'he :  // E, IO window
 	                      (digit_scan == 2'd2) ? 4'd0 :
 	                      (digit_scan == 2'd1) ? {3'b000, io_adj[4]} :

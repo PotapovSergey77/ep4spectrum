@@ -70,6 +70,7 @@ module video (
 	INT_VADJ,
 	CONT_ADJ,
 	IO_ADJ,
+	BORD_PHASE,
 	PORT_FF_ACTIVE,
 	PORT_FF_DATA,
 
@@ -125,6 +126,8 @@ module video (
 	// measured exact now - Tact Meter agrees with a real machine - so
 	// what is left has to be trimmed without touching it.
 	input   [4:0]   IO_ADJ;
+	// Which sixteenth of a group the border boundary sits on.
+	input   [3:0]   BORD_PHASE;
 	output          PORT_FF_ACTIVE;
 	output  [7:0]   PORT_FF_DATA;
 
@@ -372,11 +375,12 @@ module video (
 	// counts. The phase is set to the display's own character grid: the
 	// picture turns on at hcounter[2:1] == 2'b11, which puts cell
 	// boundaries at count 7 of every sixteen.
-	localparam [3:0] BORDER_PHASE = 4'd7;
+	// The phase is a runtime trim now, on keypad - and +, so sixteen
+	// values can be tried in half a minute instead of one per rebuild.
 	reg     [2:0]   border_latched = 3'b000;
 	wire            border_update = (MACHINE == MACHINE_PENT)
 	                                ? (hcounter[0] == 1'b1)
-	                                : (hcounter[3:0] == BORDER_PHASE);
+	                                : (hcounter[3:0] == BORD_PHASE);
 	// One further pixel of delay before it reaches the screen.
 	//
 	// With the interrupt at its authentic position the picture drawn in
