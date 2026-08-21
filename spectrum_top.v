@@ -596,6 +596,7 @@ module spectrum_top (
 	//   runtime) - without this second pass it would find that area empty
 	//   and run garbage the moment it switches, regardless of whether an
 	//   SD card is even present.
+	reg         boot_zero_active = 1'b1;
 	reg         boot_copy_active = 1'b1;
 	reg  [14:0] boot_copy_addr = 15'd0;
 	wire [7:0]  boot_copy_rom_do;
@@ -624,7 +625,6 @@ module spectrum_top (
 
 	// Second boot phase: zero the DivMMC sram pages (see the state
 	// machine below for why).
-	reg         boot_zero_active = 1'b1;
 	reg  [16:0] boot_zero_addr   = 17'd0;
 	wire        boot_zero_wr = boot_zero_active & boot_settle_done;
 
@@ -741,6 +741,7 @@ module spectrum_top (
 	//   LED2, LED3      - contention mode: both dark full, LED2 memory
 	//                     only, LED3 off
 	//   LED4, rightmost - Pentagon 1024K extension on
+	wire       zc_act;
 	// Whoever is actually driving the card, not always DivMMC - on a
 	// machine running a ROM out of the slots that is the Z-Controller.
 	//
@@ -1504,7 +1505,7 @@ module spectrum_top (
 	// rather than an arbitration.
 	wire       zc_enable = rom_from_sd & (~cpu_ioreq_n) & cpu_m1_n;
 	wire [7:0] zc_do;
-	wire       zc_cs_n, zc_sck, zc_mosi, zc_wait_n, zc_act;
+	wire       zc_cs_n, zc_sck, zc_mosi, zc_wait_n;
 	zcontroller u_zc (
 		.clk(clock),
 		.reset_n(reset_n),

@@ -352,8 +352,31 @@ module video (
 	// board. The group cost every border change up to eight pixels, and
 	// on the board a demo drawing text in the border sat exactly that
 	// far right of where it belongs.
+	// The group is back, and with a phase this time.
+	//
+	// It was removed because putting it in moved a border-drawn text
+	// demo eight pixels right - which is what a group does when its
+	// boundary is in the wrong place, and is a reason to set the phase
+	// rather than to drop the quantisation.
+	//
+	// Dropping it left the border able to change on any pixel, and a
+	// real 48K cannot do that: its ULA takes the border once per
+	// 8-pixel group, so a border edge can only ever land on a group
+	// boundary. That is the whole of the four-pixel residual - half a
+	// group, a position the machine being copied cannot produce - and
+	// it is why no amount of delay or interrupt trimming would take it:
+	// every knob moved the edge by whole pixels within a grid that
+	// should not have existed.
+	//
+	// hcounter runs at twice the pixel rate, so a group is sixteen
+	// counts. The phase is set to the display's own character grid: the
+	// picture turns on at hcounter[2:1] == 2'b11, which puts cell
+	// boundaries at count 7 of every sixteen.
+	localparam [3:0] BORDER_PHASE = 4'd7;
 	reg     [2:0]   border_latched = 3'b000;
-	wire            border_update = (hcounter[0] == 1'b1);
+	wire            border_update = (MACHINE == MACHINE_PENT)
+	                                ? (hcounter[0] == 1'b1)
+	                                : (hcounter[3:0] == BORDER_PHASE);
 	// One further pixel of delay before it reaches the screen.
 	//
 	// With the interrupt at its authentic position the picture drawn in
@@ -425,12 +448,22 @@ module video (
 	// 94% of the device's logic, being 448 registers wide.
 	reg     [2:0]   border_d1  = 3'b000;
 	reg     [2:0]   border_d2  = 3'b000;
+	reg     [2:0]   border_d3  = 3'b000;
+	reg     [2:0]   border_d4  = 3'b000;
+	reg     [2:0]   border_d5  = 3'b000;
+	reg     [2:0]   border_d6  = 3'b000;
+	reg     [2:0]   border_d7  = 3'b000;
 	reg     [2:0]   border_out = 3'b000;
 	always @(posedge CLK or negedge nRESET) begin
 		if (nRESET == 1'b0) begin
 			border_latched <= 3'b000;
 			border_d1      <= 3'b000;
 			border_d2      <= 3'b000;
+			border_d3      <= 3'b000;
+			border_d4      <= 3'b000;
+			border_d5      <= 3'b000;
+			border_d6      <= 3'b000;
+			border_d7      <= 3'b000;
 			border_out     <= 3'b000;
 		end else if (CLKEN == 1'b1) begin
 			if (border_update == 1'b1)
@@ -438,6 +471,35 @@ module video (
 			if (hcounter[0] == 1'b1) begin
 				border_d1  <= border_latched;
 				border_d2  <= border_d1;
+				border_d3  <= border_d2;
+				border_d4  <= border_d3;
+				border_d5  <= border_d4;
+				border_d6  <= border_d5;
+				border_d7  <= border_d6;
+				// 48K taps four pixels further down the chain, and its
+				// interrupt sits two T-states earlier to match.
+				//
+				// The pair cancels for anything that takes the interrupt
+				// as it comes: two T-states earlier is four pixels left,
+				// four pixels of delay puts them back. It does not
+				// cancel for a program that waits in HALT. There the
+				// CPU polls the interrupt line every four T-states, so
+				// acceptance cannot move by two - it either stays where
+				// it was or jumps a whole step of eight pixels. Measured
+				// on the board: ula48 did not move at all when the
+				// interrupt went from 8 to 0, and the birds demo jumped
+				// eight pixels.
+				//
+				// So the interrupt buys the birds eight pixels left and
+				// the delay gives four of them back, leaving the four
+				// that were wrong. Nothing else on the machine moves,
+				// and Pentagon is not touched at all.
+				// Every machine taps the same place again. The 48K used
+				// to tap two pixels earlier, which was an attempt to
+				// take the four-pixel residual out of the delay - the
+				// chain measured two pixels of range in simulation and
+				// the residual was four, so it could not reach. The
+				// quantisation above is where that belongs.
 				border_out <= border_d2;
 			end
 		end
@@ -579,6 +641,11 @@ module video (
 	// 48K is 247 rather than 248 because its position below is eight
 	// counts - two T-states - into the tail of the previous line. See
 	// int_hpos_base.
+	// 48K sits one line earlier at position 888, which is eight steps -
+	// two T-states - before position 0 of line 248. Written that way
+	// because the counter cannot go below zero: a negative position
+	// wraps to a huge number and no interrupt is generated at all, which
+	// is a machine that will not start.
 	wire [8:0] int_line_base =
 		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd248;
 	// Interrupt position. The table entry is zx-sizif-512's converted;
