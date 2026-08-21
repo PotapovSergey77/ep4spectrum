@@ -15,8 +15,8 @@
 // bytes. Reads only for now - writing would need the image carried back
 // to the card, which is a separate piece of machinery.
 //
-// What this is NOT: no index pulses, no track formatting, no write
-// track, no CRC generation. TR-DOS reads a catalogue and loads files
+// What this is NOT: no track formatting, no write track, no CRC
+// generation, no write path. TR-DOS reads a catalogue and loads files
 // with RESTORE, SEEK, STEP, READ SECTOR and READ ADDRESS, and those are
 // what is here.
 
@@ -124,6 +124,28 @@ module bdi (
 		else                       idx_cnt <= idx_cnt + 23'd1;
 	end
 
+	// --- one action per bus cycle ---------------------------------------
+	//
+	// IORQ, RD/WR and the port address hold for the CPU's whole IN or
+	// OUT, which is many clocks, so anything driven off the level happens
+	// over and over. divmmc.v learnt this the hard way - on the level,
+	// one IN pushed several bytes through the SPI engine - and this file
+	// repeated the mistake in three places. A STEP IN moved the head once
+	// per clock enable inside the write; a read of the data register
+	// stepped the image pointer several times per byte, and stepped it
+	// WHILE the arbiter was still fetching, so the byte that came back
+	// was not the byte at the address the read started with.
+	//
+	// Writes act on the start of the access, where the data is valid.
+	// The data-register read acts on the END of it, once the CPU has
+	// taken the byte - advancing at the start would hand it the next one.
+	wire acc_wr = enable & ~wr_n;
+	wire dat_rd = enable & ~rd_n & sel_dat;
+	wire cmd_rd = enable & ~rd_n & sel_cmd;
+	reg  acc_wr_d = 1'b0;
+	reg  dat_rd_d = 1'b0;
+	reg  cmd_rd_d = 1'b0;
+
 	// --- command decode -------------------------------------------------
 	localparam CMD_RESTORE = 4'h0, CMD_SEEK = 4'h1,
 	           CMD_STEP    = 4'h2, CMD_STEPI = 4'h4, CMD_STEPO = 4'h6,
@@ -148,7 +170,11 @@ module bdi (
 			xfer_cnt <= 8'h00;
 			img_addr <= 20'h00000;
 		end else begin
-			if (clken == 1'b1 && enable == 1'b1 && wr_n == 1'b0) begin
+			acc_wr_d <= acc_wr;
+			dat_rd_d <= dat_rd;
+			cmd_rd_d <= cmd_rd;
+
+			if (acc_wr == 1'b1 && acc_wr_d == 1'b0) begin
 				if (sel_trk) r_track  <= din;
 				if (sel_sec) r_sector <= din;
 				if (sel_dat) r_data   <= din;
@@ -231,7 +257,7 @@ module bdi (
 
 			// Reading the data register takes the byte and asks for the
 			// next one, until the sector is done.
-			if (clken == 1'b1 && enable == 1'b1 && rd_n == 1'b0 && sel_dat) begin
+			if (dat_rd_d == 1'b1 && dat_rd == 1'b0) begin
 				if (reading == 1'b1) begin
 					if (xfer_cnt == 8'hff) begin
 						reading <= 1'b0;
@@ -255,11 +281,11 @@ module bdi (
 			end
 
 			// Reading the status register clears INTRQ, as a 1793 does.
-			if (clken == 1'b1 && enable == 1'b1 && rd_n == 1'b0 && sel_cmd)
+			if (cmd_rd == 1'b1 && cmd_rd_d == 1'b0)
 				intrq <= 1'b0;
 
 			// $FF bit 2 low resets the controller
-			if (clken == 1'b1 && enable == 1'b1 && wr_n == 1'b0 && sel_sys
+			if (acc_wr == 1'b1 && acc_wr_d == 1'b0 && sel_sys
 			    && din[2] == 1'b0) begin
 				busy    <= 1'b0;
 				reading <= 1'b0;
