@@ -45,3 +45,4 @@ simulation/modelsim/work_base/
 simulation/modelsim/*.log
 simulation/modelsim/*.hex
 simulation/modelsim/spectrum.qpf
+simulation/modelsim/work_dbg/
