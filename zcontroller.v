@@ -38,6 +38,12 @@ module zcontroller (
 	output            sd_mosi,
 	input             sd_miso,
 
+	// High for any access to either port, before anything is decided
+	// about the card. Selecting the card is several steps into a
+	// conversation, so a lamp driven from /CS cannot tell a program that
+	// is looking and failing from one that never looked.
+	output            act,
+
 	// Low while a transfer this module started is still shifting. Same
 	// shape as divmmc.v's, and for the same reason: SCK runs at 3.5MHz,
 	// so a byte takes about 2.3us against an IO cycle of roughly 3.1us
@@ -116,6 +122,8 @@ module zcontroller (
 		if (sel_dat) dout = spi_dout;
 		else         dout = 8'hff;
 	end
+
+	assign act = enable & (sel_dat | sel_ctl);
 
 	assign wait_n = ~spi_acc | (seen_busy & ~spi_busy);
 

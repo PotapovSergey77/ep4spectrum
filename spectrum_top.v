@@ -740,12 +740,20 @@ module spectrum_top (
 	//   LED2, LED3      - contention mode: both dark full, LED2 memory
 	//                     only, LED3 off
 	//   LED4, rightmost - Pentagon 1024K extension on
-	// Whoever is actually driving the card, not always DivMMC. On a
-	// machine running a ROM out of the slots the card belongs to the
-	// Z-Controller, and this lamp sat dark through every access Proteus
-	// made - which is exactly the reading needed to tell "it is not
-	// finding the file" from "it is not looking".
-	assign LED[3] = rom_from_sd ? zc_cs_n : divmmc_cs;
+	// Whoever is actually driving the card, not always DivMMC - on a
+	// machine running a ROM out of the slots that is the Z-Controller.
+	//
+	// And for the Z-Controller it follows any access to its PORTS, not
+	// /CS. Selecting the card is several steps into a conversation, so a
+	// lamp driven from /CS cannot tell a program that is looking and
+	// failing from one that never looked - which was the whole question.
+	// Stretched, because a couple of IO cycles is far too short to see.
+	reg [21:0] zc_act_cnt = 22'd0;
+	always @(posedge clock) begin
+		if (zc_act == 1'b1)             zc_act_cnt <= 22'h3fffff;
+		else if (zc_act_cnt != 22'd0)   zc_act_cnt <= zc_act_cnt - 22'd1;
+	end
+	assign LED[3] = rom_from_sd ? ~(zc_act_cnt != 22'd0) : divmmc_cs;
 	assign LED[2] = ~(cont_mode == 2'd1);
 	assign LED[1] = ~(cont_mode == 2'd0);
 	assign LED[0] = ~ext1024;
@@ -1495,7 +1503,7 @@ module spectrum_top (
 	// rather than an arbitration.
 	wire       zc_enable = rom_from_sd & (~cpu_ioreq_n) & cpu_m1_n;
 	wire [7:0] zc_do;
-	wire       zc_cs_n, zc_sck, zc_mosi, zc_wait_n;
+	wire       zc_cs_n, zc_sck, zc_mosi, zc_wait_n, zc_act;
 	zcontroller u_zc (
 		.clk(clock),
 		.reset_n(reset_n),
@@ -1509,6 +1517,7 @@ module spectrum_top (
 		.sd_sck(zc_sck),
 		.sd_mosi(zc_mosi),
 		.sd_miso(SD_MISO),
+		.act(zc_act),
 		.wait_n(zc_wait_n)
 	);
 
