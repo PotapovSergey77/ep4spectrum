@@ -50,11 +50,11 @@ SLOT_DISK       equ 3
 SCRWIDTH        equ 32
 
 ; The disk slot lives in the RAM half of SDRAM at $40000 and the byte
-; counter is 20 bits, so 640K - a full double-sided 80-track TRD - is
-; the most that will fit before it would run into anything else. Counted
+; counter is 20 bits. The image now lives in the ROM half at $14000,
+; below DivMMC at $80000, so 432K is what fits there. Counted
 ; in 256-byte blocks, because a byte count that large does not fit in
 ; the 16-bit arithmetic the rest of this uses.
-DISK_MAXBLK     equ 2560
+DISK_MAXBLK     equ 1728
 
 
 ; Buffers live in the command's own space, which is what the 8K at

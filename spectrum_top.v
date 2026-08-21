@@ -349,7 +349,7 @@ module spectrum_top (
 	// Memory size follows the machine: 48K has none of it, the other
 	// three have 128K. Pentagon can additionally be given 1024K on F9.
 	wire            mem128 = (machine != MACHINE_S48);
-	reg             ext1024 = 1'b0;
+	reg             ext1024 = 1'b1;   // Pentagon is the power-up machine
 
 	// Master clock - 28 MHz
 	wire            clk56;
@@ -852,10 +852,18 @@ module spectrum_top (
 	// exist on the other machines and leaving them selected would strand
 	// whatever is running on a bank it cannot reach.
 	reg mem128_d = 1'b1;
+	reg [1:0] mach_d = 2'd3;   // MACHINE_PENT, the power-up machine
 	always @(posedge clock) begin
 		mem128_d <= mem128;
+		// On by default on Pentagon, and switched on again every time the
+		// machine is selected. A RAM disk needs the megabyte, and having
+		// to remember F9 first is the sort of thing that reads as
+		// software being broken.
+		mach_d <= machine;
 		if (machine != MACHINE_PENT)
 			ext1024 <= 1'b0;
+		else if (mach_d != MACHINE_PENT)
+			ext1024 <= 1'b1;
 		else if (key_f9_press == 1'b1)
 			ext1024 <= ~ext1024;
 	end
@@ -2233,10 +2241,22 @@ module spectrum_top (
 	// it captures cpu_addr into cpu_addr_held when it grants the cycle -
 	// and doing it here as well only made the address the arbiter
 	// captured a stale one.
-	wire [19:0] disk_addr = 20'h40000 + romld_cnt;
+	// The disk image lives in the ROM half, not the RAM half.
+	//
+	// It used to sit at $40000 with the RAM, which is Spectrum RAM banks
+	// 16 to 55 - precisely the memory a 1024K RAM disk wants. The two
+	// cannot share it, and the RAM disk is what Proteus needs somewhere
+	// to copy an image to. So the image moves out and the whole megabyte
+	// of RAM goes back to the machine.
+	//
+	// rom_addr $14000 is the first free address above the three ROM
+	// slots, and DivMMC starts at $80000, so there are 432K here. That is
+	// plenty: slot 3 only ever holds the boot image now - anything else
+	// Proteus loads goes to its RAM disk, not through here.
+	wire [19:0] disk_addr = 20'h14000 + romld_cnt;
 	assign cpu_addr =
-		bdi_img_rd ? {1'b0, 20'h40000 + bdi_img_addr} :
-		((romld_write | romld_read) & disk_slot) ? {1'b0, disk_addr} :
+		bdi_img_rd ? {1'b1, 20'h14000 + bdi_img_addr} :
+		((romld_write | romld_read) & disk_slot) ? {1'b1, disk_addr} :
 		(ram_enable == 1'b1) ? {1'b0, ram_addr} : {1'b1, rom_addr};
 
 	// Video from bank 7 (128K/+3)
