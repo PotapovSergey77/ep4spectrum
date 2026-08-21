@@ -70,6 +70,7 @@ module zcontroller (
 	reg  spi_rx_strobe;
 	wire spi_busy;
 	wire [7:0] spi_dout;
+	wire [7:0] spi_rxb;
 
 	// Latches that this access has actually started a transfer, so
 	// wait_n is not fooled by busy still reading low in the clock or two
@@ -115,6 +116,7 @@ module zcontroller (
 		.rx_strobe(spi_rx_strobe),
 		.din(spi_din),
 		.dout(spi_dout),
+		.rxb(spi_rxb),
 		.spi_clk(sd_sck),
 		.spi_di(sd_miso),
 		.spi_do(sd_mosi),
@@ -130,7 +132,16 @@ module zcontroller (
 	// exact or masked. The whole byte is kept rather than just the two
 	// defined bits, so an exact compare passes too.
 	always @* begin
-		if (sel_dat)      dout = spi_dout;
+		// The byte from THIS transfer, not the previous one.
+		//
+		// spi.v's dout is loaded when a transfer starts, so it
+		// carries the result of the one before - the pipeline a
+		// controller that does not stall the CPU has to have. We do
+		// stall it, right through to the end of the transfer, so
+		// returning the previous byte put every read one behind:
+		// enough to walk a directory by luck and not enough to follow
+		// a file, which ends as "end of file" part way through a copy.
+		if (sel_dat)      dout = spi_rxb;
 		else if (sel_ctl) dout = ctrl_r;
 		else              dout = 8'hff;
 	end

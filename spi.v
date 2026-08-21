@@ -26,7 +26,17 @@ module spi (
    // High from the clock the engine is kicked off until it is idle
    // again, so a caller can hold the CPU for exactly one transfer.
    // See divmmc.v's wait_n for why that is needed.
-   output busy
+   output busy,
+
+   // The shift register itself.
+   //
+   // dout carries the byte from the PREVIOUS transfer: it is loaded when
+   // a new one starts, which is the pipelined behaviour a caller that
+   // does not wait depends on, and what real Z-Controller hardware does.
+   // A caller that DOES hold the CPU to the end of the transfer wants
+   // this one instead - by then it is the byte just received, with no
+   // lag to account for.
+   output [7:0] rxb
 );
 
 // SD cards require a slow (<=400kHz) SCK during the CMD0/CMD8/ACMD41
@@ -68,6 +78,7 @@ reg [4:0] counter = 5'd16; // tx/rx counter is idle
 reg [7:0] io_byte;
 
 assign busy = (counter != 5'd16);
+assign rxb  = io_byte;
 
 assign spi_clk = counter[0];
 assign spi_do = io_byte[7];       // data is shifted up during transfer

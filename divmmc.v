@@ -293,7 +293,8 @@ spi mi_spi (
    .spi_clk(sd_sck),
    .spi_di(sd_miso),
    .spi_do(sd_mosi),
-   .busy(spi_busy)
+   .busy(spi_busy),
+   .rxb()          // ESXDOS is written for the pipelined dout above
 );
 
 // True once this access's own transfer has both started and finished.
