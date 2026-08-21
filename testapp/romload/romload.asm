@@ -24,7 +24,7 @@
 ; files still boots and can print the message saying which are missing.
 ;
 ; On screen each file gets one line of its own: the name, a space, and
-; then a bar of stars. The disk image gets an activity bar instead,
+; then a bar of stars that reaches the right-hand edge exactly when the
 ; file is fully loaded. The screen is 32 columns, so the bar is as wide
 ; as whatever the name leaves - a long name simply gets a coarser bar,
 ; and the end of the line always means done. Nothing is printed before
@@ -55,13 +55,6 @@ SCRWIDTH        equ 32
 ; in 256-byte blocks, because a byte count that large does not fit in
 ; the 16-bit arithmetic the rest of this uses.
 DISK_MAXBLK     equ 2560
-
-; The bar for a disk cannot mean percent: a .trd is whatever length it
-; is, and nothing here knows that before reading it. It is an activity
-; bar instead - one star per eight blocks, 2K a star - and it is topped
-; up to the full width when the file ends, so the line still finishes
-; flush right and still means done.
-DISK_BLKPERSTAR equ 8
 
 
 ; Buffers live in the command's own space, which is what the 8K at
@@ -340,6 +333,20 @@ one_disk:       ld      a,SLOT_DISK
                 ld      hl,0
                 ld      (dblk),hl
                 ld      (bar_done),hl
+                ld      (acc),hl
+
+                ; Scale the bar to the largest image a .trd can be, and
+                ; let the same Bresenham the ROMs use spread the stars
+                ; evenly over it.
+                ;
+                ; It used to print one star per eight blocks, which put
+                ; the whole bar in the first 40K. For a 640K image - and
+                ; proteus.trd is exactly 640K, the maximum - that meant
+                ; the bar filled up in the first few percent and then sat
+                ; there motionless for the remaining 600K, which reads as
+                ; a hang rather than as progress.
+                ld      hl,DISK_MAXBLK
+                ld      (blk_tot),hl
 
 dsk_chunk:      ld      a,(handle)
                 ld      hl,buffer
@@ -377,7 +384,7 @@ dsk_byte:       ld      a,(hl)
                 ld      hl,(dblk)
                 inc     hl
                 ld      (dblk),hl
-                call    dsk_bar
+                call    bar_step
                 jr      dsk_chunk
 
 dsk_end:        call    shut
@@ -393,22 +400,6 @@ dsk_end:        call    shut
 dsk_empty:      call    nl
                 ld      hl,msg_empty
                 jp      print
-
-; One star per eight blocks, and never past the width of the bar.
-dsk_bar:        ld      a,(dblk)        ; low byte is enough for the test
-                and     DISK_BLKPERSTAR-1
-                ret     nz
-                ld      hl,(bar_done)
-                ld      de,(bar_w)
-                or      a
-                sbc     hl,de
-                ret     nc
-                ld      a,'*'
-                call    putc
-                ld      hl,(bar_done)
-                inc     hl
-                ld      (bar_done),hl
-                ret
 
 ; ---------------------------------------------------------------------
 ; The progress bar.
