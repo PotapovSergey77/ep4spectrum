@@ -740,7 +740,12 @@ module spectrum_top (
 	//   LED2, LED3      - contention mode: both dark full, LED2 memory
 	//                     only, LED3 off
 	//   LED4, rightmost - Pentagon 1024K extension on
-	assign LED[3] = divmmc_cs;
+	// Whoever is actually driving the card, not always DivMMC. On a
+	// machine running a ROM out of the slots the card belongs to the
+	// Z-Controller, and this lamp sat dark through every access Proteus
+	// made - which is exactly the reading needed to tell "it is not
+	// finding the file" from "it is not looking".
+	assign LED[3] = rom_from_sd ? zc_cs_n : divmmc_cs;
 	assign LED[2] = ~(cont_mode == 2'd1);
 	assign LED[1] = ~(cont_mode == 2'd0);
 	assign LED[0] = ~ext1024;
