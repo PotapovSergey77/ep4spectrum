@@ -36,9 +36,9 @@ module divmmc (
 	// stuck at one for as long as the machine runs.
 	input          beta_owns_3d,
 
-	// The machine ROM comes from the SD slots, so the reset fetch at
-	// $0000 belongs to it and not to ESXDOS.
-	input          keep_reset,
+	// The machine ROM comes from the SD slots: DivMMC is not part of the
+	// memory map at all, so its automapper must not arm either.
+	input          stand_down,
 
 	input  [15:0] 	a,
 	input          wr_n,
@@ -217,9 +217,27 @@ always @(posedge clk) begin
 		// while $0008, $0038 and $0066 still reach ESXDOS. It does mean
 		// ESXDOS is not re-initialised by that reset - it does not need
 		// to be, since its RAM in SDRAM survives one.
-		if (!mreq_n && !rd_n && !m1_n &&
-			(((a==16'h0000) && !keep_reset) ||
-			 (a==16'h0008) || (a==16'h0038) ||
+		// Sharing was tried and gives a machine that behaves differently
+		// every time, so it is off again.
+		//
+		// Suppressing only $0000 leaves ESXDOS un-initialised, and the
+		// reason that is fatal rather than merely untidy is that ESXDOS
+		// keeps its workspace in the SPECTRUM's RAM around $5B00, not
+		// in its own. The machine ROM's reset wipes exactly that. Its
+		// RAM in SDRAM surviving the reset buys nothing, because the
+		// half that matters does not live there - so the NMI menu ran
+		// on destroyed state and did something different on every try.
+		//
+		// Doing it properly means letting ESXDOS take the reset and hand
+		// over to the machine ROM afterwards, the way it does on real
+		// hardware. That is a separate piece of work and not the way to
+		// get a program onto the Pentagon: a TR-DOS machine loads from a
+		// disk, and slot 3 already carries an image.
+		if (stand_down) begin
+			m1_trigger <= 1'b0;
+			paged_in_r <= 1'b0;
+		end else if (!mreq_n && !rd_n && !m1_n &&
+			((a==16'h0000) || (a==16'h0008) || (a==16'h0038) ||
 			 (a==16'h0066) || (a==16'h04C6) || (a==16'h0562))) begin
 			// activate automapper after this cycle
 			m1_trigger <= 1'b1;
