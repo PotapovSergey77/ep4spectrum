@@ -24,7 +24,7 @@
 ; files still boots and can print the message saying which are missing.
 ;
 ; On screen each file gets one line of its own: the name, a space, and
-; then a bar of stars that reaches the right-hand edge exactly when the
+; then a bar of stars. The disk image gets an activity bar instead,
 ; file is fully loaded. The screen is 32 columns, so the bar is as wide
 ; as whatever the name leaves - a long name simply gets a coarser bar,
 ; and the end of the line always means done. Nothing is printed before
@@ -528,7 +528,7 @@ lead:           defb    0
 fn_128:         defb    "128.rom",0
 fn_pent:        defb    "pentagon.rom",0
 fn_trdos:       defb    "trdos.rom",0
-fn_disk:        defb    "disk.trd",0
+fn_disk:        defb    "proteus.trd",0
 
 msg_nofile:     defb    "not on card",13,0
 msg_empty:      defb    "empty",13,0
@@ -543,8 +543,8 @@ msg_howto:      defb    13
                 defb    "  128.rom       32768 bytes",13
                 defb    "  pentagon.rom  32768 bytes",13
                 defb    "  trdos.rom     16384 bytes",13,13
-                defb    "disk.trd is optional - a TR-DOS",13
-                defb    "image to put in the drive.",13,13
+                defb    "proteus.trd is optional - the",13
+                defb    "TR-DOS image in the drive.",13,13
                 defb    "Staying on the 48K ROM.",13,0
 
 slot:           defb    0
