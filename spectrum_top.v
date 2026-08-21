@@ -2404,8 +2404,18 @@ module spectrum_top (
 	localparam DIAG_GAP = 24'd9000000;   // ~1/3 second at 28MHz
 
 	reg [15:0] opa_last = 16'h0000;
+	reg [15:0] opa_prev = 16'h0000;
 	reg [15:0] opa_show = 16'h0000;
+	// Where the $3Dxx page was entered FROM. Knowing the machine stops
+	// at $3D2A says almost nothing on its own - that address is the
+	// middle of an operand in the TR-DOS ROM, so nothing can be calling
+	// it deliberately, and it is the same number in both machines. What
+	// decides this is which instruction jumped into the page, and that
+	// is one register's worth of history.
+	reg [15:0] caller   = 16'h0000;
 	reg [23:0] pc_div   = 24'd0;
+	reg [2:0]  ph_cnt   = 3'd0;
+	reg        diag_phase = 1'b0;
 	reg        m1_now_d = 1'b0;
 	reg [23:0] m1_gap   = 24'd0;   // clocks since a fetch last STARTED
 	reg [23:0] wt_gap   = 24'd0;   // clocks the arbiter has held WAIT
@@ -2429,7 +2439,14 @@ module spectrum_top (
 		// what the first version of this did, and why it showed a
 		// stable address with the "stopped" lamp dark.
 		if (m1_now == 1'b1 && m1_now_d == 1'b0) begin
+			opa_prev <= opa_last;
 			opa_last <= cpu_a;
+			// The first fetch of a run inside $3Dxx: remember what was
+			// executing just before it. Fetches that were already in
+			// the page do not overwrite it, so this keeps the way in
+			// rather than the last step of the wander that follows.
+			if (cpu_a[15:8] == 8'h3d && opa_last[15:8] != 8'h3d)
+				caller <= opa_last;
 			m1_gap   <= 24'd0;
 			cpu_dead <= 1'b0;
 		end else if (m1_gap >= DIAG_GAP) begin
@@ -2488,13 +2505,23 @@ module spectrum_top (
 			ce_gap <= ce_gap + 24'd1;
 		end
 
+		// The digits alternate: two seconds on the address the CPU last
+		// fetched from, two seconds on the address the $3Dxx page was
+		// entered from. Point 2 says which of the two is showing, so
+		// there is nothing to guess and nothing to count.
 		pc_div <= pc_div + 24'd1;
-		if (cpu_dead == 1'b1 || pc_div >= 24'd13999999) begin
-			pc_div   <= 24'd0;
-			opa_show <= opa_last;
+		if (pc_div >= 24'd13999999) begin
+			pc_div <= 24'd0;
+			ph_cnt <= ph_cnt + 3'd1;
+			if (ph_cnt == 3'd3) begin
+				ph_cnt     <= 3'd0;
+				diag_phase <= ~diag_phase;
+			end
 		end
+		if (cpu_dead == 1'b1 || pc_div >= 24'd13999999)
+			opa_show <= opa_last;
 	end
-	wire [15:0] diag_show = dm_stuck ? divmmc_trap_addr : opa_show;
+	wire [15:0] diag_show = diag_phase ? caller : opa_show;
 	wire [3:0] pc_nibble = (digit_scan == 2'd3) ? diag_show[15:12] :
 	                       (digit_scan == 2'd2) ? diag_show[11:8]  :
 	                       (digit_scan == 2'd1) ? diag_show[7:4]   :
@@ -2550,14 +2577,15 @@ module spectrum_top (
 	// wrong is how an address in ESXDOS's own RAM gets looked up in a
 	// ROM listing.
 	//
-	//   point 1, leftmost  - the digits are the DivMMC trap address, not
-	//                        the PC: the automapper has been stuck on
-	//   point 2            - DivMMC is paged in ($2000-$3FFF is its RAM)
+	//   point 1, leftmost  - the CPU has stopped fetching: the digits are
+	//                        where it stopped, not where it is looping
+	//   point 2            - the digits are the address the $3Dxx page
+	//                        was entered FROM, not the last fetch
 	//   point 3            - the TR-DOS ROM is paged in
 	//   point 4, rightmost - the machine ROM is coming from the SD slots
-	wire digit_dp    = (digit_scan == 2'd3) ? dm_stuck        :
-	                   (digit_scan == 2'd2) ? divmmc_paged_in :
-	                   (digit_scan == 2'd1) ? trdos_active    :
+	wire digit_dp    = (digit_scan == 2'd3) ? cpu_dead     :
+	                   (digit_scan == 2'd2) ? diag_phase   :
+	                   (digit_scan == 2'd1) ? trdos_active :
 	                                          rom_from_sd;
 	wire digit_dp_unused = ((digit_scan == 2'd3) &&
 	                    (any_trim || (cpu_speed == 2'd0) || (cpu_speed == 2'd1))) ||
