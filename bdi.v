@@ -17,10 +17,10 @@
 // none of its own memory. Carrying an image back to the SD card is a
 // separate piece of machinery and is not here.
 //
-// What this is NOT: no track formatting, no write track, no CRC
-// generation. TR-DOS reads a catalogue, loads files and formats a disk
-// with RESTORE, SEEK, STEP, READ/WRITE SECTOR and READ ADDRESS, and those
-// are what is here.
+// What this is NOT: no CRC generation, and WRITE TRACK accepts the raw
+// format stream and throws it away rather than interpreting it - a .trd
+// in SDRAM has no gaps or address marks to write. What TR-DOS needs is
+// that the command completes; it lays the catalogue down itself after.
 
 module bdi (
 	input             clk,
@@ -133,6 +133,8 @@ module bdi (
 	// pulse coming and going - changed which sector it blamed. That is
 	// the "Disk Error Trk 0 Sec 9", and then Sec 1, and then Sec 15.
 	reg         type2   = 1'b0;
+	reg         fmt     = 1'b0;   // a WRITE TRACK is running
+	reg         idx_d   = 1'b0;
 	wire [7:0]  adr_byte = (adr_idx == 3'd0) ? r_track       :
 	                       (adr_idx == 3'd1) ? {7'd0, side}  :
 	                       (adr_idx == 3'd2) ? 8'd1          :  // sector 1
@@ -187,7 +189,7 @@ module bdi (
 	localparam CMD_RESTORE = 4'h0, CMD_SEEK = 4'h1,
 	           CMD_STEP    = 4'h2, CMD_STEPI = 4'h4, CMD_STEPO = 4'h6,
 	           CMD_RDSEC   = 4'h8, CMD_WRSEC = 4'hA,
-	           CMD_RDADR   = 4'hC, CMD_FORCE = 4'hD;
+	           CMD_RDADR   = 4'hC, CMD_FORCE = 4'hD, CMD_WRTRK = 4'hF;
 
 	always @(posedge clk or negedge reset_n) begin
 		if (reset_n == 1'b0) begin
@@ -204,6 +206,8 @@ module bdi (
 			rec_nf   <= 1'b0;
 			reading  <= 1'b0;
 			writing  <= 1'b0;
+			fmt      <= 1'b0;
+			idx_d    <= 1'b0;
 			rd_adr   <= 1'b0;
 			type2    <= 1'b0;
 			adr_idx  <= 3'd0;
@@ -226,7 +230,21 @@ module bdi (
 					// Type II (read sector) and type III (read
 					// address) answer with the type II status;
 					// everything else with type I.
-					type2 <= (din[7:5] == 3'b100) | (din[7:4] == CMD_RDADR);
+					// $8x and $9x read a sector, $Ax and $Bx write
+					// one - all four are type II, and $7:6 == 10 is
+					// what they have in common. Written as $7:5 == 100
+					// it caught only the reads, so every WRITE SECTOR
+					// answered with the type I word afterwards - and
+					// type I bit 5 is "head loaded", permanently 1
+					// here, which reads as WRITE FAULT in type II. The
+					// same defect that made every completed read look
+					// like a failure, left in place for writes.
+					//
+					// $Cx reads an address, $Fx writes a track; both
+					// are type III and answer with the same word.
+					type2 <= (din[7:6] == 2'b10)
+					         | (din[7:4] == CMD_RDADR)
+					         | (din[7:4] == CMD_WRTRK);
 					case (din[7:4])
 					CMD_RESTORE: begin
 						head  <= 8'h00;
@@ -315,10 +333,38 @@ module bdi (
 							drq     <= 1'b1;
 						end
 					end
+					CMD_WRTRK: begin
+						// Formatting. The raw track stream is accepted
+						// and thrown away rather than interpreted -
+						// address marks, gaps and CRC bytes describe a
+						// layout that a .trd in SDRAM does not have.
+						// What matters to TR-DOS is that the command
+						// completes: it writes the catalogue afterwards
+						// with ordinary sector writes, and that is what
+						// makes the disk a disk.
+						//
+						// Ends on the next index pulse, as a real drive
+						// does - a track is one revolution, 200ms, so a
+						// full format takes about half a minute. That is
+						// what formatting a floppy costs.
+						if (present == 1'b0) begin
+							rec_nf <= 1'b1;
+							intrq  <= 1'b1;
+						end else if (wprot == 1'b1) begin
+							intrq  <= 1'b1;
+						end else begin
+							rec_nf  <= 1'b0;
+							crc_err <= 1'b0;
+							busy    <= 1'b1;
+							fmt     <= 1'b1;
+							drq     <= 1'b1;
+						end
+					end
 					CMD_FORCE: begin
 						busy    <= 1'b0;
 						reading <= 1'b0;
 						writing <= 1'b0;
+						fmt     <= 1'b0;
 						rd_adr  <= 1'b0;
 						drq     <= 1'b0;
 						intrq   <= 1'b1;
@@ -362,6 +408,15 @@ module bdi (
 			// On the END of the access, like the read: the address has
 			// to still be pointing at this byte while the arbiter is
 			// writing it.
+			// A format ends when the track comes round again.
+			idx_d <= index;
+			if (fmt == 1'b1 && index == 1'b1 && idx_d == 1'b0) begin
+				fmt   <= 1'b0;
+				busy  <= 1'b0;
+				drq   <= 1'b0;
+				intrq <= 1'b1;
+			end
+
 			if (dat_wr_d == 1'b1 && dat_wr == 1'b0 && writing == 1'b1) begin
 				if (xfer_cnt == 8'hff) begin
 					writing <= 1'b0;
@@ -384,6 +439,7 @@ module bdi (
 				busy    <= 1'b0;
 				reading <= 1'b0;
 				writing <= 1'b0;
+				fmt     <= 1'b0;
 				rd_adr  <= 1'b0;
 				drq     <= 1'b0;
 				intrq   <= 1'b0;
