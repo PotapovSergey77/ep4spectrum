@@ -372,15 +372,7 @@ module video (
 	// counts. The phase is set to the display's own character grid: the
 	// picture turns on at hcounter[2:1] == 2'b11, which puts cell
 	// boundaries at count 7 of every sixteen.
-	// Phase 15, one step on from the character grid.
-	//
-	// A write takes effect at the next boundary after it, so where the
-	// boundary sits decides which group a given write lands in - and a
-	// write sitting just past a boundary waits nearly a whole group,
-	// which is eight pixels of displacement for a few counts of
-	// difference. Birds came out right at 7; the demos that are still
-	// eight pixels right are the ones whose writes fall just after it.
-	localparam [3:0] BORDER_PHASE = 4'd15;
+	localparam [3:0] BORDER_PHASE = 4'd7;
 	reg     [2:0]   border_latched = 3'b000;
 	wire            border_update = (MACHINE == MACHINE_PENT)
 	                                ? (hcounter[0] == 1'b1)
