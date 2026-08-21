@@ -113,7 +113,20 @@ reg by_3d;
 // gets instead is an exit, down in the trap chain - see by_3d there.
 localparam TRAP_3D = 1'b1;
 
-wire auto_now = (TRAP_3D && !mreq_n && !rd_n && !m1_n
+// ...and only while the automapper is ALREADY on.
+//
+// That one condition separates the two users of this entry exactly. The
+// ESXDOS boot reaches $3Dxx from inside its own page - it got there
+// through the $0000 trap first - so it still works. A program probing
+// for TR-DOS reaches it with DivMMC paged out, which is the case that
+// has been killing Test 4.3: the probe never comes back, because the
+// fetch that was meant to read the page instead lands the CPU inside
+// it, and from there it wanders in ESXDOS's RAM without ever crossing
+// $4000 again, so even the exit added for it never fires.
+//
+// Removing the entry outright was tried first and stopped the card
+// initialising at all.
+wire auto_now = (TRAP_3D && paged_in_r && !mreq_n && !rd_n && !m1_n
                  && a[15:8] == 8'h3D && !beta_owns_3d);
 assign paged_in = paged_in_r | auto_now;
 
@@ -253,8 +266,8 @@ always @(posedge clk) begin
 			m1_trigger <= 1'b1;
 			trap_addr  <= a;
 			by_3d      <= 1'b0;
-		end else if (TRAP_3D && !mreq_n && !rd_n && !m1_n && a[15:8]==8'h3D
-		             && !beta_owns_3d) begin
+		end else if (TRAP_3D && paged_in_r && !mreq_n && !rd_n && !m1_n
+		             && a[15:8]==8'h3D && !beta_owns_3d) begin
 			// activate automapper immediately
 			paged_in_r <= 1'b1;
 			m1_trigger <= 1'b1;
