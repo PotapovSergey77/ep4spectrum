@@ -1044,15 +1044,31 @@ module video (
 			case (hcounter[9:4])
 				// Blanking starts at 304
 				6'b100110: hblanking <= 1'b1;
-				// Sync starts at 328
-				6'b101001: hsync <= 1'b1;
-				// Sync ends at 360
-				6'b101101: hsync <= 1'b0;
 				// Blanking ends at 400
 				6'b110010: hblanking <= 1'b0;
 				default: begin
 				end
 			endcase
+
+			// Sync moved one step later on the Sinclair machines, which
+			// puts the whole picture eight pixels left on the monitor.
+			//
+			// This is where a whole-image shift belongs, and nowhere
+			// else. Moving the picture window instead would change when
+			// pixels are fetched relative to contention and to the
+			// border grid - the two things that were just got right -
+			// while the monitor cannot tell the difference. A step of
+			// hcounter[9:4] is sixteen counts, which is eight pixels
+			// exactly, so the amount asked for is one step.
+			//
+			// Pentagon keeps its own position: its border was set on the
+			// board this evening and its picture sits where it should.
+			if (hcounter[9:4] == ((MACHINE == MACHINE_PENT) ? 6'b101001
+			                                                : 6'b101010))
+				hsync <= 1'b1;
+			if (hcounter[9:4] == ((MACHINE == MACHINE_PENT) ? 6'b101101
+			                                                : 6'b101110))
+				hsync <= 1'b0;
 
 			// Frame interrupt: one window on one line, the same shape
 			// for every machine. Kept separate from the vsync case
