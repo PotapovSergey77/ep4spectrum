@@ -2596,7 +2596,7 @@ module spectrum_top (
 	// Frame 2, the state word, reading left to right:
 	//
 	//   digit 3  bit3 CPU stopped fetching   bit2 arbiter holding WAIT
-	//            bit1 CPU not being clocked  bit0 DivMMC paged in
+	//            bit1 CPU is HALTed           bit0 DivMMC paged in
 	//   digit 2  bit3 TR-DOS ROM paged in    bit2 TR-DOS available here
 	//            bit1 ROM from the SD slots  bit0 48 BASIC half selected
 	//   digits 1-0  the byte the last fetch was given
@@ -2605,7 +2605,7 @@ module spectrum_top (
 	// $4D is LD C,L in the 48 BASIC ROM's string routine, $45 is the
 	// keyword table in the 128 menu ROM. The same address means a
 	// different thing in each.
-	wire [15:0] diag_stat = {cpu_dead, arb_hold, ce_dead, divmmc_paged_in,
+	wire [15:0] diag_stat = {cpu_dead, arb_hold, ~cpu_halt_n, divmmc_paged_in,
 	                         trdos_active, trdos_avail, rom_from_sd,
 	                         page_rom_sel, op_last};
 
