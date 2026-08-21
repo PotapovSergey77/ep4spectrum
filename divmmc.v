@@ -113,24 +113,8 @@ assign paged_in = paged_in_r | auto_now;
 reg [7:0] ctrl;
 
 assign sram_page = ctrl[3:0];
+assign mapram = ctrl[6];
 assign conmem = ctrl[7];
-
-// MAPRAM, and the piece of the $3Dxx entry that was missing.
-//
-// The specification says the $3Dxx entry maps the page immediately AND
-// SETS MAPRAM, and says what it is for in as many words: TR-DOS
-// emulation. We had the first half and not the second. With MAPRAM set,
-// $0000-$1FFF stops being the DivMMC ROM and becomes RAM bank 3
-// read-only - the copy ESXDOS made of itself - so its TR-DOS handler
-// runs against the memory it was written for. Without it the handler
-// gets the raw ROM underneath instead, which is a different program,
-// and that is where a probe for TR-DOS goes to die.
-//
-// Set only, never cleared by a port write: on real hardware the bit can
-// only be put back by a hardware reset, which the reset branch below
-// does.
-reg mapram_r = 1'b0;
-assign mapram = mapram_r;
 
 // Control del modulo SPI
 reg spi_tx_strobe;
@@ -167,7 +151,6 @@ always @(posedge clk) begin
 		m1_trigger <= 1'b0;
 		paged_in_r <= 1'b0;
 		ctrl <= 8'h00;
-		mapram_r <= 1'b0;
 		sd_cs <= 1'b1;
 		seen_busy <= 1'b0;
 		trap_addr <= 16'h0000;
@@ -175,10 +158,8 @@ always @(posedge clk) begin
 		spi_rx_strobe = 1'b0;
 		spi_tx_strobe = 1'b0;
 			
-		if (a[3:0]==4'h3 && enable && !wr_n) begin
+		if (a[3:0]==4'h3 && enable && !wr_n)
 			ctrl <= din;
-			if (din[6]) mapram_r <= 1'b1;
-		end
 			
 		if(a[3:0]==4'h7 && enable && !wr_n)
 			sd_cs <= din[0];
@@ -266,7 +247,6 @@ always @(posedge clk) begin
 			// activate automapper immediately
 			paged_in_r <= 1'b1;
 			m1_trigger <= 1'b1;
-			mapram_r   <= 1'b1;   // the half that was missing
 			trap_addr  <= a;
 		end else if (!mreq_n && !rd_n && !m1_n && {a[15:3],3'd0} == 16'h1ff8) begin
 			// deactivate automapper after this cycle
