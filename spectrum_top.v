@@ -232,9 +232,11 @@ module spectrum_top (
 	wire            key_end;
 	wire            key_kpsub;
 	wire            key_kpadd;
+	wire            key_kpmul;
 	wire            key_space;
 	reg             key_kpsub_d = 1'b0;
 	reg             key_kpadd_d = 1'b0;
+	reg             key_kpmul_d = 1'b0;
 	reg             key_pgup_d = 1'b0;
 	reg             key_pgdn_d = 1'b0;
 	reg             key_home_d = 1'b0;
@@ -252,12 +254,29 @@ module spectrum_top (
 	// variables is enough to break it.
 	reg     [1:0]   cpu_speed_req = 2'd0;
 	reg     [1:0]   cpu_speed     = 2'd0;
-	// The interrupt sits where the published 14336 T-states put it and is
-	// not adjustable. The keypad trim that was here proved the point it
-	// was built for - every value moves the top border in jumps of eight
-	// pixels, never the four that are missing - and then only got in the
-	// way. See the memory note on the HALT poll grid.
-	wire signed [7:0] int_adj = 8'sd0;
+	// The interrupt sits where the published 14336 T-states put it, and
+	// keypad * steps it one CPU T-state at a time, wrapping after eight.
+	//
+	// It was fixed at zero for a while, on the grounds that every value
+	// moved the top border in jumps of eight pixels and never the four
+	// that were missing. That was true then and it is not the same
+	// question now: the four pixels were the border group quantisation,
+	// which is in, and what is left is a whole group between the birds
+	// demo and the ones that count T-states from a single sync.
+	//
+	// This is the only knob that can move those two apart. The border
+	// group phase cannot: it moves the grid, and both demos are snapped
+	// by the same grid. The interrupt moves the CPU's whole timeline
+	// against the raster, and the two demos answer to that differently -
+	// a program counting T-states follows it one for one, while one
+	// waiting in HALT polls every four T-states and so does not move at
+	// all until the shift crosses a poll. Steps one to three should
+	// therefore move the counted demos while leaving the birds where
+	// they are.
+	//
+	// Four hcounter counts are one T-state, so the register is stepped
+	// by four and shown divided by four.
+	reg  signed [7:0] int_adj = 8'sd0;
 	// Which trim the four-digit display is showing, set by whichever trim
 	// key was pressed last. A fixed priority used to decide it, and setting
 	// a trim the display was not on looked exactly like the keys being
@@ -819,6 +838,14 @@ module spectrum_top (
 		// was running.
 		key_kpsub_d <= key_kpsub;
 		key_kpadd_d <= key_kpadd;
+		key_kpmul_d <= key_kpmul;
+		// Keypad *: the interrupt, one CPU T-state a press. Eight values
+		// and then back to zero - two turns of the HALT poll grid, which
+		// is as far as this can say anything new.
+		if (key_kpmul == 1'b1 && key_kpmul_d == 1'b0) begin
+			int_adj <= (int_adj == 8'sd28) ? 8'sd0 : (int_adj + 8'sd4);
+			trim_show <= 2'd2;
+		end
 		// Now the border group phase: which sixteenth of a group the
 		// boundary sits on, and so which group a border write lands
 		// in. Sixteen values, wrapping, and a whole group is eight
@@ -1276,6 +1303,7 @@ module spectrum_top (
 		.SPACEKEY(key_space),
 		.KPSUB(key_kpsub),
 		.KPADD(key_kpadd),
+		.KPMUL(key_kpmul),
 		.ROW_ANY(kb_row_any)
 	);
 
@@ -2566,7 +2594,8 @@ module spectrum_top (
 	// which variant is running can be read off the board.
 	//   E0nn  IO contention window, keypad - and +, a T-state a press
 	wire any_trim = (cont_adj != 5'd0) || (cont_model != 2'd1)
-	                || (io_adj != 5'd0) || (trim_show == 2'd3);
+	                || (io_adj != 5'd0) || (trim_show == 2'd3)
+	                || (trim_show == 2'd2) || (int_adj != 8'sd0);
 
 
 	// The left pair carries the CPU speed: 3.5, 7.0, 14, 28. The two
@@ -2586,6 +2615,12 @@ module spectrum_top (
 	                      (digit_scan == 2'd2) ? 4'd0 :
 	                      (digit_scan == 2'd1) ? 4'd0 :
 	                                             bord_phase) :
+	                     (trim_show == 2'd2) ?
+	                     // I, then the interrupt trim in whole T-states
+	                     ((digit_scan == 2'd3) ? 4'd1 :
+	                      (digit_scan == 2'd2) ? 4'd0 :
+	                      (digit_scan == 2'd1) ? 4'd0 :
+	                                             int_adj[5:2]) :
 	                     (trim_show == 2'd1) ?
 	                     ((digit_scan == 2'd3) ? 4'he :  // E, IO window
 	                      (digit_scan == 2'd2) ? 4'd0 :
