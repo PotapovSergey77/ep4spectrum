@@ -232,11 +232,9 @@ module spectrum_top (
 	wire            key_end;
 	wire            key_kpsub;
 	wire            key_kpadd;
-	wire            key_kpmul;
 	wire            key_space;
 	reg             key_kpsub_d = 1'b0;
 	reg             key_kpadd_d = 1'b0;
-	reg             key_kpmul_d = 1'b0;
 	reg             key_pgup_d = 1'b0;
 	reg             key_pgdn_d = 1'b0;
 	reg             key_home_d = 1'b0;
@@ -254,58 +252,39 @@ module spectrum_top (
 	// variables is enough to break it.
 	reg     [1:0]   cpu_speed_req = 2'd0;
 	reg     [1:0]   cpu_speed     = 2'd0;
-	// The interrupt sits where the published 14336 T-states put it, and
-	// keypad * steps it one CPU T-state at a time, wrapping after eight.
+	// Two trims, for the two halves of the border that will not line up
+	// together, and both start at zero.
 	//
-	// It was fixed at zero for a while, on the grounds that every value
-	// moved the top border in jumps of eight pixels and never the four
-	// that were missing. That was true then and it is not the same
-	// question now: the four pixels were the border group quantisation,
-	// which is in, and what is left is a whole group between the birds
-	// demo and the ones that count T-states from a single sync.
+	// The table holds the correct figures and always will: the interrupt
+	// is at the published 14336 T-states from the first paper pixel and
+	// the contention window is where it is measured to be. At power-up
+	// both trims are zero, so what comes up is exactly the untrimmed
+	// machine - the reference to judge against. A board that starts
+	// somewhere already adjusted gives nothing to adjust FROM.
 	//
-	// This is the only knob that can move those two apart. The border
-	// group phase cannot: it moves the grid, and both demos are snapped
-	// by the same grid. The interrupt moves the CPU's whole timeline
-	// against the raster, and the two demos answer to that differently -
-	// a program counting T-states follows it one for one, while one
-	// waiting in HALT polls every four T-states and so does not move at
-	// all until the shift crosses a poll. Steps one to three should
-	// therefore move the counted demos while leaving the birds where
-	// they are.
+	// int_trim, Home and End, moves the interrupt and with it the border
+	// ABOVE the raster - the only part of the frame drawn straight off
+	// the interrupt with nothing to re-align it.
 	//
-	// The step is EARLIER, not later. A border that has to move left
-	// needs the OUT to happen sooner against the raster, and that means
-	// the interrupt sooner - stepping the other way only ever moved it
-	// right. Eight steps still, so a full turn comes back to zero.
+	// io_trim, keypad - and +, moves the IO contention window and with
+	// it the border BESIDE and BELOW the raster - that stream passes
+	// through the contended area and comes out snapped to the window,
+	// which is why the interrupt does not move it and this does.
 	//
-	// Going earlier is safe here: video.v carries a position that runs
-	// off the front of the line back onto the previous one (bw1 there),
-	// so the interrupt lands a line up rather than wrapping to a huge
-	// number and never firing.
-	//
-	// The step is a WHOLE GROUP - four T-states, sixteen hcounter counts,
-	// eight pixels - and nothing finer.
-	//
-	// Finer steps are not a smaller version of this, they are a
-	// different thing. Four T-states leave every write's remainder
-	// modulo the group untouched, so the border group grid catches
-	// everything exactly as it did and the whole picture moves eight
-	// pixels with its internal alignment intact. Two T-states are half a
-	// group: the remainder changes, and the two streams of OUTs - the
-	// one beside the raster that IO contention snaps, and the one above
-	// it that nothing snaps - get re-sorted onto the grid differently.
-	// On the board that reads as ula48 coming apart, which is what it
-	// did at step 2.
-	//
-	// So this is the knob for the whole border together, and BORD_PHASE
-	// is the one for the two streams against each other. They do
-	// different jobs and neither can do the other's.
-	//
-	// Default 1: one group left of the published position. Four values,
-	// wrapping, shown as the shift in T-states - 0, 4, 8, C.
-	reg        [1:0] int_step = 2'd0;
-	wire signed [7:0] int_adj = -$signed({2'b00, int_step, 4'b0000});
+	// Both count CPU T-states, signed, two pixels a step, and they
+	// saturate rather than wrap so the ends of the travel can be felt.
+	// Neither reaches Pentagon: video.v drops them both there.
+	reg  signed [9:0] int_trim = 10'sd0;  // T-states, - is earlier
+	reg  signed [7:0] io_trim  = 8'sd0;   // T-states, - is earlier
+	// Ranges are deliberately far wider than any answer is expected to
+	// need: +-200 T-states on the interrupt is nearly a whole line either
+	// way, and +-120 on the IO window is half of one. A trim that runs
+	// out mid-sweep cannot tell you whether the answer is past its end or
+	// not there at all, and both of those have cost a day here already.
+	// video.v takes the interrupt trim in hcounter counts, four to a
+	// T-state, and the IO window trim in T-states.
+	wire signed [11:0] int_adj = {int_trim, 2'b00};
+	wire        [7:0]  io_adj  = io_trim;
 	// Which trim the four-digit display is showing, set by whichever trim
 	// key was pressed last. A fixed priority used to decide it, and setting
 	// a trim the display was not on looked exactly like the keys being
@@ -341,9 +320,20 @@ module spectrum_top (
 	// 6'b11_1000 is delay 3, phase 8 - the chain as it always was, and
 	// the phase the birds demo is right at. Saturates at both ends
 	// rather than wrapping, so the travel has an end you can feel.
-	reg [5:0] bord_trim = 6'b00_1001;
-	wire [3:0] bord_phase = bord_trim[3:0];
-	wire [1:0] bord_delay = bord_trim[5:4];
+	// Border group phase, on Page Up and Page Down, and output delay
+	// fixed at zero stages.
+	//
+	// The phase is the only knob that can move one program's border by a
+	// whole group and leave another's alone. It snaps each write to the
+	// next group boundary, and two programs whose writes sit at different
+	// remainders modulo the group cross that boundary at different
+	// settings - where the interrupt moves all of them together and can
+	// never separate them.
+	//
+	// 9 is where the counted-loop demos put their write exactly on a
+	// grid point, the causal floor. Two-way and saturating.
+	reg  [3:0] bord_phase = 4'd9;
+	wire [1:0] bord_delay = 2'd0;
 	// Vertical trim: where the frame sits against the raster, stepped by
 	// Page Up / Page Down. video.v takes this in sixteenths of a line
 	// (INT_VADJ >>> 4), so a step of 16 is exactly one line.
@@ -382,7 +372,6 @@ module spectrum_top (
 	// is out by four pixels and the next by eight. A phase error does
 	// not do that; an IO window in the wrong place does, because every
 	// port write meets it at a different point in the pattern.
-	reg     [4:0]   io_adj = 5'd0;
 	reg     [16:0]  btn_div = 17'd0;
 	reg     [1:0]   btn_prev = 2'b11;
 	reg             key_f10_d = 1'b0;
@@ -897,46 +886,44 @@ module spectrum_top (
 		// was running.
 		key_kpsub_d <= key_kpsub;
 		key_kpadd_d <= key_kpadd;
-		key_kpmul_d <= key_kpmul;
-		// Keypad *: the whole border one GROUP - eight pixels - left a
-		// press, four values and back to zero. Whole groups only: see
-		// the note by int_step for why half a group takes it apart.
-		if (key_kpmul == 1'b1 && key_kpmul_d == 1'b0) begin
-			int_step  <= int_step + 2'd1;
-			trim_show <= 2'd2;
-		end
-		// Now the border group phase: which sixteenth of a group the
-		// boundary sits on, and so which group a border write lands
-		// in. Sixteen values, wrapping, and a whole group is eight
-		// pixels - so this is the knob that moves a border edge by a
-		// group without touching anything else.
-		//
-		// It took the IO window trim's keys. That window is measured
-		// right - 3.0 and 1.9 T-states against a table giving 3 and 2 -
-		// so it is not the live question and this is.
+		// Keypad - and +: the IO contention window, and with it the
+		// border beside and below the raster. A CPU T-state a press,
+		// two pixels, both directions, saturating at the ends.
 		if (key_kpsub == 1'b1 && key_kpsub_d == 1'b0) begin
-			if (bord_trim != 6'd0) bord_trim <= bord_trim - 6'd1;
-			trim_show <= 2'd3;
+			if (io_trim != -8'sd120) io_trim <= io_trim - 8'sd1;
+			trim_show <= 2'd1;
 		end else if (key_kpadd == 1'b1 && key_kpadd_d == 1'b0) begin
-			if (bord_trim != 6'b111111) bord_trim <= bord_trim + 6'd1;
-			trim_show <= 2'd3;
+			if (io_trim != 8'sd120) io_trim <= io_trim + 8'sd1;
+			trim_show <= 2'd1;
 		end
 		key_pgup_d <= key_pgup;
 		key_pgdn_d <= key_pgdn;
-		if (key_pgup == 1'b1 && key_pgup_d == 1'b0)
-			int_vadj <= int_vadj - 8'sd16;
-		else if (key_pgdn == 1'b1 && key_pgdn_d == 1'b0)
-			int_vadj <= int_vadj + 8'sd16;
+		// Page Up and Page Down: the border group phase, a sixteenth of a
+		// group a press, both directions, saturating. This is the one that
+		// can move a single program by a whole group.
+		if (key_pgup == 1'b1 && key_pgup_d == 1'b0) begin
+			if (bord_phase != 4'd0) bord_phase <= bord_phase - 4'd1;
+			trim_show <= 2'd3;
+		end else if (key_pgdn == 1'b1 && key_pgdn_d == 1'b0) begin
+			if (bord_phase != 4'd15) bord_phase <= bord_phase + 4'd1;
+			trim_show <= 2'd3;
+		end
 		// Home / End move the border ABOVE AND BELOW the raster only, a
 		// pixel a press, leaving the border beside the raster alone.
 		// Home winds the tap back (stripes move left) and stops at zero;
 		// End delays it further.
 		key_home_d <= key_home;
 		key_end_d  <= key_end;
+		// Home and End: the interrupt, and with it the border ABOVE the
+		// raster. A CPU T-state a press, two pixels, both directions,
+		// saturating at the ends. Home is earlier, so the top border
+		// moves left.
 		if (key_home == 1'b1 && key_home_d == 1'b0) begin
-			cont_model <= cont_model - 2'd1;
+			if (int_trim != -10'sd200) int_trim <= int_trim - 10'sd1;
+			trim_show <= 2'd2;
 		end else if (key_end == 1'b1 && key_end_d == 1'b0) begin
-			cont_model <= cont_model + 2'd1;
+			if (int_trim != 10'sd200) int_trim <= int_trim + 10'sd1;
+			trim_show <= 2'd2;
 		end
 		key_f3_d <= key_f3;
 		key_f4_d <= key_f4;
@@ -977,7 +964,33 @@ module spectrum_top (
 	end
 	wire mem128_changed = (mem128 != mem128_d);
 
-	wire nmi_trigger = key_f12 | ~KEY[1];
+	// KEY[1] is the board's NMI button, and it has no pull-up: pins 88-91
+	// do not support one, Quartus refuses the assignment outright. So the
+	// input floats, and a floating input drifts.
+	//
+	// Left raw it broke the NMI both ways. Drifting low leaves
+	// nmi_trigger already asserted, and then pressing F12 makes no edge
+	// at all - which on the board read as the NMI working on the second
+	// or third press and never the first. Drifting the other way would
+	// fire NMIs nobody asked for.
+	//
+	// Two flops to cross into this clock domain, then a counter that
+	// only accepts a value the pin has held for a full 4ms. Drift does
+	// not survive that; a finger on the button does.
+	reg  [1:0]  key1_sync = 2'b11;
+	reg         key1_held = 1'b1;
+	reg  [16:0] key1_cnt  = 17'd0;
+	always @(posedge clock) begin
+		key1_sync <= {key1_sync[0], KEY[1]};
+		if (key1_sync[1] == key1_held)
+			key1_cnt <= 17'd0;
+		else if (key1_cnt == 17'd112000)   // 4ms at 28MHz
+			key1_held <= key1_sync[1];
+		else
+			key1_cnt <= key1_cnt + 17'd1;
+	end
+
+	wire nmi_trigger = key_f12 | ~key1_held;
 
 	// CPU
 	//
@@ -1326,7 +1339,29 @@ module spectrum_top (
 	// F12 (PS/2 keyboard) or board button S2 triggers a plain NMI directly -
 	// the T80 core only latches this on the falling edge internally
 	// (see T80.v's NMI_s/OldNMI_n), so holding it doesn't re-trigger
-	assign cpu_nmi_n = nmi_trigger ? 1'b0 : 1'b1;
+	// A one-shot, not the level.
+	//
+	// NMI is edge-triggered, so a trigger that is already low when the
+	// key is pressed produces nothing - and nmi_trigger sat low whenever
+	// KEY[1] drifted, the board's buttons having had no pull-up until
+	// now. On the board that read as the NMI working on the second or
+	// third press and not the first. The pull-up is the fix; this is the
+	// belt to its braces, and it also stops a held key from parking NMI
+	// low across a whole run of instructions.
+	//
+	// 64 CPU T-states low: a Z80 needs the line held only until it
+	// samples it, and 64 is comfortably longer than the longest
+	// instruction plus any contention stall.
+	reg        nmi_trig_d = 1'b0;
+	reg  [6:0] nmi_cnt    = 7'd0;
+	always @(posedge clock) begin
+		nmi_trig_d <= nmi_trigger;
+		if (nmi_trigger == 1'b1 && nmi_trig_d == 1'b0)
+			nmi_cnt <= 7'd64;
+		else if (nmi_cnt != 7'd0 && cpu_clken == 1'b1)
+			nmi_cnt <= nmi_cnt - 7'd1;
+	end
+	assign cpu_nmi_n = (nmi_cnt != 7'd0) ? 1'b0 : 1'b1;
 	assign cpu_busreq_n = 1'b1;
 
 	// Keyboard
@@ -1364,7 +1399,6 @@ module spectrum_top (
 		.SPACEKEY(key_space),
 		.KPSUB(key_kpsub),
 		.KPADD(key_kpadd),
-		.KPMUL(key_kpmul),
 		.ROW_ANY(kb_row_any)
 	);
 
@@ -2455,8 +2489,39 @@ module spectrum_top (
 	// Video from bank 7 (128K/+3)
 	// Video from bank 5
 	// 16-bit address, LSb selects high/low byte
-	assign vid_addr = (page_shadow_scr == 1'b1) ? {6'b001110, vid_a[12:0]} :
-		{6'b001010, vid_a[12:0]};
+	// Snow.
+	//
+	// In an M1 cycle the Z80 puts the refresh address I:R on the bus. On
+	// a 48K, if I points into $40-$7F that address lands in the display
+	// bank, and the ULA - which is fetching a display byte at the same
+	// moment - takes it instead of its own. The wrong byte reaches the
+	// screen, and because R steps every M1 the spoiled cells crawl,
+	// which is what the effect looks like.
+	//
+	// The substitution is the whole of it: same bank, the ULA's own
+	// address replaced by the low fourteen bits of I:R. Nothing else in
+	// the machine changes, and no timing moves - the fetch still happens
+	// when it always did, it just reads somewhere else.
+	//
+	// Sinclair machines only. Pentagon's memory is not shared this way
+	// and shows no snow.
+	wire snow_now = (machine != MACHINE_PENT)
+	                & (cpu_rfsh_n == 1'b0)
+	                & (cpu_a[15:14] == 2'b01);
+	// The ULA keeps its own HIGH address bits - the third of the screen
+	// and the pixel row - and only the low byte is taken from R. On the
+	// bus the two drivers meet on the low lines; the high ones are the
+	// ULA's alone. So the spoiled byte comes from the same 256-byte
+	// block, which is why real snow is a ripple along a line rather than
+	// rubbish from elsewhere on the screen.
+	//
+	// Substituting all thirteen bits, R and the low bits of I together,
+	// pulls the fetch into an unrelated part of the display and looks
+	// nothing like it.
+	wire [12:0] vid_a_eff = snow_now ? {vid_a[12:8], cpu_a[7:0]} : vid_a[12:0];
+
+	assign vid_addr = (page_shadow_scr == 1'b1) ? {6'b001110, vid_a_eff} :
+		{6'b001010, vid_a_eff};
 
 	// 128K-style paging register (port 0x7FFD), kept live even in the 48K
 	// build: it doesn't cost any block RAM (just address decode + 3 FFs),
@@ -2656,8 +2721,8 @@ module spectrum_top (
 	// which variant is running can be read off the board.
 	//   E0nn  IO contention window, keypad - and +, a T-state a press
 	wire any_trim = (cont_adj != 5'd0) || (cont_model != 2'd1)
-	                || (io_adj != 5'd0) || (trim_show == 2'd3)
-	                || (trim_show == 2'd2) || (int_step != 2'd0);
+	                || (int_trim != 10'sd0) || (io_trim != 8'sd0)
+	                || (bord_phase != 4'd9);
 
 
 	// The left pair carries the CPU speed: 3.5, 7.0, 14, 28. The two
@@ -2670,39 +2735,52 @@ module spectrum_top (
 	                    (cpu_speed == 2'd1) ? 4'd0 :
 	                    (cpu_speed == 2'd2) ? 4'd4 : 4'd8;
 
+	// Both border trims at once, in T-states, signed two's complement:
+	//   interrupt (top border) | IO window (the rest)
+	//
+	// One view rather than whichever was touched last, because a trim
+	// that cannot be READ without being changed is a trim whose good
+	// value cannot be reported. Reconfiguring the FPGA puts both back to
+	// zero, and a setting found by eye on the board was lost with it
+	// more than once.
+	//
+	// Zero on both is the untrimmed machine, and then this view is not
+	// shown at all - the display stays on the speed and the page, so
+	// power-up looks like power-up.
+	// A letter and three digits, not three trims crammed into four.
+	//
+	// The ranges are wide now and a value no longer fits in one digit, so
+	// the display shows the trim whose keys were last pressed. Reading
+	// another one costs a press and a press back, which is the price of
+	// being able to see the whole number - and a number that has been
+	// truncated to fit is worse than one that has to be asked for.
+	//
+	//   Innn  interrupt, T-states, signed - Home and End
+	//   Ennn  IO contention window, T-states, signed - keypad - and +
+	//   b00n  border group phase - Page Up and Page Down
+	//   Cmnn  contention model and window - the board's own buttons
+	wire signed [11:0] int_show = {{2{int_trim[9]}}, int_trim};
+	wire signed [11:0] io_show  = {{4{io_trim[7]}},  io_trim};
 	wire [3:0] nibble = any_trim ?
-	                    ((trim_show == 2'd3) ?
-	                     // b, then the output delay in stages and the group
-	                     // phase in hex - the two halves of one number,
-	                     // shown apart so the wrap is readable
-	                     // All four border numbers at once, no label:
-	                     //   interrupt groups | output stages | 0 | phase
-	                     //
-	                     // One view for both knobs because the display
-	                     // followed whichever was touched last, and a
-	                     // trim could not be READ without being changed.
-	                     // A setting found by ear on the board was then
-	                     // unrecoverable: reconfiguring the FPGA puts
-	                     // every trim back to its power-up value, and
-	                     // nobody could say what the good one had been.
-	                     ((digit_scan == 2'd3) ? {2'b00, int_step} :
-	                      (digit_scan == 2'd2) ? {2'b00, bord_delay} :
-	                      (digit_scan == 2'd1) ? 4'd0 :
-	                                             bord_phase) :
-	                     (trim_show == 2'd2) ?
-	                     ((digit_scan == 2'd3) ? {2'b00, int_step} :
-	                      (digit_scan == 2'd2) ? {2'b00, bord_delay} :
-	                      (digit_scan == 2'd1) ? 4'd0 :
-	                                             bord_phase) :
-	                     (trim_show == 2'd1) ?
-	                     ((digit_scan == 2'd3) ? 4'he :  // E, IO window
-	                      (digit_scan == 2'd2) ? 4'd0 :
-	                      (digit_scan == 2'd1) ? {3'b000, io_adj[4]} :
-	                                             io_adj[3:0]) :
+	                    ((cont_adj != 5'd0 || cont_model != 2'd1) ?
 	                     ((digit_scan == 2'd3) ? 4'hc :  // C, contention window
 	                      (digit_scan == 2'd2) ? {2'b00, cont_model} :
 	                      (digit_scan == 2'd1) ? {3'b000, cont_adj[4]} :
-	                                             cont_adj[3:0])) :
+	                                             cont_adj[3:0]) :
+	                     (trim_show == 2'd1) ?
+	                     ((digit_scan == 2'd3) ? 4'he :  // E, IO window
+	                      (digit_scan == 2'd2) ? io_show[11:8] :
+	                      (digit_scan == 2'd1) ? io_show[7:4] :
+	                                             io_show[3:0]) :
+	                     (trim_show == 2'd3) ?
+	                     ((digit_scan == 2'd3) ? 4'hb :  // b, group phase
+	                      (digit_scan == 2'd2) ? 4'd0 :
+	                      (digit_scan == 2'd1) ? 4'd0 :
+	                                             bord_phase) :
+	                     ((digit_scan == 2'd3) ? 4'd1 :  // I, interrupt
+	                      (digit_scan == 2'd2) ? int_show[11:8] :
+	                      (digit_scan == 2'd1) ? int_show[7:4] :
+	                                             int_show[3:0])) :
 	                    (digit_scan == 2'd3) ? spd_hi :
 	                    (digit_scan == 2'd2) ? spd_lo :
 	                    (digit_scan == 2'd1) ? pg_tens :

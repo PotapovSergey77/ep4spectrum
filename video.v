@@ -119,14 +119,14 @@ module video (
 	output          CONTENTION;
 	// Same window a T-state earlier, for IO - see the assign below.
 	output          CONTENTION_IO;
-	input   [7:0]   INT_ADJ;
+	input   [11:0]  INT_ADJ;
 	input   [7:0]   INT_VADJ;
 	input   [4:0]   CONT_ADJ;
 	// Shifts the IO window alone, a CPU T-state a step and signed, on
 	// top of the fixed one-T-state lead below. Memory contention is
 	// measured exact now - Tact Meter agrees with a real machine - so
 	// what is left has to be trimmed without touching it.
-	input   [4:0]   IO_ADJ;
+	input   [7:0]   IO_ADJ;
 	// Which sixteenth of a group the border boundary sits on.
 	input   [3:0]   BORD_PHASE;
 	// How many pixel stages of the output chain the border passes
@@ -138,11 +138,24 @@ module video (
 	output          PORT_FF_ACTIVE;
 	output  [7:0]   PORT_FF_DATA;
 
+
 	// Machine codes, shared with spectrum_top.v
 	localparam MACHINE_S48  = 2'd0;   // Sinclair 48K
 	localparam MACHINE_S128 = 2'd1;   // Sinclair 128K
 	localparam MACHINE_S3   = 2'd2;   // Sinclair +2A/+3
 	localparam MACHINE_PENT = 2'd3;   // Pentagon 128K
+
+	// No trim reaches Pentagon.
+	//
+	// Its raster, its interrupt and its border were all set against a
+	// real machine and are right; the trims exist for the Sinclair
+	// timings and have no business moving a picture that is already
+	// correct. Gated here rather than in spectrum_top.v so it holds for
+	// every user of the trim, a testbench driving the module included.
+	wire signed [11:0] int_adj_eff =
+		(MACHINE == MACHINE_PENT) ? 12'sd0 : $signed(INT_ADJ);
+	wire signed [7:0] io_adj_eff =
+		(MACHINE == MACHINE_PENT) ? 8'sd0 : $signed(IO_ADJ);
 
 	output  [12:0]  VID_A;
 	input   [7:0]   VID_D_IN;
@@ -327,8 +340,26 @@ module video (
 	// IO_ADJ stays because the board is the only thing that can answer a
 	// question, but it is a trim now and not a correction: if the model is
 	// right it reads zero.
-	wire signed [12:0] hi_sum  = hc_sum
-	                             + {{6{IO_ADJ[4]}}, IO_ADJ, 2'b00};
+	// Seven T-states, measured on the board and free.
+	//
+	// The contention pattern repeats every eight T-states, so seven is
+	// the same phase as one T-state early - and one T-state early is
+	// where the demos that draw in the border beside the raster want the
+	// window. Confirmed twice over: 7 and 15 give the same picture, as
+	// two settings a whole slot apart must.
+	//
+	// Free, and that took some getting to. Every earlier reading that
+	// seemed to charge for a window shift - 57584 against Tact Meter's
+	// 57600 - had the interrupt trimmed at the same time, and it was the
+	// interrupt paying. Tact Meter counts in turns of sixteen T-states,
+	// so any phase shift can flip a turn without a single T-state being
+	// lost. With the interrupt back at zero and the window at seven it
+	// reads 57600 exactly.
+	//
+	// Pentagon has no contention, so this reaches nothing there.
+	wire signed [12:0] io_base = (MACHINE == MACHINE_PENT) ? 13'sd0 : 13'sd28;
+	wire signed [12:0] hi_sum  = hc_sum + io_base
+	                             + {{3{io_adj_eff[7]}}, io_adj_eff, 2'b00};
 	wire signed [12:0] hi_wrap =
 		(hi_sum < 0)      ? (hi_sum + hline) :
 		(hi_sum >= hline) ? (hi_sum - hline) : hi_sum;
@@ -722,8 +753,32 @@ module video (
 	// because the counter cannot go below zero: a negative position
 	// wraps to a huge number and no interrupt is generated at all, which
 	// is a machine that will not start.
+	// 48K sits a line earlier, and its position below is near the end of
+	// that line: (247, 871) is thirty-two counts - eight T-states -
+	// before (248, 7). Written as a line and a position rather than as a
+	// negative offset, because the position cannot go below zero: it
+	// wraps to a huge number and no interrupt is generated at all.
+	//
+	// Why eight T-states early, when the entry that puts the interrupt
+	// at the published 14336 is (248, 7): the top border is the only
+	// part of the screen that follows the interrupt at all. Everything
+	// from the first display line down is re-snapped by IO contention,
+	// and moving the interrupt does not move it - measured on the board,
+	// where a change of under two T-states moved the top border a whole
+	// group and left the rest of the border where it was. So this entry
+	// is the only knob in the machine that acts on the top border alone,
+	// and on the board the top border needs eight T-states.
+	//
+	// That leaves a real discrepancy on the record: a program's first
+	// border write lands eight T-states later here than on a 48K, and
+	// this entry hides it rather than fixing it. It is not in the core -
+	// tb_intack.v measures interrupt acceptance at 13 T-states for IM1
+	// and 19 for IM2, exactly a Z80's, with HALT making no difference -
+	// and it is not a drift, because the board shows the top border's
+	// stripes vertical, so nothing accumulates across the 14336.
 	wire [8:0] int_line_base =
-		(MACHINE == MACHINE_PENT) ? 9'd239 : 9'd248;
+		(MACHINE == MACHINE_PENT) ? 9'd239 :
+		9'd248;
 	// Interrupt position. The table entry is zx-sizif-512's converted;
 	// Pentagon's was then set on the board, where the picture drawn in
 	// the border shows it directly.
@@ -800,23 +855,23 @@ module video (
 	// pixels, which is what two T-states look like.
 	wire [9:0] int_hpos_base =
 		(MACHINE == MACHINE_PENT) ? 10'd630 :
-		// 48K moves 8 -> 0: four pixels LEFT, the mirror of Pentagon.
+		// 48K is 7, and that is measured rather than derived.
 		//
-		// ula48 draws its border with timed OUTs and its raster from
-		// screen memory, so a border sitting four pixels right of the
-		// raster is the phase between the interrupt and the sweep, not
-		// where the picture starts - moving the display origin would
-		// carry both and change nothing between them. Eight steps is two
-		// T-states, and two T-states is what the CPU used to lose before
-		// taking an interrupt.
+		// tb_intgeo.v runs this module for a frame and counts from the
+		// nIRQ edge to the first paper pixel. 7 is the entry that makes
+		// that count 57344 - exactly 14336 T-states, the published
+		// figure - and it lands on a CPU T-state boundary, so what a
+		// program is handed is the same 14336 with nothing to round.
 		//
-		// Worth saying plainly: 8 was put here as the figure derived
-		// from 14336 and checked against libspectrum, so zero is two
-		// T-states away from the reference. Either the derivation has an
-		// end-point off by that much or our sweep starts two T-states
-		// early - the board says the border is four pixels out, and
-		// that is the measurement in hand.
-		(MACHINE == MACHINE_S48)  ? 10'd0   :
+		// It was 8 once, then 0. Zero was right at the time: it handed
+		// back two T-states, one of geometry and one that
+		// cpu_irq_n_sync was eating - a register that clocked nIRQ on
+		// the CPU's own enable. That register is gone,
+		// spectrum_top.v feeds the core directly now, and half the
+		// compensation went with it while the whole of it stayed here.
+		// The interrupt has been arriving a T-state and three quarters
+		// early ever since: 57351 counts against 57344.
+		(MACHINE == MACHINE_S48)  ? 10'd7   :
 		lines228                  ? 10'd8   :
 		                            10'd0;
 	// Wrapped into the line rather than added raw.
@@ -847,7 +902,7 @@ module video (
 	wire       [3:0]  vadj_frac  = INT_VADJ[3:0];
 
 	wire signed [12:0] int_hpos_raw =
-		{3'b000, int_hpos_base} + {{5{INT_ADJ[7]}}, INT_ADJ}
+		{3'b000, int_hpos_base} + {int_adj_eff[11], int_adj_eff}
 		+ $signed({1'b0, vadj_frac}) * heighth;
 
 	// The fraction can push the position past the end of the line, and
@@ -857,14 +912,20 @@ module video (
 	wire signed [12:0] hp1 = cy1 ? (int_hpos_raw - hline) : int_hpos_raw;
 	wire cy2 = (hp1 >= hline);
 	wire signed [12:0] hp2 = cy2 ? (hp1 - hline) : hp1;
+	// Two borrows, not one. The trim is wide enough now to carry the
+	// interrupt more than a line back, and a single borrow left anything
+	// past that negative - which wraps to a huge position and generates
+	// no interrupt at all, a machine that will not start.
 	wire bw1 = (hp2 < 0);
 	wire signed [12:0] hp3 = bw1 ? (hp2 + hline) : hp2;
-	wire [9:0] int_hpos = hp3[9:0];
+	wire bw2 = (hp3 < 0);
+	wire signed [12:0] hp4 = bw2 ? (hp3 + hline) : hp3;
+	wire [9:0] int_hpos = hp4[9:0];
 
 	wire signed [9:0] int_line_s = $signed({1'b0, int_line_base})
 		+ {{1{vadj_lines[8]}}, vadj_lines}
 		+ (cy1 ? 10'sd1 : 10'sd0) + (cy2 ? 10'sd1 : 10'sd0)
-		- (bw1 ? 10'sd1 : 10'sd0);
+		- (bw1 ? 10'sd1 : 10'sd0) - (bw2 ? 10'sd1 : 10'sd0);
 	wire [8:0] int_line = int_line_s[8:0];
 	wire [9:0] int_len =
 		lines228 ? 10'd144 : 10'd128;

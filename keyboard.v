@@ -81,7 +81,6 @@ module keyboard (
 	END,
 	KPSUB,
 	KPADD,
-	KPMUL,
 	SPACEKEY,
 	ROW_ANY
 );
@@ -119,11 +118,6 @@ module keyboard (
 	// T-state a press, without touching the memory window.
 	output reg      KPSUB;
 	output reg      KPADD;
-	// Keypad *: steps the interrupt position, one CPU T-state a press,
-	// wrapping round after eight. One key rather than a pair because the
-	// range that matters is two turns of the HALT poll grid, and a wrap
-	// reaches any of them in a few presses.
-	output reg      KPMUL;
 	// Space, brought out so a reset can be told to forget the loaded
 	// slots and let DivMMC come back up.
 	output reg      SPACEKEY;
@@ -215,7 +209,6 @@ module keyboard (
 			END  <= 1'b0;
 			KPSUB  <= 1'b0;
 			KPADD  <= 1'b0;
-			KPMUL  <= 1'b0;
 			SPACEKEY <= 1'b0;
 		end else begin
 			if (keyb_valid == 1'b1) begin
@@ -409,7 +402,6 @@ module keyboard (
 						8'h69: END  <= ~release_key; // End  -> INT one T-state later
 						8'h7b: KPSUB <= ~release_key; // Keypad -  -> IO window a T-state early
 						8'h79: KPADD <= ~release_key; // Keypad +  -> IO window a T-state late
-						8'h7c: KPMUL <= ~release_key; // Keypad *  -> interrupt a T-state later
 
 						default: begin
 						end
