@@ -1423,6 +1423,8 @@ module spectrum_top (
 		.IO_ADJ(io_adj),
 		.BORD_PHASE(bord_phase),
 		.BORD_DELAY(bord_delay),
+		.OSD_SPEED(cpu_speed),
+		.OSD_EXT(ext1024),
 		.PORT_FF_ACTIVE(vid_port_ff_active),
 		.PORT_FF_DATA(vid_port_ff_data),
 		.VID_A(vid_a),

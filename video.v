@@ -72,6 +72,8 @@ module video (
 	IO_ADJ,
 	BORD_PHASE,
 	BORD_DELAY,
+	OSD_SPEED,
+	OSD_EXT,
 	PORT_FF_ACTIVE,
 	PORT_FF_DATA,
 
@@ -135,6 +137,10 @@ module video (
 	// moving one pixel left. Zero is the floor - below it the value has
 	// not been latched yet.
 	input   [1:0]   BORD_DELAY;
+	// What the on-screen line reports: the CPU clock and whether the
+	// megabyte is switched in. The machine comes in on MACHINE already.
+	input   [1:0]   OSD_SPEED;
+	input           OSD_EXT;
 	output          PORT_FF_ACTIVE;
 	output  [7:0]   PORT_FF_DATA;
 
@@ -660,19 +666,105 @@ module video (
 	wire            dot_s     = (MACHINE == MACHINE_PENT) ? dot     : dot_d[8];
 	wire    [7:0]   attr_s    = (MACHINE == MACHINE_PENT) ? attr    : attr_d[8];
 
-	assign red = (picture_s == 1'b1 && dot_s == 1'b1) ? attr_s[1] :
+
+
+	// ------------------------------------------------------------
+	// On-screen line: clock, machine, memory
+	//
+	// Sits in the top border, so it covers nothing of the picture, and
+	// appears only when one of the three things it reports changes. The
+	// old value is held for half a second, then the new one for a second,
+	// then it goes. Watching it change is what makes it readable - a
+	// value that simply appears leaves you guessing what it was before.
+	//
+	// Nothing here touches timing. It is a mux on the colour outputs,
+	// after the whole fetch and contention path, so the raster and the
+	// border stay exactly where they were put.
+	// ------------------------------------------------------------
+`include "osd_font.vh"
+`include "osd_text.vh"
+
+	// Eight lines of the top border, well clear of the picture, and the
+	// same 256 pixels the picture occupies so the ends line up with it.
+	localparam [8:0] OSD_LINE = 9'd292;
+	localparam [9:0] OSD_X0   = 10'd6;
+
+	wire [9:0] osd_dx   = hcounter - OSD_X0;
+	wire       osd_inx  = (hcounter >= OSD_X0) && (hcounter < OSD_X0 + 10'd512);
+	wire       osd_iny  = (vcounter[9:1] >= OSD_LINE)
+	                      && (vcounter[9:1] < OSD_LINE + 9'd8);
+	wire [4:0] osd_col  = osd_dx[8:4];
+	wire [2:0] osd_px   = osd_dx[3:1];
+	wire [2:0] osd_row  = vcounter[3:1] - OSD_LINE[2:0];
+
+	// A frame tick, taken where the line counter wraps.
+	reg        osd_vprev = 1'b0;
+	wire       osd_frame = (vcounter[9:1] == 9'd0) && (osd_vprev == 1'b0);
+
+	// What changed, and what it was before it changed.
+	reg  [1:0] osd_mc_now = 2'd3, osd_mc_old = 2'd3;
+	reg  [1:0] osd_sp_now = 2'd0, osd_sp_old = 2'd0;
+	reg        osd_ex_now = 1'b0, osd_ex_old = 1'b0;
+	reg  [6:0] osd_timer  = 7'd0;
+	reg  [1:0] osd_state  = 2'd0;   // 0 off, 1 showing the old, 2 the new
+
+	always @(posedge CLK or negedge nRESET) begin
+		if (nRESET == 1'b0) begin
+			osd_state <= 2'd0;
+			osd_timer <= 7'd0;
+			osd_mc_now <= MACHINE; osd_mc_old <= MACHINE;
+			osd_sp_now <= OSD_SPEED; osd_sp_old <= OSD_SPEED;
+			osd_ex_now <= OSD_EXT; osd_ex_old <= OSD_EXT;
+			osd_vprev <= 1'b0;
+		end else if (CLKEN == 1'b1) begin
+			osd_vprev <= (vcounter[9:1] == 9'd0);
+
+			if (MACHINE != osd_mc_now || OSD_SPEED != osd_sp_now
+			    || OSD_EXT != osd_ex_now) begin
+				// Hold what it was, take what it is, and start the show.
+				osd_mc_old <= osd_mc_now; osd_mc_now <= MACHINE;
+				osd_sp_old <= osd_sp_now; osd_sp_now <= OSD_SPEED;
+				osd_ex_old <= osd_ex_now; osd_ex_now <= OSD_EXT;
+				osd_state  <= 2'd1;
+				osd_timer  <= 7'd25;      // half a second at 50Hz
+			end else if (osd_frame == 1'b1) begin
+				if (osd_timer != 7'd0)
+					osd_timer <= osd_timer - 7'd1;
+				else if (osd_state == 2'd1) begin
+					osd_state <= 2'd2;
+					osd_timer <= 7'd50;   // and a second on the new value
+				end else
+					osd_state <= 2'd0;
+			end
+		end
+	end
+
+	wire [1:0] osd_mc = (osd_state == 2'd1) ? osd_mc_old : osd_mc_now;
+	wire [1:0] osd_sp = (osd_state == 2'd1) ? osd_sp_old : osd_sp_now;
+	wire       osd_ex = (osd_state == 2'd1) ? osd_ex_old : osd_ex_now;
+
+	wire [5:0] osd_glyph = osd_text(osd_mc, osd_sp, osd_ex, osd_col);
+	wire [7:0] osd_bits  = osd_font({osd_glyph, osd_row});
+	wire       osd_on    = (osd_state != 2'd0) && osd_inx && osd_iny
+	                       && (blanking == 1'b0)
+	                       && osd_bits[3'd7 - osd_px];
+	assign red = (osd_on == 1'b1) ? 1'b0 :
+		(picture_s == 1'b1 && dot_s == 1'b1) ? attr_s[1] :
 		(picture_s == 1'b1 && dot_s == 1'b0) ? attr_s[4] :
 		(blanking == 1'b0) ? border_out[1] :
 		1'b0;
-	assign green = (picture_s == 1'b1 && dot_s == 1'b1) ? attr_s[2] :
+	assign green = (osd_on == 1'b1) ? 1'b1 :
+		(picture_s == 1'b1 && dot_s == 1'b1) ? attr_s[2] :
 		(picture_s == 1'b1 && dot_s == 1'b0) ? attr_s[5] :
 		(blanking == 1'b0) ? border_out[2] :
 		1'b0;
-	assign blue = (picture_s == 1'b1 && dot_s == 1'b1) ? attr_s[0] :
+	assign blue = (osd_on == 1'b1) ? 1'b0 :
+		(picture_s == 1'b1 && dot_s == 1'b1) ? attr_s[0] :
 		(picture_s == 1'b1 && dot_s == 1'b0) ? attr_s[3] :
 		(blanking == 1'b0) ? border_out[0] :
 		1'b0;
-	assign bright = (picture_s == 1'b1) ? attr_s[6] : 1'b0;
+	assign bright = (osd_on == 1'b1) ? 1'b1 :
+		(picture_s == 1'b1) ? attr_s[6] : 1'b0;
 
 	// Re-register video output to DACs to clean up edges
 	always @(posedge CLK or negedge nRESET) begin
@@ -1214,14 +1306,19 @@ module video (
 			// Generate timing signals during inactive region
 			// (when hcounter(9) = 1)
 			case (hcounter[9:4])
-				// Blanking starts at 304
-				6'b100110: hblanking <= 1'b1;
+				// Blanking starts at 312. The whole group - blanking and sync
+				// together - sits one character cell later than it did, which
+				// puts the content that much closer to the sync and so moves
+				// the picture eight pixels LEFT on the screen. That is the
+				// compensation for the nine pixels of paper delay: relative
+				// positions are untouched, the frame is just recentred.
+				6'b100111: hblanking <= 1'b1;
 				// Sync starts at 328
-				6'b101001: hsync <= 1'b1;
+				6'b101010: hsync <= 1'b1;
 				// Sync ends at 360
-				6'b101101: hsync <= 1'b0;
+				6'b101110: hsync <= 1'b0;
 				// Blanking ends at 400
-				6'b110010: hblanking <= 1'b0;
+				6'b110011: hblanking <= 1'b0;
 				default: begin
 				end
 			endcase
