@@ -274,9 +274,21 @@ module spectrum_top (
 	// therefore move the counted demos while leaving the birds where
 	// they are.
 	//
-	// Four hcounter counts are one T-state, so the register is stepped
-	// by four and shown divided by four.
-	reg  signed [7:0] int_adj = 8'sd0;
+	// The step is EARLIER, not later. A border that has to move left
+	// needs the OUT to happen sooner against the raster, and that means
+	// the interrupt sooner - stepping the other way only ever moved it
+	// right. Eight steps still, so a full turn comes back to zero.
+	//
+	// Going earlier is safe here: video.v carries a position that runs
+	// off the front of the line back onto the previous one (bw1 there),
+	// so the interrupt lands a line up rather than wrapping to a huge
+	// number and never firing.
+	//
+	// Four hcounter counts are one T-state, so the count is scaled by
+	// four and negated; the display shows the count itself, in whole
+	// T-states of LEFT shift.
+	reg        [2:0] int_step = 3'd0;
+	wire signed [7:0] int_adj = -$signed({1'b0, 2'b00, int_step, 2'b00});
 	// Which trim the four-digit display is showing, set by whichever trim
 	// key was pressed last. A fixed priority used to decide it, and setting
 	// a trim the display was not on looked exactly like the keys being
@@ -839,11 +851,12 @@ module spectrum_top (
 		key_kpsub_d <= key_kpsub;
 		key_kpadd_d <= key_kpadd;
 		key_kpmul_d <= key_kpmul;
-		// Keypad *: the interrupt, one CPU T-state a press. Eight values
-		// and then back to zero - two turns of the HALT poll grid, which
-		// is as far as this can say anything new.
+		// Keypad *: the interrupt one CPU T-state EARLIER a press, so
+		// the border moves left. Eight values and then back to zero -
+		// two turns of the HALT poll grid, which is as far as this can
+		// say anything new.
 		if (key_kpmul == 1'b1 && key_kpmul_d == 1'b0) begin
-			int_adj <= (int_adj == 8'sd28) ? 8'sd0 : (int_adj + 8'sd4);
+			int_step  <= int_step + 3'd1;
 			trim_show <= 2'd2;
 		end
 		// Now the border group phase: which sixteenth of a group the
@@ -2595,7 +2608,7 @@ module spectrum_top (
 	//   E0nn  IO contention window, keypad - and +, a T-state a press
 	wire any_trim = (cont_adj != 5'd0) || (cont_model != 2'd1)
 	                || (io_adj != 5'd0) || (trim_show == 2'd3)
-	                || (trim_show == 2'd2) || (int_adj != 8'sd0);
+	                || (trim_show == 2'd2) || (int_step != 3'd0);
 
 
 	// The left pair carries the CPU speed: 3.5, 7.0, 14, 28. The two
@@ -2620,7 +2633,7 @@ module spectrum_top (
 	                     ((digit_scan == 2'd3) ? 4'd1 :
 	                      (digit_scan == 2'd2) ? 4'd0 :
 	                      (digit_scan == 2'd1) ? 4'd0 :
-	                                             int_adj[5:2]) :
+	                                             {1'b0, int_step}) :
 	                     (trim_show == 2'd1) ?
 	                     ((digit_scan == 2'd3) ? 4'he :  // E, IO window
 	                      (digit_scan == 2'd2) ? 4'd0 :
