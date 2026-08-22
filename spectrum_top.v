@@ -1824,7 +1824,7 @@ module spectrum_top (
 	// automapper down, so in here there is nobody to conflict with.
 	reg  trdos_paged = 1'b0;
 	assign trdos_avail = rom_from_sd & (machine == MACHINE_PENT)
-	                     & rom_slot_filled[2];
+	                     & rom_slot_filled[1];
 
 	// The fetch that triggers the entry has to come from the TR-DOS ROM
 	// ALREADY. $3D00 is the address programs CALL to reach TR-DOS, and
@@ -1845,8 +1845,16 @@ module spectrum_top (
 	// The exit keeps its register: it fires on a fetch at $4000 or above,
 	// and that fetch reads RAM whichever way the ROM is switched, so
 	// nothing depends on it being immediate.
+	// No page_rom_sel here any more.
+	//
+	// FUSE gates the Beta entry on the 48 BASIC ROM being selected and
+	// that is right for a stock machine, where entering from the menu
+	// ROM would be meaningless. On this ROM it is the opposite: the
+	// menu's Proteus entry goes through Dxx with the MENU selected,
+	// and the bank that arrives is Proteus. Requiring bit 4 was exactly
+	// what left that entry with a black screen behind it.
 	wire trdos_now = trdos_avail & (~cpu_m1_n) & (~cpu_mreq_n) & (~cpu_rd_n)
-	                 & (cpu_a[15:8] == 8'h3d) & page_rom_sel;
+	                 & (cpu_a[15:8] == 8'h3d);
 	assign trdos_active = trdos_paged | trdos_now;
 
 	always @(posedge clock) begin
@@ -2248,12 +2256,29 @@ module spectrum_top (
 			// The counter is 20 bits wide because the disk image needs
 			// that reach, and the disk slot takes its own path through
 			// cpu_addr rather than this one.
-			(romld_write | romld_read) ? {slot_base(romld_slot), romld_cnt[14:0]} :
-			trdos_active ? {slot_base(2'd2), 1'b0, cpu_a[13:0]} :
+			// The Pentagon slot is 64K now and takes sixteen bits of the
+			// counter; the others are 32K and take fifteen.
+			(romld_write | romld_read) ?
+				((romld_slot == 2'd1) ? {4'd1, romld_cnt[15:0]}
+				                      : {slot_base(romld_slot), romld_cnt[14:0]}) :
 			((esxdos_downloaded[1] == 1'b1) && (divmmc_maps == 1'b1)) ? {2'b11, divmmc_addr[17:0]} :
 			// Otherwise access the internal ROM
 			// a loaded 128K or Pentagon image, 32K via page_rom_sel
-			rom_from_sd ? {mach_base, page_rom_sel, cpu_a[13:0]} :
+			// One 64K image, four banks, addressed the way the real
+			// Pentagon ROM this came from is: two lines, and the second
+			// of them is the TR-DOS signal.
+			//
+			//   not-TR-DOS, bit4=0  bank 2  the 128 menu
+			//   not-TR-DOS, bit4=1  bank 3  48 BASIC
+			//   TR-DOS,     bit4=1  bank 1  TR-DOS
+			//   TR-DOS,     bit4=0  bank 0  Proteus
+			//
+			// The last line is the whole point. The menu's Proteus entry
+			// jumps into $3Dxx with the MENU ROM selected, the Beta
+			// pages its half in, and because bit 4 is zero what arrives
+			// is Proteus rather than TR-DOS. TR-DOS is no longer a slot
+			// of its own - it is bank 1 of this image.
+			rom_from_sd ? {4'd1, ~trdos_active, page_rom_sel, cpu_a[13:0]} :
 			{6'b000000, cpu_a[13:0]};
 	end
 	endgenerate

@@ -83,14 +83,17 @@ RDLEN           equ 256
 ; BASIC keeps working. The stream is already channel 2 anyway,
 ; since the command was typed at the BASIC prompt.
 start:
+                ; One 64K image with all four banks in it: the 128 menu,
+                ; 48 BASIC, TR-DOS and Proteus. TR-DOS is no longer a
+                ; file of its own - it is bank 1 of this one.
+                ;
+                ; 65536 does not fit in sixteen bits, and DE carries it
+                ; as zero, which is what a full sixteen-bit count wraps
+                ; to. one_rom compares the total against it the same way,
+                ; so the check still means "exactly this many bytes".
                 ld      hl,fn_pent
-                ld      de,$8000        ; 32768
+                ld      de,$0000        ; 65536
                 ld      a,SLOT_PENT
-                call    one_rom
-
-                ld      hl,fn_trdos
-                ld      de,$4000        ; 16384
-                ld      a,SLOT_TRDOS
                 call    one_rom
 
                 ; A blank disk in all four drives.
@@ -173,7 +176,11 @@ one_rom:        ld      (slot),a
                 ld      hl,(want)
                 ld      l,h
                 ld      h,0
-                ld      (blk_tot),hl
+                ld      a,h
+                or      l
+                jr      nz,bt_ok        ; 65536 arrives as zero, and its
+                ld      hl,256          ; block count is 256, not none -
+bt_ok:          ld      (blk_tot),hl    ; zero would print stars forever
 
 rd_chunk:       ld      a,(handle)
                 ld      hl,buffer
@@ -490,7 +497,6 @@ lead:           defb    0
 
 ; ---------------------------------------------------------------------
 fn_pent:        defb    "pentagon.rom",0
-fn_trdos:       defb    "trdos.rom",0
 
 msg_nofile:     defb    "not on card",13,0
 msg_blankb:     defb    " : blank 640K",13,0
@@ -503,8 +509,7 @@ msg_bytes:      defb    " bytes",13,0
 msg_howto:      defb    13
                 defb    "No ROM images found. Put these in",13
                 defb    "the root of the card:",13,13
-                defb    "  pentagon.rom  32768 bytes",13
-                defb    "  trdos.rom     16384 bytes",13,13
+                defb    "  pentagon.rom  65536 bytes",13,13
                 defb    "Staying on the 48K ROM.",13,0
 
 slot:           defb    0
