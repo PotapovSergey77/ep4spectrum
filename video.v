@@ -293,9 +293,23 @@ module video (
 	// IORQ-in-T2 need different corrections; measurement says they do
 	// not, because T80se's MREQ is late by exactly the amount that makes
 	// the two agree. (Requires T2Write=1 on the T80se instance so a
+	// Contention starts one T-state BEFORE the first paper pixel.
+	//
+	// The 48K technical FAQ gives it as an absolute figure: the pattern
+	// 6,5,4,3,2,1,0,0 begins at T-state 14335, and byte 16384 is
+	// displayed at 14336. Our window began at T-state 1 of the display
+	// line - 14337 - so every access was measured against a window two
+	// T-states late.
+	//
+	// Two T-states is eight counts. Shifting the window does not change
+	// its length, so the number of T-states charged over a frame is the
+	// same and Tact Meter reads what it read before; what moves is which
+	// slot a port write snaps to, which is the border beside and below
+	// the raster.
+	wire signed [12:0] cont_lead = (MACHINE == MACHINE_PENT) ? 13'sd0 : 13'sd4;
 	// write's MREQ is on the same edge as a read's.)
 	wire signed [12:0] hc_sum =
-		{3'b000, hcounter} + {{6{CONT_ADJ[4]}}, CONT_ADJ, 2'b00} - 13'sd4;
+		{3'b000, hcounter} + {{6{CONT_ADJ[4]}}, CONT_ADJ, 2'b00} - 13'sd4 - cont_lead;
 	wire signed [12:0] hc_wrap =
 		(hc_sum < 0)      ? (hc_sum + hline) :
 		(hc_sum >= hline) ? (hc_sum - hline) : hc_sum;

@@ -833,7 +833,7 @@ module spectrum_top (
 	assign ula_ear_in = 1'b1;
 
 	// KEY[0] = board button S1 -> computer reset (also see reset_cond)
-	// KEY[1] = board button S2 -> NMI (also see nmi_trigger)
+	// KEY[1] = board button S2, unused: it floats and cannot be read (see nmi_trigger)
 	// Keys that step or toggle something have to act on the press, not
 	// on the level.
 	//
@@ -963,34 +963,21 @@ module spectrum_top (
 			ext1024 <= ~ext1024;
 	end
 	wire mem128_changed = (mem128 != mem128_d);
-
-	// KEY[1] is the board's NMI button, and it has no pull-up: pins 88-91
-	// do not support one, Quartus refuses the assignment outright. So the
-	// input floats, and a floating input drifts.
+	// The board button is out of the NMI path entirely. F12 alone.
 	//
-	// Left raw it broke the NMI both ways. Drifting low leaves
-	// nmi_trigger already asserted, and then pressing F12 makes no edge
-	// at all - which on the board read as the NMI working on the second
-	// or third press and never the first. Drifting the other way would
-	// fire NMIs nobody asked for.
+	// KEY[1] has no pull-up - pins 88-91 do not support one, Quartus
+	// refuses the assignment - so the input floats. Debouncing it was the
+	// first attempt and it made things worse rather than better: if the
+	// pin settles at the level that reads as PRESSED, four milliseconds of
+	// it is enough to latch that, nmi_trigger never returns low, and F12
+	// can no longer make an edge at all. The debounce did not cure the
+	// case, it made it permanent.
 	//
-	// Two flops to cross into this clock domain, then a counter that
-	// only accepts a value the pin has held for a full 4ms. Drift does
-	// not survive that; a finger on the button does.
-	reg  [1:0]  key1_sync = 2'b11;
-	reg         key1_held = 1'b1;
-	reg  [16:0] key1_cnt  = 17'd0;
-	always @(posedge clock) begin
-		key1_sync <= {key1_sync[0], KEY[1]};
-		if (key1_sync[1] == key1_held)
-			key1_cnt <= 17'd0;
-		else if (key1_cnt == 17'd112000)   // 4ms at 28MHz
-			key1_held <= key1_sync[1];
-		else
-			key1_cnt <= key1_cnt + 17'd1;
-	end
-
-	wire nmi_trigger = key_f12 | ~key1_held;
+	// A button that cannot be read cannot be used. If S2 is populated and
+	// wanted, it needs an external pull-up on the board; until then it is
+	// a floating input driving an interrupt, which is worse than no
+	// button.
+	wire nmi_trigger = key_f12;
 
 	// CPU
 	//

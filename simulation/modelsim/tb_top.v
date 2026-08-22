@@ -330,8 +330,27 @@ module tb_top;
 				$time, dut.divmmc_paged_in);
 			force dut.cpu_nmi_n = 1'b0;
 			nmi_at = $time;
-			repeat (2000) @(posedge dut.clock);
-			release dut.cpu_nmi_n;
+			// Where execution actually GOES. Reporting that $0066 was
+			// fetched and that the automapper paged in says the trap
+			// works; it says nothing about whether what runs afterwards
+			// is ESXDOS or rubbish, and on the board the first NMI
+			// fills the screen with stripes while the second reaches
+			// the browser.
+			fork
+				begin : nmi_trace
+					integer n;
+					for (n = 0; n < 32; n = n + 1) begin
+						@(negedge dut.cpu_m1_n);
+						$display("  NMI fetch %0d: $%04X  paged_in=%b maps=%b",
+							n, dut.cpu_a, dut.divmmc_paged_in,
+							dut.divmmc_maps);
+					end
+				end
+				begin
+					repeat (2000) @(posedge dut.clock);
+					release dut.cpu_nmi_n;
+				end
+			join
 		end
 	end
 	// Did the fetch at 0x0066 even present the trigger condition, and did
@@ -2327,6 +2346,65 @@ end
 				om_wait_bord = 1'b0;
 			end
 			om_prev_bord <= dut.ula.BORDER_OUT;
+		end
+	end
+
+
+	// --- +DEMO=<file>: run a demo straight out of RAM ---
+	//
+	// The three demos under investigation load into RAM and start at
+	// $8000, so the +ROM48 path cannot carry them: it puts a 16K image
+	// where the ROM is, and these want $4000-$FFFF. Their own tape
+	// loaders were read instead, and the addresses taken from the bytes
+	// in them - see the load map in the commit that added this - so the
+	// tape can be skipped entirely.
+	//
+	// The file is the RAM image from $4000 to $FFFF, one byte a line.
+	// SDRAM addresses follow ram_page: $4000-$7FFF is bank 5, $8000-$BFFF
+	// bank 2, and $C000-$FFFF bank 0 with page_ram_sel zero on a 48K.
+	reg [7:0]   demoimg [0:49151];
+	reg [255:0] demofile;
+	integer     dm;
+	integer     dmaddr;
+	initial begin
+		if ($value$plusargs("DEMO=%s", demofile)) begin
+			$readmemh(demofile, demoimg);
+			wait (dut.boot_copy_active === 1'b0);
+			@(posedge dut.clock);
+			for (dm = 0; dm < 49152; dm = dm + 1) begin
+				if (dm < 16384)      dmaddr = 25'h14000 + dm;          // bank 5
+				else if (dm < 32768) dmaddr = 25'h08000 + (dm - 16384); // bank 2
+				else                 dmaddr = (dm - 32768);             // bank 0
+				poke(dmaddr[24:0], demoimg[dm]);
+			end
+			force dut.machine = 2'd0;          // 48K
+			$display("[%0t] DEMO: %0s poked into RAM, machine forced to 48K",
+				$time, demofile);
+			// Let the ROM get through its own reset, then send the CPU
+			// to the demo's entry point. Forcing PC rather than jumping
+			// through a stub ROM keeps the real 48K ROM in place, which
+			// the demos need for the interrupt handler at $0038.
+			// Short: the demos need the ROM present for the handler at
+			// $0038, not its boot. Forty milliseconds of it was hours of
+			// simulation for nothing.
+			#200_000;
+			@(negedge dut.cpu_m1_n);
+			force dut.cpu.u0.PC = 16'h8000;
+			@(posedge dut.cpu_m1_n);
+			release dut.cpu.u0.PC;
+			$display("[%0t] DEMO: entered at $8000", $time);
+			// A fast check that the entry took, printed within
+			// microseconds of it. Without one, a run can be left going
+			// for an hour and report nothing - and nothing reported
+			// says only that nothing was reported, not that the demo
+			// failed to draw.
+			begin : dm_trace
+				integer n;
+				for (n = 0; n < 24; n = n + 1) begin
+					@(negedge dut.cpu_m1_n);
+					$display("  DEMO fetch %0d: $%04X", n, dut.cpu_a);
+				end
+			end
 		end
 	end
 
