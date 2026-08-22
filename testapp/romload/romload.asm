@@ -87,12 +87,13 @@ start:
                 ; 48 BASIC, TR-DOS and Proteus. TR-DOS is no longer a
                 ; file of its own - it is bank 1 of this one.
                 ;
-                ; 65536 does not fit in sixteen bits, and DE carries it
-                ; as zero, which is what a full sixteen-bit count wraps
-                ; to. one_rom compares the total against it the same way,
-                ; so the check still means "exactly this many bytes".
+                ; Size in 256-byte BLOCKS, not bytes. 65536 does not fit
+                ; in sixteen bits and arrives as zero, which made every
+                ; block look like an overshoot: the loader gave up on the
+                ; first one and the slot stayed empty, so neither the
+                ; Pentagon menu nor anything else came up.
                 ld      hl,fn_pent
-                ld      de,$0000        ; 65536
+                ld      de,256          ; 64K
                 ld      a,SLOT_PENT
                 call    one_rom
 
@@ -131,7 +132,7 @@ done:           or      a               ; carry clear: no error to ESXDOS
                 ret
 
 ; ---------------------------------------------------------------------
-; one_rom: HL = filename, DE = exact size wanted, A = slot
+; one_rom: HL = filename, DE = exact size in 256-byte blocks, A = slot
 ;
 ; The size is measured rather than trusted. The commonest mistake is a
 ; 16K image where 32K is wanted, and that must not read the same as a
@@ -170,17 +171,10 @@ one_rom:        ld      (slot),a
                 ld      (bar_done),hl   ; per file, not per run - three
                                         ; bars share these variables
 
-                ; How many 256-byte blocks the whole file is. Every size
-                ; here is a whole number of pages, so the high byte is
-                ; the count.
+                ; want is the block count already, which is exactly what
+                ; the bar scales to.
                 ld      hl,(want)
-                ld      l,h
-                ld      h,0
-                ld      a,h
-                or      l
-                jr      nz,bt_ok        ; 65536 arrives as zero, and its
-                ld      hl,256          ; block count is 256, not none -
-bt_ok:          ld      (blk_tot),hl    ; zero would print stars forever
+                ld      (blk_tot),hl
 
 rd_chunk:       ld      a,(handle)
                 ld      hl,buffer
@@ -196,19 +190,24 @@ rd_chunk:       ld      a,(handle)
                 ; Never feed more than the slot holds. Past that the
                 ; file is too long, and the extra would land in the next
                 ; slot's space.
-                push    bc
+                ;
+                ; Counted in BLOCKS, not bytes. A 64K image is 65536
+                ; bytes and that does not fit in sixteen bits: carried as
+                ; a byte count it arrives as zero, and every block then
+                ; looks like an overshoot, so the loader gave up on the
+                ; first one and the slot stayed empty. In blocks the
+                ; largest number here is 256 and the arithmetic is
+                ; ordinary.
                 ld      hl,(count)
-                add     hl,bc
+                inc     hl
+                ld      (count),hl
                 ld      de,(want)
                 or      a
                 sbc     hl,de
-                pop     bc
-                jr      z,snd_block     ; exactly fills it
-                jr      nc,too_long     ; would overshoot
+                jr      z,snd_block     ; this block exactly fills it
+                jr      nc,too_long     ; past the end
 
-snd_block:      ld      hl,(count)
-                add     hl,bc
-                ld      (count),hl
+snd_block:
 
                 ; Re-select the slot before every block, WITHOUT the
                 ; reset bit so the counter keeps its place.
