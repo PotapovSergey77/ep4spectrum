@@ -83,11 +83,6 @@ RDLEN           equ 256
 ; BASIC keeps working. The stream is already channel 2 anyway,
 ; since the command was typed at the BASIC prompt.
 start:
-                ld      hl,fn_128
-                ld      de,$8000        ; 32768
-                ld      a,SLOT_128
-                call    one_rom
-
                 ld      hl,fn_pent
                 ld      de,$8000        ; 32768
                 ld      a,SLOT_PENT
@@ -98,12 +93,7 @@ start:
                 ld      a,SLOT_TRDOS
                 call    one_rom
 
-                ; The disk last, and optional: a machine with TR-DOS but
-                ; no disk in the drive is a perfectly ordinary machine,
-                ; and it is how the board came up before slot 3 existed.
-                call    one_disk
-
-                ; And a blank disk in B, C and D.
+                ; A blank disk in all four drives.
                 ;
                 ; They have to come from here. TR-DOS formats with
                 ; WRITE TRACK, which writes no data in this controller,
@@ -115,6 +105,8 @@ start:
                 ; catalogue, all zero, and the disk info block at the end
                 ; of the ninth. Everything past that is free space and
                 ; nothing reads it until something is written there.
+                xor     a               ; drive A
+                call    blank_drv
                 ld      a,CTL_DRV_B
                 call    blank_drv
                 ld      a,CTL_DRV_C
@@ -323,133 +315,6 @@ hdr:            push    hl
                 ret
 
 ; ---------------------------------------------------------------------
-; one_disk: the TR-DOS disk image, into slot 3.
-;
-; Unlike a ROM this has no size to check against. A .trd is as long as
-; it is - the 640K of a full double-sided image, or the 16K of one that
-; carries a single program - and both are perfectly valid, so anything
-; that arrives is taken and only the 640K ceiling is enforced. A missing
-; file is not an error either: a TR-DOS machine with an empty drive is
-; an ordinary machine.
-; ---------------------------------------------------------------------
-one_disk:       ld      a,SLOT_DISK
-                ld      (slot),a
-                ld      hl,fn_disk
-                call    hdr
-
-                push    hl
-                pop     ix
-                ld      a,'*'           ; default drive
-                ld      b,FA_READ
-                rst     $08
-                defb    F_OPEN
-                jp      c,no_file
-                ld      (handle),a
-
-                ld      a,SLOT_DISK|CTL_RESET
-                out     (PORT_CTL),a
-
-                ; Measure the file before loading it, so the bar is
-                ; scaled to THIS image rather than to a guess.
-                ;
-                ; Both guesses were wrong in opposite directions. One
-                ; star per eight blocks put the whole bar in the first
-                ; 40K, so a 640K image filled the line at once and then
-                ; sat motionless. Scaling to the 640K ceiling instead
-                ; means a 32K image moves the bar one star and then jumps
-                ; to full at the end. Neither shows what is happening.
-                ;
-                ; Nothing here knows a .trd's length in advance, and
-                ; asking ESXDOS for it means the stat call and its
-                ; structure layout, which is one more thing to get wrong
-                ; blind. Counting the blocks by reading them is exact,
-                ; needs no API beyond what is already in use, and for a
-                ; boot image of a few tens of K costs a fraction of a
-                ; second - the file is read from the card twice, and the
-                ; second pass is the one that loads.
-                call    dsk_count       ; blk_tot = length in blocks
-                jp      c,rd_error
-
-                ; Close and reopen rather than seek: the file has been
-                ; read to its end and has to start again, and reopening
-                ; is one call where seeking is one call plus its mode
-                ; argument and the chance of getting that wrong.
-                ld      a,(handle)
-                rst     $08
-                defb    F_CLOSE
-
-                ld      hl,fn_disk      ; freshly loaded - F_OPEN and
-                push    hl              ; F_READ have both had HL since
-                pop     ix
-                ld      a,'*'
-                ld      b,FA_READ
-                rst     $08
-                defb    F_OPEN
-                jp      c,no_file
-                ld      (handle),a
-
-                ld      a,SLOT_DISK|CTL_RESET
-                out     (PORT_CTL),a
-
-                ld      hl,0
-                ld      (dblk),hl
-                ld      (bar_done),hl
-                ld      (acc),hl
-
-dsk_chunk:      ld      a,(handle)
-                ld      hl,buffer
-                ld      ix,buffer
-                ld      bc,RDLEN
-                rst     $08
-                defb    F_READ
-                jp      c,rd_error
-                ld      a,b
-                or      c
-                jr      z,dsk_end       ; end of the file
-
-                ; The ceiling. Past it the image would run out of the
-                ; space set aside for it and into whatever is next.
-                ld      hl,(dblk)
-                ld      de,DISK_MAXBLK
-                or      a
-                sbc     hl,de
-                jr      nc,dsk_end      ; full: keep what fits
-
-                push    bc
-                ld      a,SLOT_DISK     ; re-select, WITHOUT the reset bit
-                out     (PORT_CTL),a
-                pop     bc
-
-                ld      hl,buffer
-dsk_byte:       ld      a,(hl)
-                inc     hl
-                out     (PORT_DAT),a
-                dec     bc
-                ld      a,b
-                or      c
-                jr      nz,dsk_byte
-
-                ld      hl,(dblk)
-                inc     hl
-                ld      (dblk),hl
-                call    bar_step
-                jr      dsk_chunk
-
-dsk_end:        call    shut
-                ld      hl,(dblk)
-                ld      a,h
-                or      l
-                jr      z,dsk_empty     ; opened, but nothing in it
-
-                ld      a,SLOT_DISK|CTL_FILL
-                out     (PORT_CTL),a
-                jp      bar_fill
-
-dsk_empty:      call    nl
-                ld      hl,msg_empty
-                jp      print
-
-; ---------------------------------------------------------------------
 ; blank_drv: lay an empty TR-DOS filesystem on the drive in A.
 ;
 ; 2272 zero bytes, then the 32-byte info block that ends sector 9. The
@@ -508,37 +373,6 @@ bdrv:           defb    0
 tr_info:        defb    $00,$00,$01,$16,$00,$f0,$09,$10
                 defb    $00,$00,"         ",$00,$00
                 defb    "          ",$00
-
-; ---------------------------------------------------------------------
-; dsk_count: read the open file to its end, counting 256-byte blocks
-; into blk_tot. Carry set on a read error. The file is left at EOF, so
-; the caller has to reopen it.
-;
-; Capped at the slot's ceiling, so a file longer than the slot still
-; gives a bar that reaches the right-hand edge at the point the load
-; actually stops rather than somewhere past it.
-; ---------------------------------------------------------------------
-dsk_count:      ld      hl,0
-                ld      (blk_tot),hl
-dc_loop:        ld      a,(handle)
-                ld      hl,buffer
-                ld      ix,buffer
-                ld      bc,RDLEN
-                rst     $08
-                defb    F_READ
-                ret     c
-                ld      a,b
-                or      c
-                jr      z,dc_done       ; end of the file
-                ld      hl,(blk_tot)
-                inc     hl
-                ld      (blk_tot),hl
-                ld      de,DISK_MAXBLK
-                or      a
-                sbc     hl,de
-                jr      c,dc_loop
-dc_done:        or      a               ; carry clear
-                ret
 
 ; ---------------------------------------------------------------------
 ; The progress bar.
@@ -655,10 +489,8 @@ pd_show:        push    af
 lead:           defb    0
 
 ; ---------------------------------------------------------------------
-fn_128:         defb    "128.rom",0
 fn_pent:        defb    "pentagon.rom",0
 fn_trdos:       defb    "trdos.rom",0
-fn_disk:        defb    "proteus.trd",0
 
 msg_nofile:     defb    "not on card",13,0
 msg_blankb:     defb    " : blank 640K",13,0
@@ -671,11 +503,8 @@ msg_bytes:      defb    " bytes",13,0
 msg_howto:      defb    13
                 defb    "No ROM images found. Put these in",13
                 defb    "the root of the card:",13,13
-                defb    "  128.rom       32768 bytes",13
                 defb    "  pentagon.rom  32768 bytes",13
                 defb    "  trdos.rom     16384 bytes",13,13
-                defb    "proteus.trd is optional - the",13
-                defb    "TR-DOS image in the drive.",13,13
                 defb    "Staying on the 48K ROM.",13,0
 
 slot:           defb    0
