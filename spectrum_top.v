@@ -2675,16 +2675,25 @@ module spectrum_top (
 	                     // b, then the output delay in stages and the group
 	                     // phase in hex - the two halves of one number,
 	                     // shown apart so the wrap is readable
-	                     ((digit_scan == 2'd3) ? 4'hb :
-	                      (digit_scan == 2'd2) ? 4'd0 :
-	                      (digit_scan == 2'd1) ? {2'b00, bord_delay} :
+	                     // All four border numbers at once, no label:
+	                     //   interrupt groups | output stages | 0 | phase
+	                     //
+	                     // One view for both knobs because the display
+	                     // followed whichever was touched last, and a
+	                     // trim could not be READ without being changed.
+	                     // A setting found by ear on the board was then
+	                     // unrecoverable: reconfiguring the FPGA puts
+	                     // every trim back to its power-up value, and
+	                     // nobody could say what the good one had been.
+	                     ((digit_scan == 2'd3) ? {2'b00, int_step} :
+	                      (digit_scan == 2'd2) ? {2'b00, bord_delay} :
+	                      (digit_scan == 2'd1) ? 4'd0 :
 	                                             bord_phase) :
 	                     (trim_show == 2'd2) ?
-	                     // I, then the interrupt trim in whole T-states
-	                     ((digit_scan == 2'd3) ? 4'd1 :
-	                      (digit_scan == 2'd2) ? 4'd0 :
+	                     ((digit_scan == 2'd3) ? {2'b00, int_step} :
+	                      (digit_scan == 2'd2) ? {2'b00, bord_delay} :
 	                      (digit_scan == 2'd1) ? 4'd0 :
-	                                             {int_step, 2'b00}) :
+	                                             bord_phase) :
 	                     (trim_show == 2'd1) ?
 	                     ((digit_scan == 2'd3) ? 4'he :  // E, IO window
 	                      (digit_scan == 2'd2) ? 4'd0 :
