@@ -284,11 +284,28 @@ module spectrum_top (
 	// so the interrupt lands a line up rather than wrapping to a huge
 	// number and never firing.
 	//
-	// Four hcounter counts are one T-state, so the count is scaled by
-	// four and negated; the display shows the count itself, in whole
-	// T-states of LEFT shift.
-	reg        [2:0] int_step = 3'd0;   // the interrupt where the reference puts it
-	wire signed [7:0] int_adj = -$signed({1'b0, 2'b00, int_step, 2'b00});
+	// The step is a WHOLE GROUP - four T-states, sixteen hcounter counts,
+	// eight pixels - and nothing finer.
+	//
+	// Finer steps are not a smaller version of this, they are a
+	// different thing. Four T-states leave every write's remainder
+	// modulo the group untouched, so the border group grid catches
+	// everything exactly as it did and the whole picture moves eight
+	// pixels with its internal alignment intact. Two T-states are half a
+	// group: the remainder changes, and the two streams of OUTs - the
+	// one beside the raster that IO contention snaps, and the one above
+	// it that nothing snaps - get re-sorted onto the grid differently.
+	// On the board that reads as ula48 coming apart, which is what it
+	// did at step 2.
+	//
+	// So this is the knob for the whole border together, and BORD_PHASE
+	// is the one for the two streams against each other. They do
+	// different jobs and neither can do the other's.
+	//
+	// Default 1: one group left of the published position. Four values,
+	// wrapping, shown as the shift in T-states - 0, 4, 8, C.
+	reg        [1:0] int_step = 2'd1;
+	wire signed [7:0] int_adj = -$signed({2'b00, int_step, 4'b0000});
 	// Which trim the four-digit display is showing, set by whichever trim
 	// key was pressed last. A fixed priority used to decide it, and setting
 	// a trim the display was not on looked exactly like the keys being
@@ -881,12 +898,11 @@ module spectrum_top (
 		key_kpsub_d <= key_kpsub;
 		key_kpadd_d <= key_kpadd;
 		key_kpmul_d <= key_kpmul;
-		// Keypad *: the interrupt one CPU T-state EARLIER a press, so
-		// the border moves left. Eight values and then back to zero -
-		// two turns of the HALT poll grid, which is as far as this can
-		// say anything new.
+		// Keypad *: the whole border one GROUP - eight pixels - left a
+		// press, four values and back to zero. Whole groups only: see
+		// the note by int_step for why half a group takes it apart.
 		if (key_kpmul == 1'b1 && key_kpmul_d == 1'b0) begin
-			int_step  <= int_step + 3'd1;
+			int_step  <= int_step + 2'd1;
 			trim_show <= 2'd2;
 		end
 		// Now the border group phase: which sixteenth of a group the
@@ -2641,7 +2657,7 @@ module spectrum_top (
 	//   E0nn  IO contention window, keypad - and +, a T-state a press
 	wire any_trim = (cont_adj != 5'd0) || (cont_model != 2'd1)
 	                || (io_adj != 5'd0) || (trim_show == 2'd3)
-	                || (trim_show == 2'd2) || (int_step != 3'd0);
+	                || (trim_show == 2'd2) || (int_step != 2'd0);
 
 
 	// The left pair carries the CPU speed: 3.5, 7.0, 14, 28. The two
@@ -2668,7 +2684,7 @@ module spectrum_top (
 	                     ((digit_scan == 2'd3) ? 4'd1 :
 	                      (digit_scan == 2'd2) ? 4'd0 :
 	                      (digit_scan == 2'd1) ? 4'd0 :
-	                                             {1'b0, int_step}) :
+	                                             {int_step, 2'b00}) :
 	                     (trim_show == 2'd1) ?
 	                     ((digit_scan == 2'd3) ? 4'he :  // E, IO window
 	                      (digit_scan == 2'd2) ? 4'd0 :
