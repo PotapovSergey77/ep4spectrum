@@ -1277,7 +1277,7 @@ module tb_top;
 	// This skips the card and ESXDOS entirely: the image goes straight
 	// into the slot with poke(), the flag and the machine are forced,
 	// and trace_top.log then says what the CPU actually fetched.
-	reg [7:0]   slot1img [0:32767];
+	reg [7:0]   slot1img [0:65535];
 	reg [255:0] slot1file;
 	integer     sl;
 	initial begin
@@ -1285,10 +1285,12 @@ module tb_top;
 			$readmemh(slot1file, slot1img);
 			wait (dut.boot_copy_active === 1'b0);
 			@(posedge dut.clock);
-			// slot 1 is rom_addr $08000, and cpu_addr puts ROM in the
-			// top half: {1'b1, rom_addr} = $108000.
-			for (sl = 0; sl < 32768; sl = sl + 1)
-				poke(25'h108000 + sl, slot1img[sl]);
+			// Slot 1 is 64K now, all four Pentagon banks, and it starts
+			// at rom_addr $10000; cpu_addr puts ROM in the top half, so
+			// {3'b001, rom_addr} = $110000. It was $108000 back when the
+			// slot was 32K and the banks were separate files.
+			for (sl = 0; sl < 65536; sl = sl + 1)
+				poke(25'h110000 + sl, slot1img[sl]);
 			force dut.rom_slot_filled = 4'b0010;   // slot 1
 			force dut.machine = 2'd3;              // MACHINE_PENT
 			$display("[%0t] SLOT1: %0s poked into slot 1, machine forced to Pentagon",
@@ -1616,8 +1618,18 @@ module tb_top;
 		if (!$value$plusargs("ROM=%s", romfile)) romfile = "esxmmc_plain.hex";
 		$readmemh(romfile, esxinit);
 		for (k = 0; k < 8192; k = k + 1) begin
-			poke(23'h180000 + k, esxinit[k]);
-			poke(23'h1A6000 + k, esxinit[k]);
+			// $1C0000 is the fixed ROM window and $1E6000 the mapram
+			// bank, which is bank 3 of the DivMMC RAM.
+			//
+			// Both were $180000/$1A6000 until DivMMC moved to the top
+			// 256K of the ROM half, and nothing here moved with it. The
+			// hardware boot copy writes the new addresses, so the board
+			// was fine and only the simulation was empty: the CPU
+			// fetched zeros out of the DivMMC ROM and wandered through
+			// NOPs for the whole run, with 4505 fetches counted as
+			// corrupted and nothing pointing at why.
+			poke(23'h1C0000 + k, esxinit[k]);
+			poke(23'h1E6000 + k, esxinit[k]);
 		end
 		wait (dut.boot_settle_done === 1'b1);
 		@(posedge dut.clock);
