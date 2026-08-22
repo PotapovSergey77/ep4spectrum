@@ -724,6 +724,7 @@ module tb_top;
 	// 14336 is the acknowledge, not the edge - and the acknowledge is
 	// what a program counts from.
 	integer c2p_cnt = 0;
+	integer c2p_taken = 0;
 	integer c2p_shown = 0;
 	reg     c2p_armed = 1'b0;
 	reg     cirq_d = 1'b1;
@@ -735,15 +736,27 @@ module tb_top;
 			if (cirq_d == 1'b1 && dut.cpu_irq_n == 1'b0) begin
 				c2p_armed <= 1'b1;
 				c2p_cnt   <= 0;
-			end else if (c2p_armed && dut.cpu_clken)
+				c2p_taken <= 0;
+			end else if (c2p_armed && dut.cpu_clken) begin
 				c2p_cnt <= c2p_cnt + 1;
+				// Offered, and taken. cpu_clken is the T-state slot the
+				// machine hands out; cpu_clken_gated is the one the CPU
+				// actually advances on. Above the raster there is no
+				// contention and nothing else should be taking slots
+				// away, so the two must agree - and if they do not, the
+				// program falls behind the sweep by the difference,
+				// which accumulates over the whole 14336 and comes out
+				// as the top border sitting right of where it belongs.
+				if (dut.cpu_clken_gated) c2p_taken <= c2p_taken + 1;
+			end
 			if (c2p_armed && dut.vid.picture && !cpic_d) begin
 				c2p_armed <= 1'b0;
 				if (c2p_shown < 4) begin
 					c2p_shown <= c2p_shown + 1;
-					$display("[%0t] CPU INT -> first paper pixel: %0d T-states (48K wants 14336)",
-						$time, c2p_cnt);
+					$display("[%0t] CPU INT -> first paper pixel: %0d slots offered, %0d taken, %0d LOST (48K wants 14336 and loses none)",
+						$time, c2p_cnt, c2p_taken, c2p_cnt - c2p_taken);
 				end
+				c2p_taken <= 0;
 			end
 		end
 	end
@@ -2246,6 +2259,75 @@ end
 		#(run_len_us(0) * 1000 - 1_000);
 		$display("BOOT SUMMARY: fetches=%0d first3d=%b bank3_writes=%0d romhalf_writes=%0d",
 			n_fetch, seen_3d, b3_writes, dm_writes);
+	end
+
+
+	// --- +OUTMEAS: what contention does to a run of border writes ---
+	//
+	// Two questions in one pass, and neither has ever been measured.
+	//
+	// 1. Does the ULA port latch BEFORE or AFTER the contention delay?
+	//    FUSE writes the port between its early and late contention, so
+	//    a border write takes effect before the late delay is charged.
+	//    If ours latches at the end of the hold instead, every border
+	//    write inside the raster lands late by the delay - which is a
+	//    constant offset in a tight loop, confined to the display area,
+	//    and invisible to any trim. That is the shape of the fault on
+	//    the board.
+	//
+	// 2. How far apart do consecutive writes land, inside the display
+	//    area and outside it? The four-case table says an OUT to $FE
+	//    with a plain high byte is N:1,C:3 - one check, on T2.
+	//
+	// Run with +ROM48=outloop.hex, which is nothing but a run of
+	// OUT ($FE),A.
+	reg        om_on = 1'b0;
+	initial    om_on = $test$plusargs("OUTMEAS");
+	integer    om_shown = 0;
+	reg        om_prev_io = 1'b1;
+	reg [2:0]  om_prev_bord = 3'd0;
+	integer    om_io_t = 0;
+	integer    om_last_io_t = 0;
+	integer    om_tick = 0;
+	reg        om_wait_bord = 1'b0;
+	reg        om_in_pic = 1'b0;
+	integer    om_cio = 0;
+	integer    om_cmem = 0;
+	integer    om_call = 0;
+
+	always @(posedge dut.clock) begin
+		if (om_on && dut.reset_n === 1'b1) begin
+			if (dut.cpu_clken == 1'b1) om_tick = om_tick + 1;
+
+			if (dut.cpu_clken && dut.cont_io)  om_cio = om_cio + 1;
+			if (dut.cpu_clken && dut.cont_mem) om_cmem = om_cmem + 1;
+			if (dut.cpu_clken && dut.contention) om_call = om_call + 1;
+			// IORQ+WR falling: the write cycle has begun.
+			if (om_prev_io == 1'b1 && dut.cpu_ioreq_n == 1'b0
+			    && dut.cpu_wr_n == 1'b0) begin
+				om_io_t      = om_tick;
+				om_wait_bord = 1'b1;
+				om_in_pic    = dut.vid.vpicture;
+			end
+			om_prev_io <= (dut.cpu_ioreq_n | dut.cpu_wr_n);
+
+			// The border register actually changing.
+			if (dut.ula.BORDER_OUT != om_prev_bord) begin
+				if (om_wait_bord && om_shown < 24) begin
+					om_shown = om_shown + 1;
+					$display("OUT %0d: IORQ+WR at T%0d, border latched at T%0d, delay %0d, gap since last %0d, %s",
+						om_shown, om_io_t, om_tick, om_tick - om_io_t,
+						om_io_t - om_last_io_t,
+						om_in_pic ? "IN the display area" : "outside it");
+					$display("      holds since last: cont_io %0d, cont_mem %0d, total %0d",
+						om_cio, om_cmem, om_call);
+					om_cio = 0; om_cmem = 0; om_call = 0;
+					om_last_io_t = om_io_t;
+				end
+				om_wait_bord = 1'b0;
+			end
+			om_prev_bord <= dut.ula.BORDER_OUT;
+		end
 	end
 
 endmodule

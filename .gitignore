@@ -46,3 +46,7 @@ simulation/modelsim/*.log
 simulation/modelsim/*.hex
 simulation/modelsim/spectrum.qpf
 simulation/modelsim/work_dbg/
+simulation/modelsim/work_geo/
+simulation/modelsim/work_int/
+simulation/modelsim/work_nmi/
+simulation/modelsim/outloop.bin

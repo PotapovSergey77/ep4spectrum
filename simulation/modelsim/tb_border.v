@@ -42,6 +42,8 @@ module tb_border;
 		.CONTENTION(),
 		.CONTENTION_IO(),
 		.INT_ADJ(8'd0),
+		.BORD_PHASE(4'd9),
+		.BORD_DELAY(2'd0),
 		.INT_VADJ(8'd0),
 		.CONT_ADJ(5'd0),
 		.IO_ADJ(5'd0),
