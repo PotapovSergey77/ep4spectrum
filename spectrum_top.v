@@ -287,7 +287,7 @@ module spectrum_top (
 	// Four hcounter counts are one T-state, so the count is scaled by
 	// four and negated; the display shows the count itself, in whole
 	// T-states of LEFT shift.
-	reg        [2:0] int_step = 3'd0;
+	reg        [2:0] int_step = 3'd0;   // the interrupt where the reference puts it
 	wire signed [7:0] int_adj = -$signed({1'b0, 2'b00, int_step, 2'b00});
 	// Which trim the four-digit display is showing, set by whichever trim
 	// key was pressed last. A fixed priority used to decide it, and setting
@@ -310,7 +310,23 @@ module spectrum_top (
 	// moves it by a whole group. Four pixels cannot be closed by adding
 	// eights, so the difference is in how many T-states each program is
 	// charged on the way to its OUT, not in where this grid sits.
-	reg [3:0] bord_phase = 4'd8;
+	// One knob, two mechanisms behind it, walked as a single number so a
+	// press always moves the border the same way.
+	//
+	// [3:0] is the group phase and [5:4] the output delay in pixel
+	// stages. Winding down takes the phase to zero, and the next press
+	// wraps it to fifteen and drops a stage - which is a pixel further
+	// left, not eight pixels back to the right. That jump is what the
+	// phase on its own does when it runs off its floor, and the floor is
+	// real: the latch cannot precede the OUT that sets it. The stages
+	// after the latch can go, though, and there are three of them.
+	//
+	// 6'b11_1000 is delay 3, phase 8 - the chain as it always was, and
+	// the phase the birds demo is right at. Saturates at both ends
+	// rather than wrapping, so the travel has an end you can feel.
+	reg [5:0] bord_trim = 6'b11_1000;
+	wire [3:0] bord_phase = bord_trim[3:0];
+	wire [1:0] bord_delay = bord_trim[5:4];
 	// Vertical trim: where the frame sits against the raster, stepped by
 	// Page Up / Page Down. video.v takes this in sixteenths of a line
 	// (INT_VADJ >>> 4), so a step of 16 is exactly one line.
@@ -883,9 +899,11 @@ module spectrum_top (
 		// right - 3.0 and 1.9 T-states against a table giving 3 and 2 -
 		// so it is not the live question and this is.
 		if (key_kpsub == 1'b1 && key_kpsub_d == 1'b0) begin
-			bord_phase <= bord_phase - 4'd1; trim_show <= 2'd3;
+			if (bord_trim != 6'd0) bord_trim <= bord_trim - 6'd1;
+			trim_show <= 2'd3;
 		end else if (key_kpadd == 1'b1 && key_kpadd_d == 1'b0) begin
-			bord_phase <= bord_phase + 4'd1; trim_show <= 2'd3;
+			if (bord_trim != 6'b111111) bord_trim <= bord_trim + 6'd1;
+			trim_show <= 2'd3;
 		end
 		key_pgup_d <= key_pgup;
 		key_pgdn_d <= key_pgdn;
@@ -1383,6 +1401,7 @@ module spectrum_top (
 		.CONT_ADJ(cont_adj),
 		.IO_ADJ(io_adj),
 		.BORD_PHASE(bord_phase),
+		.BORD_DELAY(bord_delay),
 		.PORT_FF_ACTIVE(vid_port_ff_active),
 		.PORT_FF_DATA(vid_port_ff_data),
 		.VID_A(vid_a),
@@ -2637,10 +2656,12 @@ module spectrum_top (
 
 	wire [3:0] nibble = any_trim ?
 	                    ((trim_show == 2'd3) ?
-	                     // b, then the border group phase in hex
+	                     // b, then the output delay in stages and the group
+	                     // phase in hex - the two halves of one number,
+	                     // shown apart so the wrap is readable
 	                     ((digit_scan == 2'd3) ? 4'hb :
 	                      (digit_scan == 2'd2) ? 4'd0 :
-	                      (digit_scan == 2'd1) ? 4'd0 :
+	                      (digit_scan == 2'd1) ? {2'b00, bord_delay} :
 	                                             bord_phase) :
 	                     (trim_show == 2'd2) ?
 	                     // I, then the interrupt trim in whole T-states

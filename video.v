@@ -71,6 +71,7 @@ module video (
 	CONT_ADJ,
 	IO_ADJ,
 	BORD_PHASE,
+	BORD_DELAY,
 	PORT_FF_ACTIVE,
 	PORT_FF_DATA,
 
@@ -128,6 +129,12 @@ module video (
 	input   [4:0]   IO_ADJ;
 	// Which sixteenth of a group the border boundary sits on.
 	input   [3:0]   BORD_PHASE;
+	// How many pixel stages of the output chain the border passes
+	// through: 3 is the chain as it has always been, and each step down
+	// takes one pixel of delay out, which reads on screen as the border
+	// moving one pixel left. Zero is the floor - below it the value has
+	// not been latched yet.
+	input   [1:0]   BORD_DELAY;
 	output          PORT_FF_ACTIVE;
 	output  [7:0]   PORT_FF_DATA;
 
@@ -457,7 +464,27 @@ module video (
 	reg     [2:0]   border_d5  = 3'b000;
 	reg     [2:0]   border_d6  = 3'b000;
 	reg     [2:0]   border_d7  = 3'b000;
-	reg     [2:0]   border_out = 3'b000;
+	// The tap, and the second half of the border trim.
+	//
+	// The group phase above can place the latch anywhere inside a group,
+	// but its floor is the OUT itself: wind it past that and the latch
+	// belongs to the NEXT group, which on screen is a jump of eight
+	// pixels the wrong way. That floor is real - a border cannot be
+	// shown before the CPU has written it - but it is not the floor of
+	// the border's position, because after the latch the value still
+	// walks three pixel stages before it reaches the screen. Taking
+	// those out moves it three pixels further left with the phase
+	// untouched, which is exactly the travel the phase runs out of.
+	//
+	// Combinational, and border_out is no longer a register: the stages
+	// it selects are all clocked at the pixel rate, so the output still
+	// only changes on pixel boundaries. BORD_DELAY 3 selects border_d3,
+	// which is the same three stages the registered border_d2 gave -
+	// the default is bit-identical to what it replaces.
+	wire    [2:0]   border_out =
+		(BORD_DELAY == 2'd3) ? border_d3 :
+		(BORD_DELAY == 2'd2) ? border_d2 :
+		(BORD_DELAY == 2'd1) ? border_d1 : border_latched;
 	always @(posedge CLK or negedge nRESET) begin
 		if (nRESET == 1'b0) begin
 			border_latched <= 3'b000;
@@ -468,7 +495,6 @@ module video (
 			border_d5      <= 3'b000;
 			border_d6      <= 3'b000;
 			border_d7      <= 3'b000;
-			border_out     <= 3'b000;
 		end else if (CLKEN == 1'b1) begin
 			if (border_update == 1'b1)
 				border_latched <= BORDER_IN;
@@ -504,7 +530,6 @@ module video (
 				// chain measured two pixels of range in simulation and
 				// the residual was four, so it could not reach. The
 				// quantisation above is where that belongs.
-				border_out <= border_d2;
 			end
 		end
 	end
