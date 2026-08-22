@@ -371,7 +371,15 @@ module video (
 	// reads 57600 exactly.
 	//
 	// Pentagon has no contention, so this reaches nothing there.
-	wire signed [12:0] io_base = (MACHINE == MACHINE_PENT) ? 13'sd0 : 13'sd28;
+	// Eight T-states, which is one whole turn of the pattern - so in
+	// phase it is the same as none at all. It reads as eight rather than
+	// zero because that is the setting measured on the board, and the
+	// window's EDGES are not periodic even though its pattern is.
+	//
+	// It was seven while the contention window itself started a T-state
+	// late; that seven was compensating for the missing lead, and once
+	// cont_lead went in the need for it went with it.
+	wire signed [12:0] io_base = (MACHINE == MACHINE_PENT) ? 13'sd0 : 13'sd32;
 	wire signed [12:0] hi_sum  = hc_sum + io_base
 	                             + {{3{io_adj_eff[7]}}, io_adj_eff, 2'b00};
 	wire signed [12:0] hi_wrap =
@@ -621,23 +629,36 @@ module video (
 	//
 	// Pentagon keeps the undelayed path - its border was set against a
 	// real machine and is right as it stands.
-	reg             picture_d = 1'b0;
-	reg             dot_d     = 1'b0;
-	reg     [7:0]   attr_d    = 8'b0;
+	// Nine pixels, not one.
+	//
+	// One was the skew between the two output paths. The other eight are
+	// a whole group, and they are here because nothing else can move the
+	// border by a group uniformly. The group phase moves the GRID: each
+	// write snaps to the next boundary, so demos whose writes sit at
+	// different remainders answer differently and no single setting
+	// serves them all. Delaying the paper touches the border path not at
+	// all, so every band of every demo moves by exactly the same amount.
+	//
+	// The cost is that the picture sits nine pixels right in the frame.
+	reg     [8:0]   picture_d = 9'b0;
+	reg     [8:0]   dot_d     = 9'b0;
+	reg     [7:0]   attr_d [0:8];
+	integer         pd;
 	always @(posedge CLK or negedge nRESET) begin
 		if (nRESET == 1'b0) begin
-			picture_d <= 1'b0;
-			dot_d     <= 1'b0;
-			attr_d    <= 8'b0;
+			picture_d <= 9'b0;
+			dot_d     <= 9'b0;
+			for (pd = 0; pd < 9; pd = pd + 1) attr_d[pd] <= 8'b0;
 		end else if (CLKEN == 1'b1 && hcounter[0] == 1'b1) begin
-			picture_d <= picture;
-			dot_d     <= dot;
-			attr_d    <= attr;
+			picture_d <= {picture_d[7:0], picture};
+			dot_d     <= {dot_d[7:0], dot};
+			attr_d[0] <= attr;
+			for (pd = 1; pd < 9; pd = pd + 1) attr_d[pd] <= attr_d[pd-1];
 		end
 	end
-	wire            picture_s = (MACHINE == MACHINE_PENT) ? picture : picture_d;
-	wire            dot_s     = (MACHINE == MACHINE_PENT) ? dot     : dot_d;
-	wire    [7:0]   attr_s    = (MACHINE == MACHINE_PENT) ? attr    : attr_d;
+	wire            picture_s = (MACHINE == MACHINE_PENT) ? picture : picture_d[8];
+	wire            dot_s     = (MACHINE == MACHINE_PENT) ? dot     : dot_d[8];
+	wire    [7:0]   attr_s    = (MACHINE == MACHINE_PENT) ? attr    : attr_d[8];
 
 	assign red = (picture_s == 1'b1 && dot_s == 1'b1) ? attr_s[1] :
 		(picture_s == 1'b1 && dot_s == 1'b0) ? attr_s[4] :
@@ -885,7 +906,7 @@ module video (
 		// compensation went with it while the whole of it stayed here.
 		// The interrupt has been arriving a T-state and three quarters
 		// early ever since: 57351 counts against 57344.
-		(MACHINE == MACHINE_S48)  ? 10'd7   :
+		(MACHINE == MACHINE_S48)  ? 10'd5   :
 		lines228                  ? 10'd8   :
 		                            10'd0;
 	// Wrapped into the line rather than added raw.

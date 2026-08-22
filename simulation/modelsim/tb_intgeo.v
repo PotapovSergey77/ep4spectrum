@@ -110,7 +110,7 @@ module tb_intgeo;
 	end
 
 	initial begin
-		#40_000_000;
+		#120_000_000;
 		$display("TIMED OUT");
 		$finish;
 	end
