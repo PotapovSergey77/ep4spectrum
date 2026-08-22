@@ -324,7 +324,7 @@ module spectrum_top (
 	// 6'b11_1000 is delay 3, phase 8 - the chain as it always was, and
 	// the phase the birds demo is right at. Saturates at both ends
 	// rather than wrapping, so the travel has an end you can feel.
-	reg [5:0] bord_trim = 6'b11_1000;
+	reg [5:0] bord_trim = 6'b00_1001;
 	wire [3:0] bord_phase = bord_trim[3:0];
 	wire [1:0] bord_delay = bord_trim[5:4];
 	// Vertical trim: where the frame sits against the raster, stepped by

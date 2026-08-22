@@ -481,10 +481,17 @@ module video (
 	// only changes on pixel boundaries. BORD_DELAY 3 selects border_d3,
 	// which is the same three stages the registered border_d2 gave -
 	// the default is bit-identical to what it replaces.
+	//
+	// Pentagon is held at three stages and does not follow the trim.
+	// Its border was set against a real machine and is right; the trim
+	// exists for the Sinclair machines, the same way the group phase
+	// above only applies to them.
+	wire    [1:0]   bord_delay_eff =
+		(MACHINE == MACHINE_PENT) ? 2'd3 : BORD_DELAY;
 	wire    [2:0]   border_out =
-		(BORD_DELAY == 2'd3) ? border_d3 :
-		(BORD_DELAY == 2'd2) ? border_d2 :
-		(BORD_DELAY == 2'd1) ? border_d1 : border_latched;
+		(bord_delay_eff == 2'd3) ? border_d3 :
+		(bord_delay_eff == 2'd2) ? border_d2 :
+		(bord_delay_eff == 2'd1) ? border_d1 : border_latched;
 	always @(posedge CLK or negedge nRESET) begin
 		if (nRESET == 1'b0) begin
 			border_latched <= 3'b000;
