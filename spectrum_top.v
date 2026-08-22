@@ -350,7 +350,7 @@ module spectrum_top (
 	// Memory size follows the machine: 48K has none of it, the other
 	// three have 128K. Pentagon can additionally be given 1024K on F9.
 	wire            mem128 = (machine != MACHINE_S48);
-	reg             ext1024 = 1'b1;   // Pentagon is the power-up machine
+	reg             ext1024 = 1'b0;   // 128K until F9 asks for the megabyte
 
 	// Master clock - 28 MHz
 	wire            clk56;
@@ -876,18 +876,14 @@ module spectrum_top (
 	// exist on the other machines and leaving them selected would strand
 	// whatever is running on a bank it cannot reach.
 	reg mem128_d = 1'b1;
-	reg [1:0] mach_d = 2'd3;   // MACHINE_PENT, the power-up machine
 	always @(posedge clock) begin
 		mem128_d <= mem128;
-		// On by default on Pentagon, and switched on again every time the
-		// machine is selected. A RAM disk needs the megabyte, and having
-		// to remember F9 first is the sort of thing that reads as
-		// software being broken.
-		mach_d <= machine;
+		// Pentagon comes up as a plain 128K and F9 asks for the megabyte.
+		// It was forced on at every machine change while Proteus needed a
+		// RAM disk of its own; Proteus now runs from ROM and wants none, so
+		// the extra banks are again something you switch on deliberately.
 		if (machine != MACHINE_PENT)
 			ext1024 <= 1'b0;
-		else if (mach_d != MACHINE_PENT)
-			ext1024 <= 1'b1;
 		else if (key_f9_press == 1'b1)
 			ext1024 <= ~ext1024;
 	end

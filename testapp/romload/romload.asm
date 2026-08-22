@@ -277,7 +277,7 @@ too_long:       call    shut
                 ld      hl,msg_long
                 call    print
                 ld      hl,(want)
-                call    pnum
+                call    pnumk
                 ld      hl,msg_bytes
                 jp      print
 
@@ -286,11 +286,11 @@ bad_size:       call    shut
                 ld      hl,msg_short
                 call    print
                 ld      hl,(count)
-                call    pnum
+                call    pnumk
                 ld      hl,msg_wanted
                 call    print
                 ld      hl,(want)
-                call    pnum
+                call    pnumk
                 ld      hl,msg_bytes
                 jp      print
 
@@ -458,6 +458,16 @@ nl_end:         ld      a,b
                 pop     hl
                 ret
 
+; HL is a count of 256-byte blocks; print it as kilobytes. The size
+; is carried in blocks because 65536 does not fit in sixteen bits, but
+; on screen a bare block count is a trap - "got 128, wanted 256" reads
+; as bytes and describes a file nobody has.
+pnumk:          srl     h
+                rr      l
+                srl     h
+                rr      l
+                ; fall through
+
 ; HL printed as decimal, leading zeros suppressed
 pnum:           xor     a
                 ld      (lead),a
@@ -504,11 +514,11 @@ msg_rderr:      defb    "read error",13,0
 msg_short:      defb    "wrong size, got ",0
 msg_wanted:     defb    ", wanted ",0
 msg_long:       defb    "too long, wanted ",0
-msg_bytes:      defb    " bytes",13,0
+msg_bytes:      defb    "K",13,0
 msg_howto:      defb    13
                 defb    "No ROM images found. Put these in",13
                 defb    "the root of the card:",13,13
-                defb    "  pentagon.rom  65536 bytes",13,13
+                defb    "  pentagon.rom  64K",13,13
                 defb    "Staying on the 48K ROM.",13,0
 
 slot:           defb    0
