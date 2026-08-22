@@ -296,7 +296,21 @@ module spectrum_top (
 	//   0 = contention window   1 = IO window   2 = interrupt phase
 	reg [1:0] trim_show = 2'd0;
 	// Border group phase, on keypad - and +, shown as "b" and the value.
-	reg [3:0] bord_phase = 4'd7;
+	//
+	// 8 is where the birds demo is right on the board. It cannot also be
+	// right for the demos that draw the border from a counted loop: at
+	// their own best phase, 9, the grid point coincides with the OUT
+	// itself - no delay at all, the causal minimum - and they still sit
+	// four pixels right. So their write happens two T-states later than
+	// it should, while the birds' happens on time.
+	//
+	// No setting reconciles the two. Both take the interrupt on the same
+	// T-state and both answer to this knob identically; the only thing
+	// that changes the distance between them is the wrap, and the wrap
+	// moves it by a whole group. Four pixels cannot be closed by adding
+	// eights, so the difference is in how many T-states each program is
+	// charged on the way to its OUT, not in where this grid sits.
+	reg [3:0] bord_phase = 4'd8;
 	// Vertical trim: where the frame sits against the raster, stepped by
 	// Page Up / Page Down. video.v takes this in sixteenths of a line
 	// (INT_VADJ >>> 4), so a step of 16 is exactly one line.
