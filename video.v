@@ -554,19 +554,59 @@ module video (
 
 	// Determine the pixel colour
 	assign dot = pixels[9] ^ (flashcounter[4] & attr[7]); // Combine delayed pixel with FLASH attr and clock state
-	assign red = (picture == 1'b1 && dot == 1'b1) ? attr[1] :
-		(picture == 1'b1 && dot == 1'b0) ? attr[4] :
+
+	// One pixel of delay on the PAPER, on the Sinclair machines only.
+	//
+	// The border path has a floor: with every output stage taken out it
+	// shows the value the moment the CPU latched it, and nothing can put
+	// it earlier. On the board that floor still left the border one
+	// pixel right of where a real 48K puts it - measured, not guessed:
+	// three stages read four pixels out, two stages read three, no
+	// stages read one, the same pixel each time. A fixed skew between
+	// the two paths, not anything to do with when the OUT happens.
+	//
+	// A pixel cannot be taken off the border, so it is added to the
+	// picture instead. The window moves with the pixels, so the paper is
+	// not clipped: the whole picture sits one pixel right in the frame
+	// and the border stands still, which is the same thing as the border
+	// moving one pixel left against the picture.
+	//
+	// This is what makes ula48 correct on the board. It was taken out
+	// once, on a misreading, and every demo's border moved with it.
+	//
+	// Pentagon keeps the undelayed path - its border was set against a
+	// real machine and is right as it stands.
+	reg             picture_d = 1'b0;
+	reg             dot_d     = 1'b0;
+	reg     [7:0]   attr_d    = 8'b0;
+	always @(posedge CLK or negedge nRESET) begin
+		if (nRESET == 1'b0) begin
+			picture_d <= 1'b0;
+			dot_d     <= 1'b0;
+			attr_d    <= 8'b0;
+		end else if (CLKEN == 1'b1 && hcounter[0] == 1'b1) begin
+			picture_d <= picture;
+			dot_d     <= dot;
+			attr_d    <= attr;
+		end
+	end
+	wire            picture_s = (MACHINE == MACHINE_PENT) ? picture : picture_d;
+	wire            dot_s     = (MACHINE == MACHINE_PENT) ? dot     : dot_d;
+	wire    [7:0]   attr_s    = (MACHINE == MACHINE_PENT) ? attr    : attr_d;
+
+	assign red = (picture_s == 1'b1 && dot_s == 1'b1) ? attr_s[1] :
+		(picture_s == 1'b1 && dot_s == 1'b0) ? attr_s[4] :
 		(blanking == 1'b0) ? border_out[1] :
 		1'b0;
-	assign green = (picture == 1'b1 && dot == 1'b1) ? attr[2] :
-		(picture == 1'b1 && dot == 1'b0) ? attr[5] :
+	assign green = (picture_s == 1'b1 && dot_s == 1'b1) ? attr_s[2] :
+		(picture_s == 1'b1 && dot_s == 1'b0) ? attr_s[5] :
 		(blanking == 1'b0) ? border_out[2] :
 		1'b0;
-	assign blue = (picture == 1'b1 && dot == 1'b1) ? attr[0] :
-		(picture == 1'b1 && dot == 1'b0) ? attr[3] :
+	assign blue = (picture_s == 1'b1 && dot_s == 1'b1) ? attr_s[0] :
+		(picture_s == 1'b1 && dot_s == 1'b0) ? attr_s[3] :
 		(blanking == 1'b0) ? border_out[0] :
 		1'b0;
-	assign bright = (picture == 1'b1) ? attr[6] : 1'b0;
+	assign bright = (picture_s == 1'b1) ? attr_s[6] : 1'b0;
 
 	// Re-register video output to DACs to clean up edges
 	always @(posedge CLK or negedge nRESET) begin

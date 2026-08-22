@@ -304,7 +304,7 @@ module spectrum_top (
 	//
 	// Default 1: one group left of the published position. Four values,
 	// wrapping, shown as the shift in T-states - 0, 4, 8, C.
-	reg        [1:0] int_step = 2'd1;
+	reg        [1:0] int_step = 2'd0;
 	wire signed [7:0] int_adj = -$signed({2'b00, int_step, 4'b0000});
 	// Which trim the four-digit display is showing, set by whichever trim
 	// key was pressed last. A fixed priority used to decide it, and setting
