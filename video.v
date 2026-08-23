@@ -282,11 +282,21 @@ module video (
 	wire [9:0] hcount_last = lines228 ? 10'd911 : 10'd895;
 	// Four pixels of sync shift on the Sinclair machines, none on
 	// Pentagon - see the sync block below.
-	// Per machine, in steps of four pixels, and each entry stands alone:
-	// Pentagon at its original position, 48K and +2A/+3 half a cell, 128K
-	// a cell and a half. Changing one changes nothing for the others.
-	wire [6:0] sync_off = (MACHINE == MACHINE_PENT) ? 7'd0 :
-	                      (MACHINE == MACHINE_S128) ? 7'd3 : 7'd1;
+	// ONE ROW PER MACHINE, here and in cont_lead, io_base and pap_delay
+	// below. Nothing is shared between them: changing a row moves that
+	// machine and cannot move any other.
+	//
+	// Written as "not Pentagon" instead, these figures - all measured on
+	// a 48K - were silently applied to 128K and +2A/+3 as well, and
+	// those two drifted while nobody was looking at them. The form is
+	// the safeguard, not the care taken while editing.
+	//
+	// Sync offset, four pixels a step, so a character cell is two. It
+	// only decides where the monitor draws the picture and cannot move a
+	// T-state, so it is never the answer to a timing fault.
+	wire [6:0] sync_off = (MACHINE == MACHINE_S48)  ? 7'd1 :
+	                      (MACHINE == MACHINE_S128) ? 7'd3 :
+	                      (MACHINE == MACHINE_S3)   ? 7'd1 : 7'd0;
 	wire [8:0] vline_last  =
 		(MACHINE == MACHINE_PENT) ? 9'd319 :
 		lines228                  ? 9'd310 :
@@ -327,7 +337,11 @@ module video (
 	// same and Tact Meter reads what it read before; what moves is which
 	// slot a port write snaps to, which is the border beside and below
 	// the raster.
-	wire signed [12:0] cont_lead = (MACHINE == MACHINE_PENT) ? 13'sd0 : 13'sd4;
+	// 48K and 128K carry it; +2A/+3 and Pentagon do not.
+	wire signed [12:0] cont_lead =
+		(MACHINE == MACHINE_S48)  ? 13'sd4 :
+		(MACHINE == MACHINE_S128) ? 13'sd4 :
+		(MACHINE == MACHINE_S3)   ? 13'sd0 : 13'sd0;
 	// write's MREQ is on the same edge as a read's.)
 	wire signed [12:0] hc_sum =
 		{3'b000, hcounter} + {{6{CONT_ADJ[4]}}, CONT_ADJ, 2'b00} - 13'sd4 - cont_lead;
@@ -400,7 +414,10 @@ module video (
 	// It was seven while the contention window itself started a T-state
 	// late; that seven was compensating for the missing lead, and once
 	// cont_lead went in the need for it went with it.
-	wire signed [12:0] io_base = (MACHINE == MACHINE_PENT) ? 13'sd0 : 13'sd32;
+	wire signed [12:0] io_base =
+		(MACHINE == MACHINE_S48)  ? 13'sd32 :
+		(MACHINE == MACHINE_S128) ? 13'sd32 :
+		(MACHINE == MACHINE_S3)   ? 13'sd0  : 13'sd0;
 	wire signed [12:0] hi_sum  = hc_sum + io_base
 	                             + {{3{io_adj_eff[7]}}, io_adj_eff, 2'b00};
 	wire signed [12:0] hi_wrap =
@@ -677,9 +694,13 @@ module video (
 			for (pd = 1; pd < 9; pd = pd + 1) attr_d[pd] <= attr_d[pd-1];
 		end
 	end
-	wire            picture_s = (MACHINE == MACHINE_PENT) ? picture : picture_d[8];
-	wire            dot_s     = (MACHINE == MACHINE_PENT) ? dot     : dot_d[8];
-	wire    [7:0]   attr_s    = (MACHINE == MACHINE_PENT) ? attr    : attr_d[8];
+	wire            pap_delay =
+		(MACHINE == MACHINE_S48)  ? 1'b1 :
+		(MACHINE == MACHINE_S128) ? 1'b1 :
+		(MACHINE == MACHINE_S3)   ? 1'b0 : 1'b0;
+	wire            picture_s = pap_delay ? picture_d[8] : picture;
+	wire            dot_s     = pap_delay ? dot_d[8]     : dot;
+	wire    [7:0]   attr_s    = pap_delay ? attr_d[8]    : attr;
 
 
 
@@ -708,7 +729,21 @@ module video (
 	wire       osd_inx  = (hcounter >= OSD_X0) && (hcounter < OSD_X0 + 10'd512);
 	wire       osd_iny  = (vcounter[9:1] >= OSD_LINE)
 	                      && (vcounter[9:1] < OSD_LINE + 9'd8);
-	wire [4:0] osd_col  = osd_dx[8:4];
+	// How many character cells the WHOLE line is moved RIGHT, one row per
+	// machine. Each machine has its own sync offset and so its own place
+	// on the screen; this puts the line back where the others have it.
+	//
+	// Right, not left. Done on the column index, so a screen position
+	// shows the character from one cell back - and the columns before
+	// the shift have nothing to show, so they are blanked rather than
+	// wrapping round to the far end of the line.
+	wire [4:0] osd_shift =
+		(MACHINE == MACHINE_S48)  ? 5'd1 :
+		(MACHINE == MACHINE_S128) ? 5'd1 :
+		(MACHINE == MACHINE_S3)   ? 5'd0 : 5'd0;
+	wire [4:0] osd_rawcol = osd_dx[8:4];
+	wire       osd_incol  = (osd_rawcol >= osd_shift);
+	wire [4:0] osd_col    = osd_rawcol - osd_shift;
 	wire [2:0] osd_px   = osd_dx[3:1];
 	wire [2:0] osd_row  = vcounter[3:1] - OSD_LINE[2:0];
 
@@ -787,6 +822,7 @@ module video (
 	wire [5:0] osd_glyph = osd_text(osd_mc, osd_sp, osd_ex, osd_col);
 	wire [7:0] osd_bits  = osd_font({osd_glyph, osd_row});
 	wire       osd_on    = (osd_state != 2'd0) && osd_inx && osd_iny
+	                       && osd_incol
 	                       && (blanking == 1'b0)
 	                       && osd_bits[3'd7 - osd_px];
 	assign OSD_ACTIVE = osd_on;
