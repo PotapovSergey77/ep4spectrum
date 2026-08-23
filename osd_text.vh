@@ -143,11 +143,11 @@ function [5:0] osd_text;
 				2'd2: osd_text = 6'd5;
 				2'd3: osd_text = 6'd0;
 			endcase
-			5'd27: osd_text = ex ? 6'd4 : 6'd0;
-			5'd28: osd_text = ex ? 6'd3 : 6'd4;
-			5'd29: osd_text = ex ? 6'd5 : 6'd5;
-			5'd30: osd_text = ex ? 6'd7 : 6'd11;
-			5'd31: osd_text = ex ? 6'd18 : 6'd18;
+			5'd27: osd_text = (mc == 2'd0) ? 6'd0 : ex ? 6'd4 : 6'd0;
+			5'd28: osd_text = (mc == 2'd0) ? 6'd0 : ex ? 6'd3 : 6'd4;
+			5'd29: osd_text = (mc == 2'd0) ? 6'd7 : ex ? 6'd5 : 6'd5;
+			5'd30: osd_text = (mc == 2'd0) ? 6'd11 : ex ? 6'd7 : 6'd11;
+			5'd31: osd_text = (mc == 2'd0) ? 6'd18 : ex ? 6'd18 : 6'd18;
 			default: osd_text = 6'd0;
 		endcase
 	end

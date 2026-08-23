@@ -81,6 +81,8 @@ module keyboard (
 	END,
 	KPSUB,
 	KPADD,
+	PRTSCR,
+	SCROLL,
 	SPACEKEY,
 	ROW_ANY
 );
@@ -118,6 +120,10 @@ module keyboard (
 	// T-state a press, without touching the memory window.
 	output reg      KPSUB;
 	output reg      KPADD;
+	// Print Screen: shows the on-screen line without changing anything.
+	// Scroll Lock: switches the video output between 15 and 31 kHz.
+	output reg      PRTSCR;
+	output reg      SCROLL;
 	// Space, brought out so a reset can be told to forget the loaded
 	// slots and let DivMMC come back up.
 	output reg      SPACEKEY;
@@ -209,6 +215,8 @@ module keyboard (
 			END  <= 1'b0;
 			KPSUB  <= 1'b0;
 			KPADD  <= 1'b0;
+			PRTSCR <= 1'b0;
+			SCROLL <= 1'b0;
 			SPACEKEY <= 1'b0;
 		end else begin
 			if (keyb_valid == 1'b1) begin
@@ -224,7 +232,11 @@ module keyboard (
 					extended <= 1'b0;
 
 					case (keyb_data)
-						8'h12: begin // Left shift (CAPS SHIFT)
+						8'h12: if (extended == 1'b0) begin // Left shift (CAPS SHIFT)
+							// Only when it is really the shift key. Print Screen
+							// sends E0 12 E0 7C, and without this test its first
+							// half pressed CAPS SHIFT inside the Spectrum - a host
+							// key has no business typing into the machine.
 							keys[0][0] <= release_key;
 							pc_shift <= ~release_key;
 						end
@@ -401,7 +413,12 @@ module keyboard (
 						8'h6c: HOME <= ~release_key; // Home -> INT one T-state earlier
 						8'h69: END  <= ~release_key; // End  -> INT one T-state later
 						8'h7b: KPSUB <= ~release_key; // Keypad -  -> IO window a T-state early
-						8'h79: KPADD <= ~release_key; // Keypad +  -> IO window a T-state late
+						8'h79: KPADD <= ~release_key; // Keypad +
+						// Print Screen arrives as E0 7C - the same code as
+						// keypad *, which is why the extended flag has to be
+						// tested here and nowhere else in this case list.
+						8'h7c: if (extended == 1'b1) PRTSCR <= ~release_key;
+						8'h7e: SCROLL <= ~release_key; // Scroll Lock -> 15 / 31 kHz
 
 						default: begin
 						end

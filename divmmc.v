@@ -253,7 +253,11 @@ always @(posedge clk) begin
 			// deactivate automapper after this cycle
 			m1_trigger <= 1'b0;
 			by_3d      <= 1'b0;
-		end else if (by_3d && !mreq_n && !rd_n && !m1_n
+		// DIAGNOSTIC: the by_3d exit is disabled to see whether it is what
+		// takes the automapper away underneath the NMI handler. If the
+		// first F12 works with this off, the rule is firing where it was
+		// never meant to and needs a narrower condition, not removal.
+		end else if (1'b0 && by_3d && !mreq_n && !rd_n && !m1_n
 		             && (a[15] | a[14])) begin
 			// Armed through $3Dxx, and now fetching outside the ROM
 			// area: let go.

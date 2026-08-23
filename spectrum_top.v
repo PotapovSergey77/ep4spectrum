@@ -232,6 +232,8 @@ module spectrum_top (
 	wire            key_end;
 	wire            key_kpsub;
 	wire            key_kpadd;
+	wire            key_prtscr;
+	wire            key_scroll;
 	wire            key_space;
 	reg             key_kpsub_d = 1'b0;
 	reg             key_kpadd_d = 1'b0;
@@ -947,6 +949,30 @@ module spectrum_top (
 			ext1024 <= ~ext1024;
 	end
 	wire mem128_changed = (mem128 != mem128_d);
+
+	// Any of the keys the on-screen line reports on, so pressing one
+	// shows the line even when the value it selects is already current.
+	// Pressing F8 on a Pentagon changes nothing and should still answer
+	// the question the press was asking.
+	wire osd_keys = key_f1 | key_f2 | key_f3 | key_f4
+	                | key_f5 | key_f6 | key_f7 | key_f8 | key_f9
+	                | key_prtscr;   // Print Screen just asks the question
+	// Scroll Lock switches the output between the native 15.625 kHz the
+	// ULA produces and a scan-doubled 31 kHz for monitors that will not
+	// take the slow one. The doubling happens inside video.v; here it is
+	// only which sync goes to the pins - composite on VGA_HS with VGA_VS
+	// idle for 15 kHz, separate H and V for 31.
+	reg  vga_mode   = 1'b0;
+	reg  key_scroll_d = 1'b0;
+	always @(posedge clock) begin
+		key_scroll_d <= key_scroll;
+		if (key_scroll == 1'b1 && key_scroll_d == 1'b0)
+			vga_mode <= ~vga_mode;
+	end
+
+	reg  osd_keys_d = 1'b0;
+	always @(posedge clock) osd_keys_d <= osd_keys;
+	wire osd_poke = osd_keys & ~osd_keys_d;
 	// The board button is out of the NMI path entirely. F12 alone.
 	//
 	// KEY[1] has no pull-up - pins 88-91 do not support one, Quartus
@@ -1370,6 +1396,8 @@ module spectrum_top (
 		.SPACEKEY(key_space),
 		.KPSUB(key_kpsub),
 		.KPADD(key_kpadd),
+		.PRTSCR(key_prtscr),
+		.SCROLL(key_scroll),
 		.ROW_ANY(kb_row_any)
 	);
 
@@ -1413,7 +1441,7 @@ module spectrum_top (
 		.CLKEN(vid_clken),
 		.MEM_CYC(vid_mem_sync),
 		.nRESET(reset_n),
-		.VGA(1'b0),
+		.VGA(vga_mode),
 		.MACHINE(machine),
 		.CONTENTION(vid_contention),
 		.CONTENTION_IO(vid_contention_io),
@@ -1425,6 +1453,8 @@ module spectrum_top (
 		.BORD_DELAY(bord_delay),
 		.OSD_SPEED(cpu_speed),
 		.OSD_EXT(ext1024),
+		.OSD_POKE(osd_poke),
+		.OSD_ACTIVE(vid_osd_active),
 		.PORT_FF_ACTIVE(vid_port_ff_active),
 		.PORT_FF_DATA(vid_port_ff_data),
 		.VID_A(vid_a),
@@ -2803,16 +2833,23 @@ module spectrum_top (
 	assign zx_green = vid_g_out[3];
 	assign zx_blue = vid_b_out[3];
 
+	wire vid_osd_active;
 	reg [2:0] pwm_cnt = 3'd0;
 	always @(posedge clk56) pwm_cnt <= pwm_cnt + 3'd1;
 	wire pwm_dim = (pwm_cnt < 3'd6);   // 6/8 duty
 
 	assign VGA_R = zx_red   & (vid_r_out[0] | pwm_dim);
-	assign VGA_G = zx_green & (vid_g_out[0] | pwm_dim);
+	// The on-screen line gets a duty of its own. Dropping BRIGHT already
+	// takes it to the normal level, but a Spectrum's normal green is
+	// bright in its own right; three steps of eight is a green that reads
+	// as dark against a bordered screen without going muddy.
+	wire pwm_osd = (pwm_cnt < 3'd3);
+	assign VGA_G = vid_osd_active ? pwm_osd
+	                              : (zx_green & (vid_g_out[0] | pwm_dim));
 	assign VGA_B = zx_blue  & (vid_b_out[0] | pwm_dim);
 	// 15kHz mode: composite (H^V) sync on VGA_HS, VGA_VS unused/high
-	assign VGA_HS = vid_hcsync_n;
-	assign VGA_VS = 1'b1;
+	assign VGA_HS = vga_mode ? vid_hsync_n : vid_hcsync_n;
+	assign VGA_VS = vga_mode ? vid_vsync_n : 1'b1;
 
 
 	// share SDRAM between CPU and Video. This must stay combinational (not

@@ -74,6 +74,8 @@ module video (
 	BORD_DELAY,
 	OSD_SPEED,
 	OSD_EXT,
+	OSD_POKE,
+	OSD_ACTIVE,
 	PORT_FF_ACTIVE,
 	PORT_FF_DATA,
 
@@ -141,6 +143,12 @@ module video (
 	// megabyte is switched in. The machine comes in on MACHINE already.
 	input   [1:0]   OSD_SPEED;
 	input           OSD_EXT;
+	// A press of any key the line reports on, so it can be shown when
+	// the press changes nothing.
+	input           OSD_POKE;
+	// High on the pixels the line is drawn with, so the output stage can
+	// give them their own PWM duty and make the green genuinely dark.
+	output          OSD_ACTIVE;
 	output          PORT_FF_ACTIVE;
 	output  [7:0]   PORT_FF_DATA;
 
@@ -272,6 +280,13 @@ module video (
 	// bit - which is why moving the window there changed nothing.
 	wire lines228 = (MACHINE == MACHINE_S128) | (MACHINE == MACHINE_S3);
 	wire [9:0] hcount_last = lines228 ? 10'd911 : 10'd895;
+	// Four pixels of sync shift on the Sinclair machines, none on
+	// Pentagon - see the sync block below.
+	// Per machine, in steps of four pixels, and each entry stands alone:
+	// Pentagon at its original position, 48K and +2A/+3 half a cell, 128K
+	// a cell and a half. Changing one changes nothing for the others.
+	wire [6:0] sync_off = (MACHINE == MACHINE_PENT) ? 7'd0 :
+	                      (MACHINE == MACHINE_S128) ? 7'd3 : 7'd1;
 	wire [8:0] vline_last  =
 		(MACHINE == MACHINE_PENT) ? 9'd319 :
 		lines228                  ? 9'd310 :
@@ -686,7 +701,7 @@ module video (
 
 	// Eight lines of the top border, well clear of the picture, and the
 	// same 256 pixels the picture occupies so the ends line up with it.
-	localparam [8:0] OSD_LINE = 9'd292;
+	localparam [8:0] OSD_LINE = 9'd296;
 	localparam [9:0] OSD_X0   = 10'd6;
 
 	wire [9:0] osd_dx   = hcounter - OSD_X0;
@@ -707,6 +722,7 @@ module video (
 	reg        osd_ex_now = 1'b0, osd_ex_old = 1'b0;
 	reg  [6:0] osd_timer  = 7'd0;
 	reg  [1:0] osd_state  = 2'd0;   // 0 off, 1 showing the old, 2 the new
+	reg        osd_req    = 1'b0;   // a key press waiting to be acted on
 
 	always @(posedge CLK or negedge nRESET) begin
 		if (nRESET == 1'b0) begin
@@ -716,23 +732,48 @@ module video (
 			osd_sp_now <= OSD_SPEED; osd_sp_old <= OSD_SPEED;
 			osd_ex_now <= OSD_EXT; osd_ex_old <= OSD_EXT;
 			osd_vprev <= 1'b0;
+			osd_req <= 1'b0;
+		end else if (OSD_POKE == 1'b1) begin
+			// Set on ANY clock, not inside the CLKEN branch below. The
+			// press is one clock of 28MHz wide and the video enable comes
+			// every other clock, so half of them landed between enables
+			// and vanished - which on the board was the line appearing
+			// only on the second press.
+			osd_req <= 1'b1;
 		end else if (CLKEN == 1'b1) begin
 			osd_vprev <= (vcounter[9:1] == 9'd0);
 
 			if (MACHINE != osd_mc_now || OSD_SPEED != osd_sp_now
 			    || OSD_EXT != osd_ex_now) begin
-				// Hold what it was, take what it is, and start the show.
 				osd_mc_old <= osd_mc_now; osd_mc_now <= MACHINE;
 				osd_sp_old <= osd_sp_now; osd_sp_now <= OSD_SPEED;
 				osd_ex_old <= osd_ex_now; osd_ex_now <= OSD_EXT;
-				osd_state  <= 2'd1;
-				osd_timer  <= 7'd25;      // half a second at 50Hz
+				osd_req    <= 1'b0;
+				if (osd_state == 2'd0) begin
+					// Coming from nothing: hold what it was for half a
+					// second first, so the change can be seen happening.
+					osd_state <= 2'd1;
+					osd_timer <= 7'd25;
+				end else begin
+					// Already on screen - the old value is being read
+					// right now, so swap it at once. Half a second of it
+					// again would only look like the key was ignored.
+					osd_state <= 2'd2;
+					osd_timer <= 7'd100;
+				end
+			end else if (osd_req == 1'b1) begin
+				// A key that selects what is already selected. Nothing
+				// changes, and the question the press asked still
+				// deserves an answer.
+				osd_req   <= 1'b0;
+				osd_state <= 2'd2;
+				osd_timer <= 7'd100;
 			end else if (osd_frame == 1'b1) begin
 				if (osd_timer != 7'd0)
 					osd_timer <= osd_timer - 7'd1;
 				else if (osd_state == 2'd1) begin
 					osd_state <= 2'd2;
-					osd_timer <= 7'd50;   // and a second on the new value
+					osd_timer <= 7'd100;  // two seconds on the new value
 				end else
 					osd_state <= 2'd0;
 			end
@@ -748,6 +789,8 @@ module video (
 	wire       osd_on    = (osd_state != 2'd0) && osd_inx && osd_iny
 	                       && (blanking == 1'b0)
 	                       && osd_bits[3'd7 - osd_px];
+	assign OSD_ACTIVE = osd_on;
+
 	assign red = (osd_on == 1'b1) ? 1'b0 :
 		(picture_s == 1'b1 && dot_s == 1'b1) ? attr_s[1] :
 		(picture_s == 1'b1 && dot_s == 1'b0) ? attr_s[4] :
@@ -763,7 +806,10 @@ module video (
 		(picture_s == 1'b1 && dot_s == 1'b0) ? attr_s[3] :
 		(blanking == 1'b0) ? border_out[0] :
 		1'b0;
-	assign bright = (osd_on == 1'b1) ? 1'b1 :
+	// The line is drawn WITHOUT bright, which is what makes it the darker
+	// green: the PWM holds a bright colour for all eight steps of a pixel
+	// and a normal one for six.
+	assign bright = (osd_on == 1'b1) ? 1'b0 :
 		(picture_s == 1'b1) ? attr_s[6] : 1'b0;
 
 	// Re-register video output to DACs to clean up edges
@@ -1305,23 +1351,25 @@ module video (
 
 			// Generate timing signals during inactive region
 			// (when hcounter(9) = 1)
-			case (hcounter[9:4])
-				// Blanking starts at 312. The whole group - blanking and sync
-				// together - sits one character cell later than it did, which
-				// puts the content that much closer to the sync and so moves
-				// the picture eight pixels LEFT on the screen. That is the
-				// compensation for the nine pixels of paper delay: relative
-				// positions are untouched, the frame is just recentred.
-				6'b100111: hblanking <= 1'b1;
-				// Sync starts at 328
-				6'b101010: hsync <= 1'b1;
-				// Sync ends at 360
-				6'b101110: hsync <= 1'b0;
-				// Blanking ends at 400
-				6'b110011: hblanking <= 1'b0;
-				default: begin
-				end
-			endcase
+			// Blanking and sync, moved as one group so the picture
+			// shifts on screen without a single relative position
+			// inside it changing.
+			//
+			// Compared on hcounter[9:3] rather than [9:4] because the
+			// step has to be four pixels. A character cell was too
+			// coarse: Pentagon wants its original position back, and
+			// the Sinclair machines want half a cell of the shift kept
+			// as compensation for the nine pixels of paper delay.
+			//
+			// Positions in units of eight counts: blanking 76, sync 82
+			// to 90, blanking off 100 - the original figures - plus
+			// sync_off, which is one step (four pixels) on the Sinclair
+			// machines and none on Pentagon. Content sitting closer to
+			// the sync is drawn further left.
+			if (hcounter[9:3] == (7'd76 + sync_off))  hblanking <= 1'b1;
+			if (hcounter[9:3] == (7'd82 + sync_off))  hsync     <= 1'b1;
+			if (hcounter[9:3] == (7'd90 + sync_off))  hsync     <= 1'b0;
+			if (hcounter[9:3] == (7'd100 + sync_off)) hblanking <= 1'b0;
 
 			// Frame interrupt: one window on one line, the same shape
 			// for every machine. Kept separate from the vsync case
