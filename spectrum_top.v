@@ -355,6 +355,9 @@ module spectrum_top (
 	// The lamps read the mode inverted, so mode 2 is the state with all
 	// of them dark.
 	reg     [1:0]   cont_mode = 2'd2;
+	// Which machine was selected last, so entering one can set its own
+	// contention default without fighting F10 afterwards.
+	reg     [1:0]   mach_prev = 2'd3;
 	// Which lengthened T-states count as internal ones - see cycle_extra
 	// below. Declared here, with the other trims, because the block that
 	// steps it on Home/End runs long before that point in the file and
@@ -877,6 +880,19 @@ module spectrum_top (
 				cont_adj <= cont_adj + 5'd1; trim_show <= 2'd0;
 			end
 		end
+		// +2A/+3 comes up with contention OFF, and everything else with
+		// it on.
+		//
+		// Not a preference: on the board that machine is right without
+		// contention and wrong with it, and our window cannot express its
+		// published pattern - a run of length span always leaves a free
+		// T-state, and the +2A/+3 pattern may have none. Until that is
+		// settled, no contention is closer to the machine than the wrong
+		// contention. F10 still cycles it, so the comparison stays
+		// available.
+		mach_prev <= machine;
+		if (machine != mach_prev)
+			cont_mode <= (machine == MACHINE_S3) ? 2'd0 : 2'd2;
 		key_f10_d <= key_f10;
 		if (key_f10 == 1'b1 && key_f10_d == 1'b0)
 			cont_mode <= (cont_mode == 2'd2) ? 2'd0 : (cont_mode + 2'd1);

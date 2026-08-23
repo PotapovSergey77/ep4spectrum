@@ -296,7 +296,7 @@ module video (
 	// T-state, so it is never the answer to a timing fault.
 	wire [6:0] sync_off = (MACHINE == MACHINE_S48)  ? 7'd1 :
 	                      (MACHINE == MACHINE_S128) ? 7'd3 :
-	                      (MACHINE == MACHINE_S3)   ? 7'd1 : 7'd0;
+	                      (MACHINE == MACHINE_S3)   ? 7'd3 : 7'd0;
 	wire [8:0] vline_last  =
 		(MACHINE == MACHINE_PENT) ? 9'd319 :
 		lines228                  ? 9'd310 :
@@ -341,7 +341,23 @@ module video (
 	wire signed [12:0] cont_lead =
 		(MACHINE == MACHINE_S48)  ? 13'sd4 :
 		(MACHINE == MACHINE_S128) ? 13'sd4 :
-		(MACHINE == MACHINE_S3)   ? 13'sd0 : 13'sd0;
+		// +2A/+3: three T-states, twelve counts, and both halves are
+		// derived rather than tried.
+		//
+		// Two of them are the pattern. Ours is span minus the T-state
+		// index, so span 7 gives 7,6,5,4,3,2,1,0; the published +2A/+3
+		// pattern 1,0,7,6,5,4,3,2 is that same sequence rotated by two.
+		// The source saying it "begins at tstate 14361" agrees rather
+		// than argues: 14361 is the first pixel and the first element is
+		// 1, which is what the rotation puts there.
+		//
+		// The third is T80se. This machine keys contention straight off
+		// MREQ - that is what the late Amstrad gate array does - and
+		// T80se raises MREQ a T-state later than a real Z80, as the note
+		// on T2Write in spectrum_top.v records. The other machines key on
+		// the start of the cycle instead and never meet it; here every
+		// contended access is judged a T-state late without it.
+		(MACHINE == MACHINE_S3)   ? 13'sd8 : 13'sd0;
 	// write's MREQ is on the same edge as a read's.)
 	wire signed [12:0] hc_sum =
 		{3'b000, hcounter} + {{6{CONT_ADJ[4]}}, CONT_ADJ, 2'b00} - 13'sd4 - cont_lead;
@@ -355,6 +371,26 @@ module video (
 	// (sinclair.wiki.zxnet.co.uk; its window also starts later and
 	// repeats every 228 T-states, which the 228-count line already gives
 	// on this machine.) One pattern was used for all four machines.
+	// How many T-states of every eight the window holds. This is the
+	// SHAPE, and the shape decides what the mechanism can express at all:
+	// a run of length span always leaves 8-span T-states free, so span 7
+	// can only ever produce a pattern with exactly one zero in it.
+	//
+	// +2A/+3 is 8 - no free T-state. The memory-contention article gives
+	// its pattern as 1 then 7,6,5,4,3,2,1, which has no zero, and no
+	// amount of moving a span-7 window can produce that. With span 8 the
+	// delays run 8,7,6,5,4,3,2,1 and the lead below puts the 1 on the
+	// first pixel.
+	// Span 8 is not a wider window, it is no window at all: the test is
+	// "index < span", so span 8 is always true and the run never ends.
+	// The CPU is then held for the whole 128 T-states of every display
+	// line - a freeze, not a contention pattern, and on the board it
+	// read as the machine behaving differently on every run.
+	//
+	// So this mechanism cannot express a pattern with no zero in it at
+	// all. A run of length span always leaves 8-span T-states free. If
+	// the +2A/+3 pattern really is 1,7,6,5,4,3,2,1 then it needs an
+	// explicit per-T-state table here, not a different span.
 	wire [2:0] cont_span = (MACHINE == MACHINE_S3) ? 3'd7 : 3'd6;
 	assign CONTENTION = vpicture & ~hc_cont[9]
 	                    & (hc_cont[4:2] < cont_span);
@@ -694,14 +730,17 @@ module video (
 			for (pd = 1; pd < 9; pd = pd + 1) attr_d[pd] <= attr_d[pd-1];
 		end
 	end
-	wire            pap_delay =
-		(MACHINE == MACHINE_S48)  ? 1'b1 :
-		(MACHINE == MACHINE_S128) ? 1'b1 :
-		(MACHINE == MACHINE_S3)   ? 1'b0 : 1'b0;
-	wire            picture_s = pap_delay ? picture_d[8] : picture;
-	wire            dot_s     = pap_delay ? dot_d[8]     : dot;
-	wire    [7:0]   attr_s    = pap_delay ? attr_d[8]    : attr;
-
+	// board. Pentagon none - its border was set against a real machine.
+	wire [3:0] pap_tap =
+		(MACHINE == MACHINE_S48)  ? 4'd9 :
+		(MACHINE == MACHINE_S128) ? 4'd9 :
+		(MACHINE == MACHINE_S3)   ? 4'd9 : 4'd0;
+	wire            picture_s = (pap_tap == 4'd9) ? picture_d[8] :
+	                            (pap_tap == 4'd8) ? picture_d[7] : picture;
+	wire            dot_s     = (pap_tap == 4'd9) ? dot_d[8] :
+	                            (pap_tap == 4'd8) ? dot_d[7] : dot;
+	wire    [7:0]   attr_s    = (pap_tap == 4'd9) ? attr_d[8] :
+	                            (pap_tap == 4'd8) ? attr_d[7] : attr;
 
 
 	// ------------------------------------------------------------
@@ -722,11 +761,15 @@ module video (
 
 	// Eight lines of the top border, well clear of the picture, and the
 	// same 256 pixels the picture occupies so the ends line up with it.
-	localparam [8:0] OSD_LINE = 9'd296;
+	// Which line the text sits on, per machine. Pentagon has a 320-line
+	// frame where the others have 312, so the same number lands in a
+	// different part of its top border - on the board the line was
+	// running off the top. Four lines is half a character cell.
+	wire [8:0] OSD_LINE = (MACHINE == MACHINE_PENT) ? 9'd300 : 9'd296;
 	localparam [9:0] OSD_X0   = 10'd6;
 
 	wire [9:0] osd_dx   = hcounter - OSD_X0;
-	wire       osd_inx  = (hcounter >= OSD_X0) && (hcounter < OSD_X0 + 10'd512);
+	wire       osd_inx  = (hcounter >= OSD_X0) && (hcounter < OSD_X0 + 10'd528);
 	wire       osd_iny  = (vcounter[9:1] >= OSD_LINE)
 	                      && (vcounter[9:1] < OSD_LINE + 9'd8);
 	// How many character cells the WHOLE line is moved RIGHT, one row per
@@ -740,10 +783,17 @@ module video (
 	wire [4:0] osd_shift =
 		(MACHINE == MACHINE_S48)  ? 5'd1 :
 		(MACHINE == MACHINE_S128) ? 5'd1 :
-		(MACHINE == MACHINE_S3)   ? 5'd0 : 5'd0;
-	wire [4:0] osd_rawcol = osd_dx[8:4];
-	wire       osd_incol  = (osd_rawcol >= osd_shift);
-	wire [4:0] osd_col    = osd_rawcol - osd_shift;
+		// +2A/+3 moves a whole cell left at the sync, so the line is
+		// given a cell back here and stays where it was on the screen.
+		(MACHINE == MACHINE_S3)   ? 5'd1 : 5'd0;
+	// Six bits and a window one cell wider than the text. The line is
+	// 32 characters and the shift pushes the last of them - the K of the
+	// memory size - into what would be column 32, so both the index and
+	// the window have to reach it.
+	wire [5:0] osd_rawcol = osd_dx[9:4];
+	wire       osd_incol  = (osd_rawcol >= {1'b0, osd_shift})
+	                        && ((osd_rawcol - {1'b0, osd_shift}) <= 6'd31);
+	wire [5:0] osd_col    = osd_rawcol - {1'b0, osd_shift};
 	wire [2:0] osd_px   = osd_dx[3:1];
 	wire [2:0] osd_row  = vcounter[3:1] - OSD_LINE[2:0];
 
@@ -1081,7 +1131,22 @@ module video (
 		// The interrupt has been arriving a T-state and three quarters
 		// early ever since: 57351 counts against 57344.
 		(MACHINE == MACHINE_S48)  ? 10'd5   :
-		lines228                  ? 10'd8   :
+		// One row per machine from here, so a change to one cannot move
+		// another.
+		//
+		// +2A/+3 is 6, not 8. Eight is a multiple of four counts, which
+		// puts the nIRQ edge exactly on the CPU's sampling instant - and
+		// an edge arriving exactly when the CPU samples may be taken this
+		// T-state or the next, decided by nothing more than propagation.
+		// On the board that is the demo starting sometimes with the
+		// border shimmering and sometimes perfectly clean. Two counts
+		// earlier is half a T-state: the acceptance stays in the same
+		// T-state and stops being a race. The 48K needed the same, 7 to
+		// 5, for the same reason.
+		//
+		// 128K keeps 8 and so keeps the race; it has not been looked at.
+		(MACHINE == MACHINE_S3)   ? 10'd6   :
+		(MACHINE == MACHINE_S128) ? 10'd8   :
 		                            10'd0;
 	// Wrapped into the line rather than added raw.
 	//
