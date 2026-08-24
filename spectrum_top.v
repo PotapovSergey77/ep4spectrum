@@ -931,6 +931,7 @@ module spectrum_top (
 		key_f4_d <= key_f4;
 	end
 
+
 	// F5..F8 pick the machine. Switching deliberately does NOT reset,
 	// so the effect can be watched on a running program.
 	always @(posedge clock) begin
@@ -1643,6 +1644,9 @@ module spectrum_top (
 		.clken(psg_clken),
 		.enable(divmmc_enable),
 		.beta_owns_3d(trdos_avail),
+		// notplus3 is one here for every machine this build runs, so the
+		// reference's expression reduces to the $7FFD ROM-select bit.
+		.inrom48k(page_rom_sel),
 		.stand_down(rom_from_sd),
 		.a(cpu_a),
 		.wr_n(cpu_wr_n),
@@ -1749,9 +1753,19 @@ module spectrum_top (
 
 	// Beta Disk ports, live only while the TR-DOS ROM is paged in - that
 	// is how a real interface behaves, and it keeps $1F, $3F, $5F, $7F
-	// and $FF out of everyone else's way the rest of the time. All of
-	// them are odd, so the ULA's even-port decode never collides.
-	wire       bdi_enable = trdos_active & (~cpu_ioreq_n) & cpu_m1_n & cpu_a[0];
+	// and $FF out of everyone else's way the rest of the time.
+	//
+	// All five have their bottom five address bits set, and all five bits
+	// have to be checked here: bdi.v picks its register from a[7:5] alone
+	// and looks at nothing below that, so whatever this lets through
+	// reaches a register. Requiring only A0 let through every odd port on
+	// the machine. $7FFD is one of them - its low byte $FD has A7 set,
+	// which selects the system register - so while TR-DOS was paged a
+	// read of the paging port returned {intrq, drq, 6'b111111} = $3F, and
+	// a write to it went to the drive select. Test v4.3 saw exactly that:
+	// wrote $10 to $7FFD and read back $3F.
+	wire       bdi_enable = trdos_active & (~cpu_ioreq_n) & cpu_m1_n
+	                       & (cpu_a[4:0] == 5'b11111);
 	wire [7:0]  bdi_do;
 	wire [19:0] bdi_img_addr;
 	wire        bdi_img_busy;
@@ -2355,15 +2369,35 @@ module spectrum_top (
 		// their first fetch at $4000 or above.
 		((zc_enable == 1'b1) && ((cpu_a[7:0] == 8'h57)
 		                      || (cpu_a[7:0] == 8'h77))) ? zc_do :
-		(divmmc_enable == 1'b1) ? divmmc_do :
+		// Only $EB reads back - the data register. dout comes straight
+		// out of the SPI engine, and handing it to every port in the
+		// group meant a read of the CONTROL port at $E3, or of $E7,
+		// returned whatever the card last shifted. On real hardware
+		// those are write-only and a read gets the idle bus. Firmware
+		// that probes the interface by reading sees rubbish where it
+		// expects $FF, and ESXDOS never sets MAPRAM here - which leaves
+		// bank 3 not a copy of anything and the $3Dxx entry with
+		// nothing sane to page in.
+		((divmmc_enable == 1'b1) && (cpu_a[3:0] == 4'hb)) ? divmmc_do :
 		// map kempston joystick port - no joystick hardware on this board, idle
 		(kempston_enable == 1'b1) ? 8'b00000000 :
 		// The floating bus on port 0xFF. A read of an unattached port
 		// picks up whatever the ULA is fetching, which programs use to
 		// find where the raster is. zx-sizif-512 gives this to port
 		// 0xFF alone and not on the +2A/+3, and so does this.
+		//
+		// Nor on Pentagon. A real one has no attribute port at all, which
+		// Test v4.3 reports in as many words, and ours answered like a
+		// Sinclair. A read there now reaches the idle bus and returns
+		// 0xFF, which is what a Pentagon gives.
+		//
+		// This costs Pentagon nothing in software terms: a program
+		// written for one cannot have been using a port its hardware
+		// never had, and the machines that do have it are untouched.
 		((~cpu_ioreq_n) && (cpu_m1_n == 1'b1) && (cpu_a[7:0] == 8'hFF)
-		 && (vid_port_ff_active == 1'b1) && (machine != MACHINE_S3)) ? vid_port_ff_data :
+		 && (vid_port_ff_active == 1'b1)
+		 && (machine != MACHINE_S3) && (machine != MACHINE_PENT))
+			? vid_port_ff_data :
 		// Idle bus
 		8'b11111111;
 
@@ -2662,6 +2696,7 @@ module spectrum_top (
 		prev_cpu_m1_n <= cpu_m1_n;
 	end
 
+
 	// slow, visually-persistent round-robin scan across the 4 digits
 	reg [11:0] digit_scan_cnt;
 	reg [1:0]  digit_scan;
@@ -2776,6 +2811,11 @@ module spectrum_top (
 	// that is not needed is a knob that can be nudged. With nothing
 	// trimmed the display stays on the speed and the page, so power-up
 	// looks like power-up.
+	// The freeze reading wins the display when there is one: Fabc, where
+	// a is the SDRAM arbiter's wait, b DivMMC's SPI wait and c the
+	// Z-controller's. F000 means nothing was holding the CPU, which
+	// leaves the clock. No F at all means the CPU never stopped - it is
+	// going round a loop, and every wait-related theory is wrong.
 	wire [3:0] nibble = any_trim ?
 	                    ((digit_scan == 2'd3) ? 4'hc :  // C, contention window
 	                     (digit_scan == 2'd2) ? {2'b00, cont_model} :
