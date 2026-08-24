@@ -359,8 +359,23 @@ module video (
 		// contended access is judged a T-state late without it.
 		(MACHINE == MACHINE_S3)   ? 13'sd8 : 13'sd0;
 	// write's MREQ is on the same edge as a read's.)
+	// How many hcounter counts make one CPU T-state.
+	//
+	// Four normally: a 224 T-state line is 896 counts. In the doubled
+	// mode the frame is still 20ms and the CPU still gets its 69888
+	// T-states, but there are 624 video lines instead of 312 - so a line
+	// is 112 T-states, and the same 896 counts have to cover half as
+	// many. Eight counts to the T-state there.
+	//
+	// Everything that measures TIME has to follow this. Everything that
+	// measures a POSITION on the line - the window's extent, the
+	// interrupt's column, the border group grid - is in counts already
+	// and must not.
+	wire [3:0] t_counts = VGA ? 4'd8 : 4'd4;
+
 	wire signed [12:0] hc_sum =
-		{3'b000, hcounter} + {{6{CONT_ADJ[4]}}, CONT_ADJ, 2'b00} - 13'sd4 - cont_lead;
+		{3'b000, hcounter} + {{6{CONT_ADJ[4]}}, CONT_ADJ, 2'b00}
+		- {9'd0, t_counts} - (VGA ? (cont_lead <<< 1) : cont_lead);
 	wire signed [12:0] hc_wrap =
 		(hc_sum < 0)      ? (hc_sum + hline) :
 		(hc_sum >= hline) ? (hc_sum - hline) : hc_sum;
@@ -393,7 +408,7 @@ module video (
 	// explicit per-T-state table here, not a different span.
 	wire [2:0] cont_span = (MACHINE == MACHINE_S3) ? 3'd7 : 3'd6;
 	assign CONTENTION = vpicture & ~hc_cont[9]
-	                    & (hc_cont[4:2] < cont_span);
+	                    & ((VGA ? hc_cont[5:3] : hc_cont[4:2]) < cont_span);
 
 	// The IO window, kept as a separate signal only so IO_ADJ can trim it.
 	//
@@ -454,14 +469,17 @@ module video (
 		(MACHINE == MACHINE_S48)  ? 13'sd32 :
 		(MACHINE == MACHINE_S128) ? 13'sd32 :
 		(MACHINE == MACHINE_S3)   ? 13'sd0  : 13'sd0;
-	wire signed [12:0] hi_sum  = hc_sum + io_base
+	// io_base is a count of T-states expressed in hcounter counts, so it
+	// doubles with them in the scan-doubled mode.
+	wire signed [12:0] hi_sum  = hc_sum
+	                             + (VGA ? (io_base <<< 1) : io_base)
 	                             + {{3{io_adj_eff[7]}}, io_adj_eff, 2'b00};
 	wire signed [12:0] hi_wrap =
 		(hi_sum < 0)      ? (hi_sum + hline) :
 		(hi_sum >= hline) ? (hi_sum - hline) : hi_sum;
 	wire [9:0] hc_io = hi_wrap[9:0];
 	assign CONTENTION_IO = vpicture & ~hc_io[9]
-	                       & (hc_io[4:2] < cont_span);
+	                       & ((VGA ? hc_io[5:3] : hc_io[4:2]) < cont_span);
 
 
 	// The border colour is latched rather than taken straight off the
@@ -1201,8 +1219,11 @@ module video (
 		+ (cy1 ? 10'sd1 : 10'sd0) + (cy2 ? 10'sd1 : 10'sd0)
 		- (bw1 ? 10'sd1 : 10'sd0) - (bw2 ? 10'sd1 : 10'sd0);
 	wire [8:0] int_line = int_line_s[8:0];
+	// The pulse is 32 T-states on the Sinclair machines and 36 on the
+	// 228-count ones, given here in counts - so it doubles with the
+	// counts-per-T-state in the doubled mode.
 	wire [9:0] int_len =
-		lines228 ? 10'd144 : 10'd128;
+		(lines228 ? 10'd144 : 10'd128) << (VGA ? 1 : 0);
 
 	// Fetch address registers, after zx-sizif-512's video.sv.
 	//
