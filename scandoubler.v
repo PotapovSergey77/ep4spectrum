@@ -62,7 +62,17 @@ module scandoubler (
 	// The four bits actually carried: colour per channel plus the one
 	// brightness they share. R_IN[3] is the colour and R_IN[0] the
 	// brightness, the way video.v assembles {colour, {3{bright}}}.
-	wire [3:0] pix_in = {R_IN[3], G_IN[3], B_IN[3], R_IN[0] | G_IN[0] | B_IN[0]};
+	// Colour and the SYNC ITSELF, not brightness.
+	//
+	// Generating a new sync means reproducing what video.v does, and
+	// six builds went on failing to. Recording its pulse and playing it
+	// back makes the output sync the input's own, only twice as fast -
+	// which is what "the same sync" means and cannot be got wrong.
+	//
+	// The fourth bit was brightness. There is no room for a fifth: 2048
+	// words of five bits is 10240 against an M9K's 9216. So BRIGHT is
+	// what the doubled mode gives up.
+	wire [3:0] pix_in = {R_IN[3], G_IN[3], B_IN[3], HS_IN_n};
 
 	// The falling edge of the input hsync, found on the 28MHz clock and
 	// held until it is used.
@@ -88,7 +98,15 @@ module scandoubler (
 			// Start of a line: swap buffers and rewind.
 			wr_line <= ~wr_line;
 			wr_addr <= 11'd0;
-		end else if (CE_IN == 1'b1) begin
+		end else if (CE_IN == 1'b1 && wr_addr[10] == 1'b0) begin
+			// Stopped at 1024 rather than allowed to wrap. A line is 896
+			// enables and Pentagon's 912, so this never fires while CLK is
+			// twice the input pixel rate. When it was not - the doubler on
+			// clk56 while CE_IN came from the 28MHz domain - every pixel
+			// was written twice, wr_addr[9:0] rolled over and quietly
+			// overwrote the start of the same line. Clipping instead of
+			// wrapping leaves a wrong ratio visible as a short line rather
+			// than as a picture with no structure at all.
 			buf_a[{wr_line, wr_addr[9:0]}] <= pix_in;
 			wr_addr <= wr_addr + 11'd1;
 		end
@@ -135,7 +153,7 @@ module scandoubler (
 				// added the passes came out 895 and 897, with two 894 and
 				// 898 - the first figure is the SECOND pass, so adding to
 				// the length shortens it. The raw value halves the line.
-				line_len <= wr_addr[9:0];
+				line_len <= wr_addr[10] ? 10'd1023 : wr_addr[9:0];
 				out_x    <= 10'd0;
 				out_half <= 1'b0;
 			end else if (out_x == line_len - 10'd1) begin
@@ -146,12 +164,12 @@ module scandoubler (
 
 			// Sync: one pulse per output line, the same width in pixels
 			// the input used, and the input's vsync passed through.
-			HS_OUT_n <= ~(out_x < 10'd64);
+			HS_OUT_n <= rd_q[0];
 			VS_OUT_n <= VS_IN_n;
 
-			R_OUT <= {rd_q[3], {3{rd_q[3] & rd_q[0]}}};
-			G_OUT <= {rd_q[2], {3{rd_q[2] & rd_q[0]}}};
-			B_OUT <= {rd_q[1], {3{rd_q[1] & rd_q[0]}}};
+			R_OUT <= {4{rd_q[3]}};
+			G_OUT <= {4{rd_q[2]}};
+			B_OUT <= {4{rd_q[1]}};
 		end
 	end
 

@@ -987,6 +987,21 @@ module spectrum_top (
 	end
 
 	reg  osd_keys_d = 1'b0;
+	// The mode reaches video.v only at a frame boundary.
+	//
+	// Changing it mid-frame leaves the video counters in a state they do
+	// not come out of: the step size and the forced low bit change on the
+	// way through a line, and the fetch sequencer can be left holding a
+	// request that never completes. On the board that showed as 15kHz
+	// staying wrong after a few trips to 31kHz and back - a switch that
+	// leaves a mark is a switch applied at the wrong moment.
+	reg vga_applied = 1'b0;
+	reg vs_prev     = 1'b1;
+	always @(posedge clock) begin
+		vs_prev <= vid_vsync_n;
+		if (vs_prev == 1'b1 && vid_vsync_n == 1'b0)
+			vga_applied <= vga_mode;
+	end
 	always @(posedge clock) osd_keys_d <= osd_keys;
 	wire osd_poke = osd_keys & ~osd_keys_d;
 	// The board button is out of the NMI path entirely. F12 alone.
@@ -1461,7 +1476,7 @@ module spectrum_top (
 		// downstream by scandoubler.v, so the machine's own timing - the
 		// contention window, the interrupt, the border group grid - never
 		// has to know which mode the monitor wants.
-		.VGA(vga_mode),
+		.VGA(1'b0),   // the machine never leaves 15kHz
 		.MACHINE(machine),
 		.CONTENTION(vid_contention),
 		.CONTENTION_IO(vid_contention_io),
@@ -2855,8 +2870,21 @@ module spectrum_top (
 	// which one reaches the pins.
 	wire [3:0] sd_r, sd_g, sd_b;
 	wire       sd_hs_n, sd_vs_n;
+	// On clock, not clk56.
+	//
+	// The doubler plays one output pixel per CLK while one input pixel
+	// arrives per CE_IN, so CLK has to be exactly twice the input pixel
+	// rate for the line to come out at twice the rate and no other.
+	// CE_IN is CLKEN_VID: 14MHz, one clock wide, and generated in the
+	// clock (28MHz) domain. Hung on clk56 it is seen for two clocks
+	// running, every pixel is written twice, and a line measures 1792
+	// against a ten-bit line_len that keeps 768 of it. The output then
+	// carries no horizontal sync at all - a bench driving the doubler at
+	// 28MHz measures 31.25kHz and 59 pulses, the board's own wiring
+	// measures zero - which is why six builds spent on the shape of the
+	// sync found nothing wrong with it.
 	scandoubler sd (
-		.CLK(clk56),
+		.CLK(clock),
 		.CE_IN(vid_clken),
 		.nRESET(reset_n),
 		.R_IN(vid_r_out),
@@ -2871,9 +2899,9 @@ module spectrum_top (
 		.VS_OUT_n(sd_vs_n)
 	);
 
-	wire [3:0] out_r = vid_r_out;
-	wire [3:0] out_g = vid_g_out;
-	wire [3:0] out_b = vid_b_out;
+	wire [3:0] out_r = vga_applied ? sd_r : vid_r_out;
+	wire [3:0] out_g = vga_applied ? sd_g : vid_g_out;
+	wire [3:0] out_b = vga_applied ? sd_b : vid_b_out;
 	assign zx_red = out_r[3];
 	assign zx_green = out_g[3];
 	assign zx_blue = out_b[3];
@@ -2901,20 +2929,21 @@ module spectrum_top (
 	assign VGA_G = vid_osd_active ? pwm_osd
 	                              : (zx_green & (out_g[0] | pwm_dim));
 	assign VGA_B = zx_blue  & (out_b[0] | pwm_dim);
-	// 15kHz mode: composite (H^V) sync on VGA_HS, VGA_VS unused/high
-	// Composite sync in both modes: one signal on VGA_HS, VGA_VS idle.
-	// That is what the 15kHz output has always sent and what monitors
-	// accepted from the doubled output before the scandoubler existed -
-	// sharp outlines and readable text, whatever else was wrong with it.
-	// Separate H and V was my own change and it is what they stopped
-	// locking to.
-	wire sd_cs_n = ~(sd_hs_n ^ sd_vs_n);
-	assign VGA_HS = vga_mode ? vid_hsync_n : vid_hcsync_n;
-	// VGA_VS carries the vertical pulse in the doubled mode and is idle
-	// in the native one. Composite on VGA_HS does not make it redundant:
-	// a monitor taking 31kHz wants the vertical edge on its own pin, and
-	// the 15kHz convention of leaving it high is a 15kHz convention.
-	assign VGA_VS = vga_mode ? vid_vsync_n : 1'b1;
+	// Composite at 15kHz, separate at 31kHz - because those are the two
+	// conventions, and mixing them is what made the picture twitch.
+	//
+	// 15kHz: video.v's own combined sync (H^V, inverted) on VGA_HS with
+	// VGA_VS held high. Unchanged, and it must stay unchanged.
+	//
+	// 31kHz: plain hsync on VGA_HS and the vertical pulse on VGA_VS. It
+	// used to be the composite here as well while VGA_VS also carried the
+	// vertical pulse, which is a shape no standard describes: a monitor
+	// locking on the two pins separately then sees every horizontal edge
+	// inverted for the eight output lines the vertical pulse lasts, once
+	// per frame. sd_hs_n is the input's own hsync replayed at twice the
+	// rate, so its polarity never changes and there is nothing to jump.
+	assign VGA_HS = vga_applied ? sd_hs_n : vid_hcsync_n;
+	assign VGA_VS = vga_applied ? sd_vs_n : 1'b1;
 
 
 	// share SDRAM between CPU and Video. This must stay combinational (not
