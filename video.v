@@ -1270,7 +1270,11 @@ module video (
 	// hcounter[3:0]==0011. Fetching inside the group, as the fixed
 	// schedule did, leaves under two cycles: fine when the slot was
 	// pre-aligned, not enough once a CPU access can get in front.
-	wire fetch_start = (hcounter[3:0] == 4'b1000);
+	// In the doubled mode hcounter is always ODD - it steps by two and
+	// bit 0 is forced high - so a comparison against an even value never
+	// fires. This one starting the fetch was why 31kHz showed no raster:
+	// the fetch simply never began.
+	wire fetch_start = (hcounter[3:0] == (VGA ? 4'b1001 : 4'b1000));
 	// The group being set up is the one after the current one. In the
 	// last group of a line that is group 0 of the next line, so the
 	// line number has to be stepped as well - vcounter[0] is the
@@ -1495,7 +1499,11 @@ module video (
 			// trim leaving an artefact and the next hanging the demo.
 			// Counting it out lets it run past the end of the line, and
 			// past the end of the frame, which is what it must do.
-			if (hcounter == 10'd0)
+			// The first count of a line, which in the doubled mode is 1:
+			// bit 0 is forced high there and the counter never reads zero.
+			// Without this the interrupt was armed once and never again -
+			// one frame, then a still picture.
+			if (hcounter == (VGA ? 10'd1 : 10'd0))
 				int_armed <= 1'b1;
 
 			if (int_cnt != 10'd0) begin

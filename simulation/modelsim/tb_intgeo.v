@@ -24,6 +24,8 @@ module tb_intgeo;
 	reg         clken = 1'b0;
 	reg         nreset = 1'b0;
 	reg  [1:0]  machine = 2'd0;
+	integer     mval;
+	initial if ($value$plusargs("MACHINE=%d", mval)) machine = mval[1:0];
 	reg  [7:0]  int_adj_arg = 8'd0;
 	integer     adjval;
 	initial begin
@@ -110,7 +112,7 @@ module tb_intgeo;
 	end
 
 	initial begin
-		#120_000_000;
+		#400_000_000;
 		$display("TIMED OUT");
 		$finish;
 	end

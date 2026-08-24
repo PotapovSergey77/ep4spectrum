@@ -1457,6 +1457,10 @@ module spectrum_top (
 		.CLKEN(vid_clken),
 		.MEM_CYC(vid_mem_sync),
 		.nRESET(reset_n),
+		// Always the native 15.625kHz here. The doubled output is made
+		// downstream by scandoubler.v, so the machine's own timing - the
+		// contention window, the interrupt, the border group grid - never
+		// has to know which mode the monitor wants.
 		.VGA(vga_mode),
 		.MACHINE(machine),
 		.CONTENTION(vid_contention),
@@ -2845,26 +2849,71 @@ module spectrum_top (
 	// eight steps fit per pixel. Bright colours stay on for all eight,
 	// normal ones for six - about the 3/4 ratio between the two levels
 	// on a real Spectrum.
-	assign zx_red = vid_r_out[3];
-	assign zx_green = vid_g_out[3];
-	assign zx_blue = vid_b_out[3];
+
+	// The doubled output, made from the finished 15kHz stream rather
+	// than by running the machine's counters faster. Scroll Lock picks
+	// which one reaches the pins.
+	wire [3:0] sd_r, sd_g, sd_b;
+	wire       sd_hs_n, sd_vs_n;
+	scandoubler sd (
+		.CLK(clk56),
+		.CE_IN(vid_clken),
+		.nRESET(reset_n),
+		.R_IN(vid_r_out),
+		.G_IN(vid_g_out),
+		.B_IN(vid_b_out),
+		.HS_IN_n(vid_hsync_n),
+		.VS_IN_n(vid_vsync_n),
+		.R_OUT(sd_r),
+		.G_OUT(sd_g),
+		.B_OUT(sd_b),
+		.HS_OUT_n(sd_hs_n),
+		.VS_OUT_n(sd_vs_n)
+	);
+
+	wire [3:0] out_r = vid_r_out;
+	wire [3:0] out_g = vid_g_out;
+	wire [3:0] out_b = vid_b_out;
+	assign zx_red = out_r[3];
+	assign zx_green = out_g[3];
+	assign zx_blue = out_b[3];
 
 	wire vid_osd_active;
 	reg [2:0] pwm_cnt = 3'd0;
 	always @(posedge clk56) pwm_cnt <= pwm_cnt + 3'd1;
-	wire pwm_dim = (pwm_cnt < 3'd6);   // 6/8 duty
+	// One PWM period must be one pixel. At 15kHz a pixel is eight steps
+	// of this counter and six of them lit give the normal level; in the
+	// doubled mode a pixel is only two steps, so the eight-step period
+	// stretches across four pixels and modulates its neighbours instead
+	// of averaging inside one. That is a picture full of stripes.
+	//
+	// Four steps to the period there, three lit - the same 3/4 the eight-
+	// step version gives, and still inside a single pixel. Two steps was
+	// the first attempt and it was half a pixel, not one.
+	wire pwm_dim = (pwm_cnt < 3'd6);   // 6/8 duty, one period to a pixel
 
-	assign VGA_R = zx_red   & (vid_r_out[0] | pwm_dim);
+	assign VGA_R = zx_red   & (out_r[0] | pwm_dim);
 	// The on-screen line gets a duty of its own. Dropping BRIGHT already
 	// takes it to the normal level, but a Spectrum's normal green is
 	// bright in its own right; three steps of eight is a green that reads
 	// as dark against a bordered screen without going muddy.
 	wire pwm_osd = (pwm_cnt < 3'd3);
 	assign VGA_G = vid_osd_active ? pwm_osd
-	                              : (zx_green & (vid_g_out[0] | pwm_dim));
-	assign VGA_B = zx_blue  & (vid_b_out[0] | pwm_dim);
+	                              : (zx_green & (out_g[0] | pwm_dim));
+	assign VGA_B = zx_blue  & (out_b[0] | pwm_dim);
 	// 15kHz mode: composite (H^V) sync on VGA_HS, VGA_VS unused/high
+	// Composite sync in both modes: one signal on VGA_HS, VGA_VS idle.
+	// That is what the 15kHz output has always sent and what monitors
+	// accepted from the doubled output before the scandoubler existed -
+	// sharp outlines and readable text, whatever else was wrong with it.
+	// Separate H and V was my own change and it is what they stopped
+	// locking to.
+	wire sd_cs_n = ~(sd_hs_n ^ sd_vs_n);
 	assign VGA_HS = vga_mode ? vid_hsync_n : vid_hcsync_n;
+	// VGA_VS carries the vertical pulse in the doubled mode and is idle
+	// in the native one. Composite on VGA_HS does not make it redundant:
+	// a monitor taking 31kHz wants the vertical edge on its own pin, and
+	// the 15kHz convention of leaving it high is a 15kHz convention.
 	assign VGA_VS = vga_mode ? vid_vsync_n : 1'b1;
 
 

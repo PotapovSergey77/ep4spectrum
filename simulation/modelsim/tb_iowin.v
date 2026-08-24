@@ -27,6 +27,8 @@ module tb_iowin;
 	reg         clken = 1'b0;
 	reg         nreset = 1'b0;
 	reg  [1:0]  machine = 2'd0;
+	integer     mval;
+	initial if ($value$plusargs("MACHINE=%d", mval)) machine = mval[1:0];
 	reg  [4:0]  io_adj = 5'd0;
 
 	integer     adjval;
