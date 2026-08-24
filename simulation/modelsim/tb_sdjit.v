@@ -48,6 +48,11 @@ module tb_sdjit;
 	reg p = 1'b1;
 
 	// the vertical pulse, in output lines
+	integer lowest = 0, lowstart = 0;
+	always @(posedge clk) if (nreset) begin
+		if (p == 1'b1 && shs == 1'b0) lowstart = t;
+		if (p == 1'b0 && shs == 1'b1 && lowstart != 0) lowest = t - lowstart;
+	end
 	reg pv = 1'b1;
 	integer vs_start = 0, vs_lines = 0, frame_lines = 0, vframe = 0;
 
@@ -58,6 +63,9 @@ module tb_sdjit;
 				if (last != 0) begin
 					d = t - last;
 					lines = lines + 1;
+					if (d != 896 && lines < 4000)
+						$display("   line %0d: %0d clocks (sync_len=%0d line_len=%0d)",
+							lines, d, sd.sync_len, sd.line_len);
 					found = 0;
 					for (i = 0; i < kinds; i = i + 1)
 						if (len[i] == d) begin num[i] = num[i] + 1; found = 1; end
@@ -87,6 +95,8 @@ module tb_sdjit;
 			$display("     %4d clocks  x %0d   (%0d ns, %0d.%02d kHz)",
 				len[i], num[i], len[i]*357/10,
 				(280000/len[i])/10, (2800000/len[i])%100);
+		$display("  sync_len measured %0d input pixels; output pulse %0d clocks",
+			sd.sync_len, lowest);
 		$display("  vertical pulse %0d output lines, frame %0d output lines",
 			vs_lines, frame_lines);
 		$display("  (wanted: one length, 896 clocks; 624 lines a frame)");

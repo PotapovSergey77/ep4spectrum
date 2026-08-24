@@ -32,13 +32,17 @@ module scandoubler (
 	input      [3:0] B_IN,
 	input            HS_IN_n,
 	input            VS_IN_n,
+	// The on-screen line, which needs a dimmer duty than any colour and
+	// so cannot travel as one.
+	input            OSD_IN,
 
 	// The same picture at twice the line rate
 	output reg [3:0] R_OUT,
 	output reg [3:0] G_OUT,
 	output reg [3:0] B_OUT,
 	output reg       HS_OUT_n,
-	output reg       VS_OUT_n
+	output reg       VS_OUT_n,
+	output reg       OSD_OUT
 );
 
 	// A line is 896 input pixel-enables at most - Pentagon's is the
@@ -53,26 +57,39 @@ module scandoubler (
 	reg [9:0]  out_x;
 	reg        out_half;      // which of the two passes over the line
 	reg [9:0]  line_len;
+	// The width of the input sync pulse, in input pixels. wr_addr is
+	// rewound by the falling edge and counts input pixels from it, so at
+	// the rising edge it IS the width - measured every line rather than
+	// written down here, which keeps this free of any machine's numbers.
+	reg [9:0]  sync_len;
 	reg        resync;
 	// Declared before use. Quartus accepts a name used before it is
 	// declared and quietly makes an implicit one-bit net of it, which is
 	// how wr_line came to be declared twice here without a word said.
 	wire [10:0] rd_addr = {~wr_line, out_x};
 
-	// The four bits actually carried: colour per channel plus the one
-	// brightness they share. R_IN[3] is the colour and R_IN[0] the
-	// brightness, the way video.v assembles {colour, {3{bright}}}.
-	// Colour and the SYNC ITSELF, not brightness.
+	// The four bits carried: one colour per channel and the brightness
+	// they share. R_IN[3] is the colour and R_IN[0] the brightness, the
+	// way video.v assembles {colour, {3{bright}}}.
 	//
-	// Generating a new sync means reproducing what video.v does, and
-	// six builds went on failing to. Recording its pulse and playing it
-	// back makes the output sync the input's own, only twice as fast -
-	// which is what "the same sync" means and cannot be got wrong.
-	//
-	// The fourth bit was brightness. There is no room for a fifth: 2048
-	// words of five bits is 10240 against an M9K's 9216. So BRIGHT is
-	// what the doubled mode gives up.
-	wire [3:0] pix_in = {R_IN[3], G_IN[3], B_IN[3], HS_IN_n};
+	// There is no room for a fifth bit - 2048 words of five is 10240
+	// against an M9K's 9216 - and for a while the sync was stored here
+	// instead, with brightness given up to make room. It does not have to
+	// be: the buffer is rewound by the falling edge of the input hsync,
+	// so the pulse always occupies the START of the line, from zero to
+	// its own width. That is a position the output counter already knows,
+	// and sync_len below measures the width rather than assuming it. So
+	// the sync costs no storage and brightness keeps its bit.
+	// The brightness stored is the RAW one, recovered by OR-ing the three
+	// channels. video.v gates it with each channel's own colour -
+	// {red, {3{bright & red}}} - so R_IN[0] alone is bright AND red, and
+	// taking it for the brightness of all three loses it on every bright
+	// colour without red in it: bright green, bright blue, bright cyan
+	// all came out as ordinary ones and the picture looked dark. A pixel
+	// with no colour at all is black whatever the brightness says, so the
+	// OR cannot invent one.
+	wire [3:0] pix_in = {R_IN[3], G_IN[3], B_IN[3],
+	                    R_IN[0] | G_IN[0] | B_IN[0]};
 
 	// The falling edge of the input hsync, found on the 28MHz clock and
 	// held until it is used.
@@ -85,9 +102,32 @@ module scandoubler (
 	// stream with no line structure at all.
 	reg  hs_in_d;
 	wire hs_fall = (hs_in_d == 1'b1) && (HS_IN_n == 1'b0);
+	wire hs_rise = (hs_in_d == 1'b0) && (HS_IN_n == 1'b1);
 	always @(posedge CLK or negedge nRESET)
 		if (nRESET == 1'b0) hs_in_d <= 1'b1;
 		else                hs_in_d <= HS_IN_n;
+
+	// One bit per buffer half: did the line written into it carry any of
+	// the on-screen line. Every M9K on the device is spoken for, so the
+	// per-pixel flag has nowhere to live - but it does not need to. The
+	// line is drawn over the border, where video.v never sets brightness
+	// on anything else, so on a line that carried it a bright green pixel
+	// IS it. Two flip-flops scope that test to the right lines and keep a
+	// bright green in an ordinary picture from being taken for text.
+	reg [1:0] osd_line;
+	always @(posedge CLK or negedge nRESET)
+		if (nRESET == 1'b0)                     osd_line <= 2'b00;
+		// The half about to be written - wr_line has not flipped yet here.
+		else if (hs_fall == 1'b1)               osd_line[~wr_line] <= 1'b0;
+		else if (OSD_IN == 1'b1 && CE_IN == 1'b1) osd_line[wr_line] <= 1'b1;
+
+	// The pulse width, latched where it ends. Kept out of the write
+	// chain below: sharing an else-if with the write would drop the one
+	// input pixel that lands on this clock.
+	always @(posedge CLK or negedge nRESET)
+		if (nRESET == 1'b0)          sync_len <= 10'd64;
+		else if (hs_rise == 1'b1)   sync_len <= wr_addr[10] ? 10'd1023
+		                                                     : wr_addr[9:0];
 
 	// --- input side, at the machine's own pixel rate ---
 	always @(posedge CLK or negedge nRESET) begin
@@ -117,6 +157,10 @@ module scandoubler (
 	// expressions instead built it out of logic and asked for 340% of
 	// the device.
 	reg [3:0] rd_q;
+	// The sync, one stage early, so it reaches the pins on the same clock
+	// as the colour that was read alongside it. rd_q is out_x delayed by
+	// one; hs_q is too, and both are registered once more on the way out.
+	reg       hs_q;
 	always @(posedge CLK) rd_q <= buf_a[rd_addr];
 
 	// --- output side, at twice the rate ---
@@ -133,6 +177,8 @@ module scandoubler (
 			R_OUT    <= 4'b0;
 			G_OUT    <= 4'b0;
 			B_OUT    <= 4'b0;
+			OSD_OUT  <= 1'b0;
+			hs_q     <= 1'b1;
 			HS_OUT_n <= 1'b1;
 			VS_OUT_n <= 1'b1;
 		end else begin
@@ -162,14 +208,25 @@ module scandoubler (
 			end else
 				out_x <= out_x + 10'd1;
 
-			// Sync: one pulse per output line, the same width in pixels
-			// the input used, and the input's vsync passed through.
-			HS_OUT_n <= rd_q[0];
+			// Sync: one pulse per output line, at the start of it, as wide
+			// as the input's own - the buffer is rewound by the falling
+			// edge, so the pulse is exactly counts 0 to sync_len. The
+			// input's vsync is passed straight through.
+			hs_q     <= (out_x >= sync_len);
+			HS_OUT_n <= hs_q;
 			VS_OUT_n <= VS_IN_n;
 
-			R_OUT <= {4{rd_q[3]}};
-			G_OUT <= {4{rd_q[2]}};
-			B_OUT <= {4{rd_q[1]}};
+			// Rebuilt the way video.v assembles them, {colour, {3{bright}}},
+			// because spectrum_top reads the colour off bit 3 and the
+			// brightness off bit 0. Four bits of storage carry three
+			// colours and the brightness they share.
+			// Gated with each channel's colour on the way out, exactly as
+			// video.v gates it on the way in.
+			// Green and bright together, on a line that carried the text.
+			OSD_OUT <= osd_line[~wr_line] & rd_q[2] & rd_q[0];
+			R_OUT <= {rd_q[3], {3{rd_q[0] & rd_q[3]}}};
+			G_OUT <= {rd_q[2], {3{rd_q[0] & rd_q[2]}}};
+			B_OUT <= {rd_q[1], {3{rd_q[0] & rd_q[1]}}};
 		end
 	end
 

@@ -910,10 +910,19 @@ module video (
 		(picture_s == 1'b1 && dot_s == 1'b0) ? attr_s[3] :
 		(blanking == 1'b0) ? border_out[0] :
 		1'b0;
-	// The line is drawn WITHOUT bright, which is what makes it the darker
-	// green: the PWM holds a bright colour for all eight steps of a pixel
-	// and a normal one for six.
-	assign bright = (osd_on == 1'b1) ? 1'b0 :
+	// The line is drawn WITH bright, which changes nothing about how it
+	// looks: spectrum_top gives OSD_ACTIVE a duty of its own and ignores
+	// the colour bits entirely while it is up, and red and blue are zero
+	// here so their brightness cannot show either.
+	//
+	// It is set so the doubled mode can find the line again. There it
+	// arrives through a line buffer, and OSD_ACTIVE - which is in the
+	// undoubled timebase - no longer lines up with it; the text came out
+	// with a sideways shadow. Every M9K is spoken for, so the buffer
+	// cannot carry a flag of its own. The line is drawn over the border,
+	// where brightness is never set on anything else, so brightness IS
+	// the flag and it costs no storage.
+	assign bright = (osd_on == 1'b1) ? 1'b1 :
 		(picture_s == 1'b1) ? attr_s[6] : 1'b0;
 
 	// Re-register video output to DACs to clean up edges

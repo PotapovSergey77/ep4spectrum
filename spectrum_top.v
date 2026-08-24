@@ -2869,7 +2869,7 @@ module spectrum_top (
 	// than by running the machine's counters faster. Scroll Lock picks
 	// which one reaches the pins.
 	wire [3:0] sd_r, sd_g, sd_b;
-	wire       sd_hs_n, sd_vs_n;
+	wire       sd_hs_n, sd_vs_n, sd_osd;
 	// On clock, not clk56.
 	//
 	// The doubler plays one output pixel per CLK while one input pixel
@@ -2892,11 +2892,13 @@ module spectrum_top (
 		.B_IN(vid_b_out),
 		.HS_IN_n(vid_hsync_n),
 		.VS_IN_n(vid_vsync_n),
+		.OSD_IN(vid_osd_active),
 		.R_OUT(sd_r),
 		.G_OUT(sd_g),
 		.B_OUT(sd_b),
 		.HS_OUT_n(sd_hs_n),
-		.VS_OUT_n(sd_vs_n)
+		.VS_OUT_n(sd_vs_n),
+		.OSD_OUT(sd_osd)
 	);
 
 	wire [3:0] out_r = vga_applied ? sd_r : vid_r_out;
@@ -2909,24 +2911,38 @@ module spectrum_top (
 	wire vid_osd_active;
 	reg [2:0] pwm_cnt = 3'd0;
 	always @(posedge clk56) pwm_cnt <= pwm_cnt + 3'd1;
-	// One PWM period must be one pixel. At 15kHz a pixel is eight steps
-	// of this counter and six of them lit give the normal level; in the
-	// doubled mode a pixel is only two steps, so the eight-step period
-	// stretches across four pixels and modulates its neighbours instead
-	// of averaging inside one. That is a picture full of stripes.
+	// One PWM period must be one pixel, in both modes.
 	//
-	// Four steps to the period there, three lit - the same 3/4 the eight-
-	// step version gives, and still inside a single pixel. Two steps was
-	// the first attempt and it was half a pixel, not one.
-	wire pwm_dim = (pwm_cnt < 3'd6);   // 6/8 duty, one period to a pixel
+	// At 15kHz a pixel is 142.9ns - eight steps of this counter - and six
+	// of them lit give the normal level. In the doubled mode the output
+	// line is 896 clocks of clock carrying the same 448 pixels, so a
+	// pixel is 71.4ns: FOUR steps. The eight-step period then spans two
+	// pixels and lights one while dimming its neighbour, which is a
+	// picture striped every other pixel.
+	//
+	// So the doubled mode takes its period from the bottom two bits -
+	// four steps, three lit, the same 3/4 - while 15kHz keeps the whole
+	// counter and stays bit for bit what it was. The counter itself is
+	// left free-running: a period that divides the pixel evenly delivers
+	// the same three lit steps to every pixel whatever its phase.
+	wire pwm_dim = vga_applied ? (pwm_cnt[1:0] < 2'd3)    // 3/4
+	                           : (pwm_cnt      < 3'd6);   // 6/8
 
 	assign VGA_R = zx_red   & (out_r[0] | pwm_dim);
 	// The on-screen line gets a duty of its own. Dropping BRIGHT already
 	// takes it to the normal level, but a Spectrum's normal green is
 	// bright in its own right; three steps of eight is a green that reads
 	// as dark against a bordered screen without going muddy.
-	wire pwm_osd = (pwm_cnt < 3'd3);
-	assign VGA_G = vid_osd_active ? pwm_osd
+	// 3/8 is not among the four levels the doubled mode has, so it takes
+	// the nearest, 2/4.
+	wire pwm_osd = vga_applied ? (pwm_cnt[1:0] < 2'd2)
+	                           : (pwm_cnt      < 3'd3);
+	// The on-screen line comes back out of the line buffer in the doubled
+	// mode. Taking it straight from video.v there put a sideways shadow on
+	// the text: the flag was in the undoubled timebase while the letters
+	// it was meant to mask had been through the buffer.
+	wire osd_now = vga_applied ? sd_osd : vid_osd_active;
+	assign VGA_G = osd_now ? pwm_osd
 	                              : (zx_green & (out_g[0] | pwm_dim));
 	assign VGA_B = zx_blue  & (out_b[0] | pwm_dim);
 	// Composite at 15kHz, separate at 31kHz - because those are the two
