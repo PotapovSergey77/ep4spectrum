@@ -3,7 +3,7 @@
 // tb_esxdos.v
 //
 // Focused simulation testbench: T80 CPU + divmmc.v + address decode
-// (replicated from spectrum_top.v's rom_48k generate block) driven
+// (replicated from ep4spectrum.v's rom_48k generate block) driven
 // against a behavioral memory array pre-loaded with the ESXDOS ROM at
 // the same offsets boot_copy_* writes them to in the real design.
 //
@@ -17,7 +17,7 @@
 module tb_esxdos;
 
 	reg clock = 0;
-	always #17.857 clock = ~clock; // ~28MHz, matches spectrum_top's "clock"
+	always #17.857 clock = ~clock; // ~28MHz, matches ep4spectrum's "clock"
 
 	reg reset_n = 0;
 	initial begin
@@ -147,7 +147,7 @@ module tb_esxdos;
 	);
 
 	// ------------------------------------------------------------
-	// Address decode (copied from spectrum_top.v's MODEL==0 path)
+	// Address decode (copied from ep4spectrum.v's MODEL==0 path)
 	// ------------------------------------------------------------
 	wire rom_enable = (~cpu_mreq_n) & ~(cpu_a[15] | cpu_a[14]);
 	wire ram_enable = (~cpu_mreq_n) & ~rom_enable;

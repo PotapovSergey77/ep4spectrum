@@ -47,7 +47,7 @@ module tb_sdpwm;
 		.HS_OUT_n(shs), .VS_OUT_n(svs), .OSD_OUT(sosd)
 	);
 
-	// spectrum_top's own output stage, both settings of it
+	// ep4spectrum's own output stage, both settings of it
 	reg [2:0] pwm_cnt = 3'd0;
 	always @(posedge clk56) pwm_cnt <= pwm_cnt + 3'd1;
 	wire dim15 = (pwm_cnt      < 3'd6);

@@ -4,7 +4,7 @@
 //
 // Behavioral SDRAM model, just complete enough to validate
 // sdram_ep4ce.v's ACTIVE -> READ/WRITE sequencing and the way
-// spectrum_top.v paces its accesses. Models the 4M x 16 x 4 bank part
+// ep4spectrum.v paces its accesses. Models the 4M x 16 x 4 bank part
 // on the EP4CE6E22C8 board: 12-bit row, 8-bit column, 2 bank bits.
 //
 // Deliberately not modelled: refresh timing/retention, tRP/tRC and

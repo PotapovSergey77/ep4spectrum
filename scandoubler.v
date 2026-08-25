@@ -217,7 +217,7 @@ module scandoubler (
 			VS_OUT_n <= VS_IN_n;
 
 			// Rebuilt the way video.v assembles them, {colour, {3{bright}}},
-			// because spectrum_top reads the colour off bit 3 and the
+			// because ep4spectrum reads the colour off bit 3 and the
 			// brightness off bit 0. Four bits of storage carry three
 			// colours and the brightness they share.
 			// Gated with each channel's colour on the way out, exactly as

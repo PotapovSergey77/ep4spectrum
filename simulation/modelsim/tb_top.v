@@ -2,7 +2,7 @@
 //
 // tb_top.v
 //
-// Whole-design testbench: the real spectrum_top against a behavioral
+// Whole-design testbench: the real ep4spectrum against a behavioral
 // SDRAM chip and SD card. Every previous testbench replaced memory with
 // an instant behavioral array, which is exactly why they all looked
 // healthy while the board did not - they could not show video and CPU
@@ -42,7 +42,7 @@ module tb_top;
 	wire PS2_CLK  = 1'b1;
 	wire PS2_DATA = 1'b1;
 
-	spectrum_top #(.SIM(1)) dut (
+	ep4spectrum #(.SIM(1)) dut (
 		.CLOCK_50(CLOCK_50),
 		.RESET_BTN(RESET_BTN),
 		.KEY(KEY),
@@ -241,7 +241,7 @@ module tb_top;
 	// run normally at 3.5MHz, then - once the CPU has been running for
 	// a while - drives cpu_speed_req the way an F2/F3/F4 keypress
 	// actually would, through the real "landing" logic in
-	// spectrum_top.v (only takes effect on a slot boundary with no
+	// ep4spectrum.v (only takes effect on a slot boundary with no
 	// memory/IO cycle open and WAIT released). +SPEED forces cpu_speed
 	// directly and so never exercises that landing logic at all - this
 	// is the board's actual reported symptom: engage 14/28MHz and even
@@ -559,7 +559,7 @@ module tb_top;
 
 	// --- The arbiter's overdue backstop, and what it costs ---
 	//
-	// spectrum_top.v credits a CPU cycle as served only when the address
+	// ep4spectrum.v credits a CPU cycle as served only when the address
 	// the cycle actually fetched still matches what the CPU is asking
 	// for - Sizif's cpu_read_misaddress guard - EXCEPT when cpu_overdue
 	// is set, which accepts the answer whatever the address says. That
@@ -797,7 +797,7 @@ module tb_top;
 	//   vid    - nIRQ low, counted in ungated enables. Wall-clock
 	//            T-states, straight off the video counter. Must be 32.
 	//   cpu    - cpu_irq_n low, ungated. This is after the resync in
-	//            spectrum_top.v (clocked by cpu_clken, the UNGATED
+	//            ep4spectrum.v (clocked by cpu_clken, the UNGATED
 	//            enable), so it should also be 32; if it is not, the
 	//            resync is stretching or clipping the pulse.
 	//   exec   - cpu_irq_n low, counted in GATED enables: the T-states
@@ -1478,7 +1478,7 @@ module tb_top;
 	// Split by read/write on purpose. T80se.v asserts MREQ a T-state
 	// later for a write (the TState==2 edge, T80se.v:170) than for a
 	// read or opcode fetch (the TState==1 edge, T80se.v:157/166), and
-	// contention here is charged off MREQ going low (spectrum_top.v's
+	// contention here is charged off MREQ going low (ep4spectrum.v's
 	// cont_mem). So the delay a program is charged is expected to come
 	// out shifted between the two - and a shift that differs by access
 	// type is exactly what no single CONT_ADJ trim can straighten,
@@ -1488,7 +1488,7 @@ module tb_top;
 	// TState only advances on a gated enable, so a stall shows up as
 	// enables the CPU did not get; counting those is counting T-states.
 	// IO gets its own row. An OUT is how border stripes are drawn, and
-	// IO contention is a separate branch in spectrum_top.v (cont_io and
+	// IO contention is a separate branch in ep4spectrum.v (cont_io and
 	// the io_seq walk) from the memory one. It also has a different
 	// correct answer: a real Z80 puts IORQ in T2 of the IO cycle, which
 	// is where T80se puts it too, whereas it puts MREQ in T1 and T80se
@@ -2196,7 +2196,7 @@ module tb_top;
 integer gshow=0;
 reg gpic_d=1'b0;
 // Machine set at time zero, not at 200us. It used to be forced late, and
-// since spectrum_top defaults to MACHINE_PENT - which has no contention
+// since ep4spectrum defaults to MACHINE_PENT - which has no contention
 // at all - the first three lines of every run came out with contention
 // silently disabled. That looked exactly like a defect in the window and
 // was chased twice as one.

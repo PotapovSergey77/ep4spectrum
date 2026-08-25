@@ -5,12 +5,12 @@
 // Focused testbench for the one path that has never been simulated:
 // getting the ESXDOS image into SDRAM and reading it back out again.
 // tb_esxdos.v deliberately replaced memory with a behavioral array, so
-// sdram_ep4ce.v's command sequencing and spectrum_top.v's pacing of it
+// sdram_ep4ce.v's command sequencing and ep4spectrum.v's pacing of it
 // were only ever exercised on the board itself - where the image comes
 // back corrupt (0xF3 at offset 0 reads back as 0x01/0x00).
 //
 // This replicates clocks.v, sdram_ep4ce.v, the boot-copy state machine
-// and the SDRAM arbitration mux exactly as spectrum_top.v has them, so
+// and the SDRAM arbitration mux exactly as ep4spectrum.v has them, so
 // whatever is wrong there shows up here and can be iterated on in
 // seconds instead of a rebuild-and-reflash cycle.
 
@@ -18,7 +18,7 @@
 
 module tb_sdram;
 
-	// Two clock domains, exactly as spectrum_top.v has them: the SDRAM
+	// Two clock domains, exactly as ep4spectrum.v has them: the SDRAM
 	// controller runs on clk56, while clocks.v and all the top-level
 	// logic run on `clock`, which is clk56 divided by two (28MHz). That
 	// 2:1 relationship is what makes clkref (clocks.v counter[1], so
@@ -58,7 +58,7 @@ module tb_sdram;
 	);
 
 	// ------------------------------------------------------------
-	// cpu_cycle, exactly as spectrum_top.v derives it
+	// cpu_cycle, exactly as ep4spectrum.v derives it
 	// ------------------------------------------------------------
 	reg cpu_cycle;
 	always @(posedge clock) begin
@@ -80,7 +80,7 @@ module tb_sdram;
 	end
 
 	// ------------------------------------------------------------
-	// boot copy state machine (mirrors spectrum_top.v)
+	// boot copy state machine (mirrors ep4spectrum.v)
 	// ------------------------------------------------------------
 	reg  [9:0] boot_settle_cnt;
 	reg        boot_settle_done;
@@ -169,12 +169,12 @@ module tb_sdram;
 		end
 	end
 
-	// latch read data the same instant spectrum_top.v latches mem_do
+	// latch read data the same instant ep4spectrum.v latches mem_do
 	always @(negedge cpu_cycle) begin
 		verify_byte <= sdram_do;
 	end
 
-	// rom address mux, as in spectrum_top.v
+	// rom address mux, as in ep4spectrum.v
 	always @* begin
 		if (boot_copy_active)
 			rom_addr_r = boot_copy_addr[12:0];
@@ -183,7 +183,7 @@ module tb_sdram;
 	end
 
 	// ------------------------------------------------------------
-	// SDRAM arbitration mux (mirrors spectrum_top.v)
+	// SDRAM arbitration mux (mirrors ep4spectrum.v)
 	// ------------------------------------------------------------
 	reg [24:0] sdram_addr;
 	reg        sdram_we;

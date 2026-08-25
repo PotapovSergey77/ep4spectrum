@@ -3,7 +3,7 @@
 // 8K block ROM holding the ESXDOS DivMMC ROM image (ESXMMC.BIN from the
 // official esxdos 0.8.9 distribution, https://www.esxdos.org/), used to
 // seed SDRAM at power-up in place of the MiST IO controller's upload
-// mechanism - see the boot-copy state machine in spectrum_top.v.
+// mechanism - see the boot-copy state machine in ep4spectrum.v.
 //
 // Modeled on rom48.v/rom128.v (Quartus altsyncram ROM megafunction).
 //

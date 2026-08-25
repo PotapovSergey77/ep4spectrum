@@ -145,7 +145,7 @@ module clocks (
 			// enables in 5006, matching the 71456-against-71680 T-state
 			// shortfall that stopped Pentagon-timed demos working.
 			// The CPU is now held only when its data genuinely has not
-			// arrived, through WAIT_n off the arbiter in spectrum_top.v.
+			// arrived, through WAIT_n off the arbiter in ep4spectrum.v.
 			// Asserted one clock earlier than the obvious 7/15 so that
 			// the CPU's MREQ lands exactly on an arbiter boundary. The
 			// CPU updates its outputs on the enable, so an enable

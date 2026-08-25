@@ -45,7 +45,7 @@
 // column) part, smaller and organised differently than the 256Mbit part
 // the original sdram.v targeted, so sdram_ep4ce.v is used instead.
 
-module spectrum_top (
+module ep4spectrum (
 	// 50MHz crystal
 	CLOCK_50,
 

@@ -15,7 +15,7 @@
 //     port 0xFE takes effect where the ULA puts it.
 //   - Port 0xFF (floating bus) value exported on PORT_FF_ACTIVE/DATA.
 //   - Display fetches turned into a request/acknowledge handshake with
-//     the SDRAM arbiter in spectrum_top.v, replacing direct reads.
+//     the SDRAM arbiter in ep4spectrum.v, replacing direct reads.
 //
 // All rights reserved
 //
@@ -153,7 +153,7 @@ module video (
 	output  [7:0]   PORT_FF_DATA;
 
 
-	// Machine codes, shared with spectrum_top.v
+	// Machine codes, shared with ep4spectrum.v
 	localparam MACHINE_S48  = 2'd0;   // Sinclair 48K
 	localparam MACHINE_S128 = 2'd1;   // Sinclair 128K
 	localparam MACHINE_S3   = 2'd2;   // Sinclair +2A/+3
@@ -164,7 +164,7 @@ module video (
 	// Its raster, its interrupt and its border were all set against a
 	// real machine and are right; the trims exist for the Sinclair
 	// timings and have no business moving a picture that is already
-	// correct. Gated here rather than in spectrum_top.v so it holds for
+	// correct. Gated here rather than in ep4spectrum.v so it holds for
 	// every user of the trim, a testbench driving the module included.
 	wire signed [11:0] int_adj_eff =
 		(MACHINE == MACHINE_PENT) ? 12'sd0 : $signed(INT_ADJ);
@@ -354,7 +354,7 @@ module video (
 		// The third is T80se. This machine keys contention straight off
 		// MREQ - that is what the late Amstrad gate array does - and
 		// T80se raises MREQ a T-state later than a real Z80, as the note
-		// on T2Write in spectrum_top.v records. The other machines key on
+		// on T2Write in ep4spectrum.v records. The other machines key on
 		// the start of the cycle instead and never meet it; here every
 		// contended access is judged a T-state late without it.
 		(MACHINE == MACHINE_S3)   ? 13'sd8 : 13'sd0;
@@ -422,7 +422,7 @@ module video (
 	// the board to make up for it.
 	//
 	// That was treating the symptom. The walk now starts at the IO cycle's
-	// real T1 (spectrum_top.v, io_cyc off the microcode's IO_CYC), so the
+	// real T1 (ep4spectrum.v, io_cyc off the microcode's IO_CYC), so the
 	// missing T-state is gone at its source and the offset below is zero.
 	//
 	// The pattern was never the problem. ioscan.hex sweeps an OUT to
@@ -550,7 +550,7 @@ module video (
 	//
 	// Two further pixels on top of that, which are a correction for
 	// something outside this file. T2Write=1 on the T80se instance in
-	// spectrum_top.v moves an OUT's IORQ and WR from T3 into T2, so the
+	// ep4spectrum.v moves an OUT's IORQ and WR from T3 into T2, so the
 	// ULA port latches a border write one T-state earlier than it used
 	// to - and a T-state at 3.5MHz is two pixels, which is exactly how
 	// far left the border moved when that went in. The write has to stay
@@ -911,7 +911,7 @@ module video (
 		(blanking == 1'b0) ? border_out[0] :
 		1'b0;
 	// The line is drawn WITH bright, which changes nothing about how it
-	// looks: spectrum_top gives OSD_ACTIVE a duty of its own and ignores
+	// looks: ep4spectrum gives OSD_ACTIVE a duty of its own and ignores
 	// the colour bits entirely while it is up, and red and blue are zero
 	// here so their brightness cannot show either.
 	//
@@ -1089,7 +1089,7 @@ module video (
 	// decides where a program's border writes land - becomes 14336.
 	//
 	// This is not the one-T-state trim the note above `int_adj` in
-	// spectrum_top.v warns off. That one cancelled the resampler alone
+	// ep4spectrum.v warns off. That one cancelled the resampler alone
 	// and left the geometry a T-state short; this is both, and it is the
 	// interrupt-to-raster phase ula48's top border draws against.
 	//
@@ -1153,7 +1153,7 @@ module video (
 		// back two T-states, one of geometry and one that
 		// cpu_irq_n_sync was eating - a register that clocked nIRQ on
 		// the CPU's own enable. That register is gone,
-		// spectrum_top.v feeds the core directly now, and half the
+		// ep4spectrum.v feeds the core directly now, and half the
 		// compensation went with it while the whole of it stayed here.
 		// The interrupt has been arriving a T-state and three quarters
 		// early ever since: 57351 counts against 57344.
@@ -1285,7 +1285,7 @@ module video (
 	// position of the damage drifts from frame to frame, which is what
 	// the moving artefacts on the board look like.
 	assign VID_REQ_GEN = fetch_gen;
-	// One pulse per discarded late byte, counted in spectrum_top.v and
+	// One pulse per discarded late byte, counted in ep4spectrum.v and
 	// shown on the display so the board can say whether this ever fires.
 	assign VID_STALE = VID_DATA_VALID & (VID_DATA_GEN != fetch_gen);
 

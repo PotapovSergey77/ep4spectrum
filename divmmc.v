@@ -287,7 +287,7 @@ always @(posedge clk) begin
 		// Back on. It was switched off with a 1'b0 to find out whether it
 		// was what took the automapper away underneath the NMI handler.
 		// That turned out to be something else - F12 was fixed with a
-		// 64-T one-shot in spectrum_top and works - but the 1'b0 stayed,
+		// 64-T one-shot in ep4spectrum and works - but the 1'b0 stayed,
 		// and with it the fault described below.
 		end else if (by_3d && !mreq_n && !rd_n && !m1_n
 		             && (a[15] | a[14])) begin
@@ -357,7 +357,7 @@ wire spi_xfer_complete = seen_busy && !spi_busy;
 //    that will not boot, will not switch speed and will not run BASIC.
 //
 //  - This same spi_acc shape, before T2Write=1 was set on the T80se
-//    instance in spectrum_top.v. It was a complete no-op: T80 samples
+//    instance in ep4spectrum.v. It was a complete no-op: T80 samples
 //    WAIT at the end of TState 2, and with T2Write=0 an OUT's IORQ did
 //    not go low until T3, so the wait was always exactly one T-state
 //    too late to be seen. It compiled, closed timing, passed every

@@ -32,8 +32,14 @@ simulation/modelsim/*.sft
 simulation/modelsim/48.hex
 simulation/modelsim/esxmmc.hex
 simulation/modelsim/vol_table.hex
-output_files/*.pof
-output_files/*.cdf
+# Quartus writes its whole output - reports, summaries, the working .sof
+# and .pof under the revision name - into release/. Only the finished
+# pairs are kept: YYYYMMDD-hhhh.sof and .pof, dated and stamped with the
+# commit they came from by build.sh.
+/release/*
+!/release/20??????-????.sof
+!/release/20??????-????.pof
+/output_files/
 simulation/modelsim/*.xrf
 simulation/modelsim/vsim_*.log
 simulation/modelsim/*.do

@@ -151,7 +151,7 @@ assign sd_data = (we && q >= 3'd2 && q <= 3'd4) ?
 // (q=7, measured in simulation), instead of presenting the raw pins and
 // leaving the consumer to sample at exactly the right instant.
 //
-// spectrum_top.v captures this into mem_do on the falling edge of
+// ep4spectrum.v captures this into mem_do on the falling edge of
 // cpu_cycle - a derived signal on ordinary routing, so on real silicon
 // its skew decides precisely when the data bus is sampled. Combinational
 // dout is only valid for a single ~18ns window, so a small skew samples

@@ -1,24 +1,24 @@
 # -------------------------------------------------------------------------- #
 #
 # ZX Spectrum for the EP4CE6E22C8 (OMDAZZ / RZ-EasyFPGA A2.2) dev board.
-# Adapted from a MiST-board oriented project (spectrum_mist.v, kept in the
-# tree for reference but no longer built - see spectrum_top.v).
+# Adapted from a MiST-board oriented project - see ep4spectrum.v for what
+# that port left behind and what replaced it.
 #
 # -------------------------------------------------------------------------- #
 
 set_global_assignment -name FAMILY "Cyclone IV E"
 set_global_assignment -name DEVICE EP4CE6E22C8
-set_global_assignment -name TOP_LEVEL_ENTITY spectrum_top
+set_global_assignment -name TOP_LEVEL_ENTITY ep4spectrum
 set_global_assignment -name ORIGINAL_QUARTUS_VERSION 13.1
 set_global_assignment -name LAST_QUARTUS_VERSION 13.1
-set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY release
 set_global_assignment -name MIN_CORE_JUNCTION_TEMP 0
 set_global_assignment -name MAX_CORE_JUNCTION_TEMP 85
 set_global_assignment -name DEVICE_FILTER_PACKAGE EQFP
 set_global_assignment -name DEVICE_FILTER_PIN_COUNT 144
 set_global_assignment -name DEVICE_FILTER_SPEED_GRADE 8
 
-set_global_assignment -name GENERATE_RBF_FILE ON
+set_global_assignment -name GENERATE_RBF_FILE OFF
 set_global_assignment -name FORCE_CONFIGURATION_VCCIO ON
 set_global_assignment -name STRATIX_DEVICE_IO_STANDARD "3.3-V LVTTL"
 
@@ -270,7 +270,7 @@ set_global_assignment -name VERILOG_FILE clocks.v
 set_global_assignment -name VERILOG_FILE keyboard.v
 set_global_assignment -name VERILOG_FILE pll_ep4ce.v
 set_global_assignment -name VERILOG_FILE ps2_intf.v
-set_global_assignment -name VERILOG_FILE spectrum_top.v
+set_global_assignment -name VERILOG_FILE ep4spectrum.v
 set_global_assignment -name VERILOG_FILE ula_port.v
 set_global_assignment -name VERILOG_FILE bdi.v
 set_global_assignment -name VERILOG_FILE zcontroller.v
