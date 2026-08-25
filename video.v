@@ -605,10 +605,6 @@ module video (
 	reg     [2:0]   border_d1  = 3'b000;
 	reg     [2:0]   border_d2  = 3'b000;
 	reg     [2:0]   border_d3  = 3'b000;
-	reg     [2:0]   border_d4  = 3'b000;
-	reg     [2:0]   border_d5  = 3'b000;
-	reg     [2:0]   border_d6  = 3'b000;
-	reg     [2:0]   border_d7  = 3'b000;
 	// The tap, and the second half of the border trim.
 	//
 	// The group phase above can place the latch anywhere inside a group,
@@ -643,10 +639,6 @@ module video (
 			border_d1      <= 3'b000;
 			border_d2      <= 3'b000;
 			border_d3      <= 3'b000;
-			border_d4      <= 3'b000;
-			border_d5      <= 3'b000;
-			border_d6      <= 3'b000;
-			border_d7      <= 3'b000;
 		end else if (CLKEN == 1'b1) begin
 			if (border_update == 1'b1)
 				border_latched <= BORDER_IN;
@@ -654,10 +646,6 @@ module video (
 				border_d1  <= border_latched;
 				border_d2  <= border_d1;
 				border_d3  <= border_d2;
-				border_d4  <= border_d3;
-				border_d5  <= border_d4;
-				border_d6  <= border_d5;
-				border_d7  <= border_d6;
 				// 48K taps four pixels further down the chain, and its
 				// interrupt sits two T-states earlier to match.
 				//

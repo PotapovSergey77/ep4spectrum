@@ -75,12 +75,6 @@ module keyboard (
 	F4,
 	F9,
 	F10,
-	PGUP,
-	PGDN,
-	HOME,
-	END,
-	KPSUB,
-	KPADD,
 	PRTSCR,
 	SCROLL,
 	SPACEKEY,
@@ -108,18 +102,6 @@ module keyboard (
 	output reg      F3;
 	output reg      F4;
 	output reg      F10;
-	// Page Up / Page Down: moves the whole frame up or down against the
-	// raster, a line a press, so border effects can be lined up by eye.
-	output reg      PGUP;
-	output reg      PGDN;
-	// Home / End: same idea horizontally - moves the interrupt within
-	// the line, a CPU T-state (two pixels) a press.
-	output reg      HOME;
-	output reg      END;
-	// Keypad - and +: trims the IO contention window alone, a CPU
-	// T-state a press, without touching the memory window.
-	output reg      KPSUB;
-	output reg      KPADD;
 	// Print Screen: shows the on-screen line without changing anything.
 	// Scroll Lock: switches the video output between 15 and 31 kHz.
 	output reg      PRTSCR;
@@ -209,12 +191,6 @@ module keyboard (
 			F3  <= 1'b0;
 			F4  <= 1'b0;
 			F10 <= 1'b0;
-			PGUP <= 1'b0;
-			PGDN <= 1'b0;
-			HOME <= 1'b0;
-			END  <= 1'b0;
-			KPSUB  <= 1'b0;
-			KPADD  <= 1'b0;
 			PRTSCR <= 1'b0;
 			SCROLL <= 1'b0;
 			SPACEKEY <= 1'b0;
@@ -408,12 +384,6 @@ module keyboard (
 						8'h83: F7  <= ~release_key; // F7 key  -> Sinclair +2A/+3 timings
 						8'h01: F9  <= ~release_key; // F9 key  -> 48K memory
 						8'h09: F10 <= ~release_key; // F10 key -> 128K memory
-						8'h7d: PGUP <= ~release_key; // Page Up   -> frame up a line
-						8'h7a: PGDN <= ~release_key; // Page Down -> frame down a line
-						8'h6c: HOME <= ~release_key; // Home -> INT one T-state earlier
-						8'h69: END  <= ~release_key; // End  -> INT one T-state later
-						8'h7b: KPSUB <= ~release_key; // Keypad -  -> IO window a T-state early
-						8'h79: KPADD <= ~release_key; // Keypad +
 						// Print Screen arrives as E0 7C - the same code as
 						// keypad *, which is why the extended flag has to be
 						// tested here and nowhere else in this case list.

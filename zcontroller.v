@@ -55,7 +55,6 @@ module zcontroller (
 	wire sel_dat = (a == 8'h57);
 	wire sel_ctl = (a == 8'h77);
 
-	reg  sd_pwr = 1'b0;
 	reg  [7:0] ctrl_r = 8'h00;   // last byte written to the control port
 
 	// One transfer per bus cycle, taken on the access starting rather
@@ -80,7 +79,6 @@ module zcontroller (
 	always @(posedge clk) begin
 		if (reset_n == 1'b0) begin
 			sd_cs_n   <= 1'b1;
-			sd_pwr    <= 1'b0;
 			ctrl_r    <= 8'h00;
 			spi_acc_d <= 1'b0;
 			seen_busy <= 1'b0;
@@ -89,7 +87,6 @@ module zcontroller (
 			spi_rx_strobe = 1'b0;
 
 			if (enable == 1'b1 && sel_ctl == 1'b1 && wr_n == 1'b0) begin
-				sd_pwr  <= din[0];
 				sd_cs_n <= din[1];
 				ctrl_r  <= din;
 			end

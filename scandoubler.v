@@ -62,7 +62,6 @@ module scandoubler (
 	// the rising edge it IS the width - measured every line rather than
 	// written down here, which keeps this free of any machine's numbers.
 	reg [9:0]  sync_len;
-	reg        resync;
 	// Declared before use. Quartus accepts a name used before it is
 	// declared and quietly makes an implicit one-bit net of it, which is
 	// how wr_line came to be declared twice here without a word said.
@@ -173,7 +172,6 @@ module scandoubler (
 			out_x    <= 10'd0;
 			out_half <= 1'b0;
 			line_len <= 10'd896;
-			resync   <= 1'b0;
 			R_OUT    <= 4'b0;
 			G_OUT    <= 4'b0;
 			B_OUT    <= 4'b0;

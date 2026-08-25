@@ -36,6 +36,11 @@ fi
 # about when or from what.
 stamp=$(date +%Y%m%d)
 hash=$(git rev-parse --short=4 HEAD 2>/dev/null || echo 0000)
+# A build from a modified tree is not the commit it names, so say so.
+# Without this the pair carries the hash of the last commit while its
+# contents are something else entirely - the one thing the naming exists
+# to prevent.
+git diff --quiet HEAD 2>/dev/null || hash="$hash-dirty"
 name="release/$stamp-$hash"
 
 cp release/spectrum.sof "$name.sof"
