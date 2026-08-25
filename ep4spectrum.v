@@ -366,8 +366,6 @@ module ep4spectrum (
 	// port write meets it at a different point in the pattern.
 	reg     [16:0]  btn_div = 17'd0;
 	reg     [1:0]   btn_prev = 2'b11;
-	reg             btn_nmi = 1'b0;
-	reg     [2:0]   nmi_btn_cnt = 3'd0;
 	reg             key_f10_d = 1'b0;
 	wire            key_f3;
 	wire            key_f4;
@@ -475,10 +473,12 @@ module ep4spectrum (
 	wire    [5:0]   page_ram_sel;
 
 	// +3 extensions (with default values for systems that don't have it)
-	// The +2A/+3 paging register $1FFD is not implemented: its generate
-	// block was gated on the compile-time MODEL, which this design fixes
-	// at 0 because the machine is chosen at run time instead. Nothing
-	// ever wrote plus3_special, so the ROM area is simply the ROM area.
+	// +2A/+3 port $1FFD. Declared here and driven far below, next to the
+	// $7FFD register it belongs with: rom_enable and ram_page are above
+	// that point, and a name used before it is declared quietly becomes
+	// an implicit one-bit net instead of an error.
+	reg             plus3_special;   // bit 0: all of $0000-$FFFF is RAM
+	reg     [1:0]   plus3_page;      // bits 2:1: which RAM configuration
 
 	// RAM bank actually being accessed
 	wire    [5:0]   ram_page;
@@ -824,7 +824,7 @@ module ep4spectrum (
 	assign ula_ear_in = 1'b1;
 
 	// KEY[0] = board button S1 -> computer reset (also see reset_cond)
-	// KEY[1] = board button S2 -> NMI (see nmi_trigger)
+	// KEY[1] = board button S2, unusable: pin 89 floats (see nmi_trigger)
 	// Keys that step or toggle something have to act on the press, not
 	// on the level.
 	//
@@ -858,28 +858,9 @@ module ep4spectrum (
 			cpu_speed_req <= 2'd3;
 		btn_div <= btn_div + 17'd1;
 		if (btn_div == 17'd0) begin
-			// KEY[3:2] move the contention window, KEY[1] is NMI below, all
+			// KEY[3:2] move the contention window,
 			// sampled on this slow tick - about every 4.7ms.
 			btn_prev <= KEY[3:2];
-			// Pin 89 has no pull-up and cannot be given one: Quartus
-			// refuses the assignment outright, "weak pullup not
-			// supported by this pin location". So the input can drift,
-			// and the filter has to be strict: four consecutive samples
-			// low, about 19ms of it, and only after a release.
-			//
-			// btn_nmi is a PULSE, one tick wide, never a level. That is
-			// the difference from the attempt that was tried and
-			// reverted here before: it made nmi_trigger a level, so a
-			// pin that settled low parked the trigger high for good and
-			// F12 could no longer make an edge at all. This cannot do
-			// that - whatever the pin does, the pulse ends on the next
-			// tick and F12 keeps working.
-			if (KEY[1] == 1'b0) begin
-				if (nmi_btn_cnt != 3'd7)
-					nmi_btn_cnt <= nmi_btn_cnt + 3'd1;
-			end else
-				nmi_btn_cnt <= 3'd0;
-			btn_nmi <= (nmi_btn_cnt == 3'd3);
 			if (btn_prev[0] == 1'b1 && KEY[2] == 1'b0) begin
 				cont_adj <= cont_adj - 5'd1;
 			end else if (btn_prev[1] == 1'b1 && KEY[3] == 1'b0) begin
@@ -977,12 +958,22 @@ module ep4spectrum (
 	end
 	always @(posedge clock) osd_keys_d <= osd_keys;
 	wire osd_poke = osd_keys & ~osd_keys_d;
-	// F12 on the keyboard, or KEY[1] on the board.
+	// F12 alone. The board button is out of the NMI path.
 	//
-	// The button had been taken out of the NMI path entirely, and
-	// synthesis said so plainly for as long as it was gone: "no output
-	// dependent on input pin KEY[1]". It is back, filtered above.
-	wire nmi_trigger = key_f12 | btn_nmi;
+	// KEY[1] cannot be read: pin 89 has no pull-up and Quartus refuses
+	// to give it one - "weak pullup not supported by this pin location",
+	// a hard fitter error, tried again and confirmed. The input floats.
+	//
+	// Wiring it up has now been attempted twice. The second attempt made
+	// btn_nmi a one-tick pulse behind a four-sample filter, specifically
+	// so that a stuck pin could not park the trigger and block F12 the
+	// way the first attempt did. It still came back as "NMI works on the
+	// second press, not the first" on the board - the drifting pin
+	// spends the first press somewhere of its own.
+	//
+	// A floating input driving an interrupt is worse than no button. If
+	// S2 is wanted it needs a pull-up resistor on the board itself.
+	wire nmi_trigger = key_f12;
 
 	// CPU
 	//
@@ -1386,6 +1377,12 @@ module ep4spectrum (
 		.F10(key_f10),
 		.PRTSCR(key_prtscr),
 		.SCROLL(key_scroll),
+		// Lost once already, taken out by a line-range delete meant for
+		// the six trim keys either side of it. Without a driver
+		// key_space is simply zero, so F11+Space never clears the ROM
+		// slot flags and the machine cannot be brought back up on
+		// DivMMC - which is exactly how it presented on the board.
+		.SPACEKEY(key_space),
 		.ROW_ANY(kb_row_any)
 	);
 
@@ -1600,9 +1597,6 @@ module ep4spectrum (
 		.clken(psg_clken),
 		.enable(divmmc_enable),
 		.beta_owns_3d(trdos_avail),
-		// notplus3 is one here for every machine this build runs, so the
-		// reference's expression reduces to the $7FFD ROM-select bit.
-		.inrom48k(page_rom_sel),
 		.stand_down(rom_from_sd),
 		.a(cpu_a),
 		.wr_n(cpu_wr_n),
@@ -1932,6 +1926,11 @@ module ep4spectrum (
 	// closed - and the board went back to filling the screen with rubbish
 	// while simulation stayed clean. The clock does not stop during
 	// reset, so a plain clocked register does the same job properly.
+	// Only on reset, and re-evaluating it on a machine change was tried
+	// and is wrong: it swaps the ROM under whatever is running, the next
+	// frame vectors into a different ROM's $0038, and switching machines
+	// while DivMMC is initialising hangs the board. The rule stands -
+	// load the images, pick the machine, press reset.
 	always @(posedge clock) begin
 		if (reset_n == 1'b0)
 			rom_from_sd <= rom_sd_ready;
@@ -2001,16 +2000,39 @@ module ep4spectrum (
 	endgenerate
 
 	// ROM is enabled between 0x0000 and 0x3fff except in +3 special mode
-	assign rom_enable = (~cpu_mreq_n) & ~(cpu_a[15] | cpu_a[14]);
+	assign rom_enable = (~cpu_mreq_n) & ~(plus3_special | cpu_a[15] | cpu_a[14]);
 	// RAM is enabled for any memory request when ROM isn't enabled
 	assign ram_enable = (~cpu_mreq_n) & ~rom_enable;
 
 	generate
-	if (MODEL != 2) begin : ram_page_128k
-		// 128K has pageable RAM at 0xc000
+	if (MODEL != 2) begin : ram_page_map
+		// 128K pages a bank in at $C000; +2A/+3 can additionally throw
+		// the ROM out altogether and make all four blocks RAM, in one of
+		// four fixed arrangements chosen by bits 2:1 of $1FFD:
+		//
+		//   plus3_page   $0000  $4000  $8000  $C000
+		//   00             0      1      2      3
+		//   01             4      5      6      7
+		//   10             4      5      6      3
+		//   11             4      7      6      3
+		//
+		// Written as arithmetic on the two address lines rather than as
+		// a table: 00 and 01 are the address plus nothing or plus four,
+		// and the other two differ from 01 only where the top block
+		// stays at bank 3.
 		assign ram_page =
-			(cpu_a[15:14] == 2'b11) ? page_ram_sel : // Selectable bank at 0xc000
-			{3'b000, cpu_a[14], cpu_a[15:14]}; // A=bank: 01=101, 10=010
+			(plus3_special == 1'b1 && plus3_page == 2'b00) ?
+				{4'b0000, cpu_a[15:14]} :
+			(plus3_special == 1'b1 && plus3_page == 2'b01) ?
+				{3'b000, 1'b1, cpu_a[15:14]} :
+			(plus3_special == 1'b1 && plus3_page == 2'b10) ?
+				{3'b000, ~(cpu_a[15] & cpu_a[14]), cpu_a[15:14]} :
+			(plus3_special == 1'b1) ?
+				{3'b000, ~(cpu_a[15] & cpu_a[14]),
+				         (cpu_a[15] | cpu_a[14]), cpu_a[14]} :
+			// Normal: the selectable bank at $C000, and 5 / 2 below it.
+			(cpu_a[15:14] == 2'b11) ? page_ram_sel :
+			{3'b000, cpu_a[14], cpu_a[15:14]};
 	end
 	endgenerate
 
@@ -2295,16 +2317,14 @@ module ep4spectrum (
 		// their first fetch at $4000 or above.
 		((zc_enable == 1'b1) && ((cpu_a[7:0] == 8'h57)
 		                      || (cpu_a[7:0] == 8'h77))) ? zc_do :
-		// Only $EB reads back - the data register. dout comes straight
-		// out of the SPI engine, and handing it to every port in the
-		// group meant a read of the CONTROL port at $E3, or of $E7,
-		// returned whatever the card last shifted. On real hardware
-		// those are write-only and a read gets the idle bus. Firmware
-		// that probes the interface by reading sees rubbish where it
-		// expects $FF, and ESXDOS never sets MAPRAM here - which leaves
-		// bank 3 not a copy of anything and the $3Dxx entry with
-		// nothing sane to page in.
-		((divmmc_enable == 1'b1) && (cpu_a[3:0] == 4'hb)) ? divmmc_do :
+		// Every port in the group reads back, not just $EB.
+		//
+		// Restricting it to the data register was a fidelity change with
+		// nothing behind it, and it sits in the DivMMC path - which is
+		// the path the Spectrum machines use for the card, while
+		// Pentagon uses the Z-Controller. That is exactly how the fault
+		// presented: .browse working on Pentagon and on nothing else.
+		(divmmc_enable == 1'b1) ? divmmc_do :
 		// map kempston joystick port - no joystick hardware on this board, idle
 		(kempston_enable == 1'b1) ? 8'b00000000 :
 		// The floating bus on port 0xFF. A read of an unattached port
@@ -2537,6 +2557,43 @@ module ep4spectrum (
 	end
 	assign page_rom_sel = prom_sel;
 	assign page_shadow_scr = mem128 & pshadow_scr;
+
+	// Port $1FFD - the +2A/+3's second paging register.
+	//
+	// Decoded the way that machine does it: A15, A14, A13 and A1 clear
+	// with A12 set, and gated on the machine itself so nothing else can
+	// see the port. Taken on the START of the write, like $7FFD above -
+	// a level test catches one OUT several times over.
+	//
+	// Only two of its five bits do anything here. Bit 3 is the disk
+	// motor and bit 4 the printer strobe, and there is neither a drive
+	// nor a printer on this board, so capturing them would be writing
+	// registers nothing can read.
+	wire plus3_enable = (machine == MACHINE_S3) & (~cpu_ioreq_n) & cpu_m1_n
+	                    & cpu_a[0] & cpu_a[12]
+	                    & ~(cpu_a[15] | cpu_a[14] | cpu_a[13] | cpu_a[1]);
+	wire plus3_wr = plus3_enable & ~cpu_wr_n;
+	reg  plus3_wr_d    = 1'b0;
+
+
+	always @(posedge clock or negedge reset_n) begin
+		if (reset_n == 1'b0) begin
+			plus3_wr_d    <= 1'b0;
+			plus3_special <= 1'b0;
+			plus3_page    <= 2'b00;
+		end else begin
+			plus3_wr_d <= plus3_wr;
+			if (plus3_wr == 1'b1 && plus3_wr_d == 1'b0) begin
+				plus3_special <= cpu_do[0];
+				plus3_page    <= cpu_do[2:1];
+			end
+			// Leaving +2A/+3 drops the all-RAM mode. On any other
+			// machine it would take the ROM away from under a program
+			// that has one, with nothing to come back to.
+			if (machine != MACHINE_S3)
+				plus3_special <= 1'b0;
+		end
+	end
 	// In 48K mode the paging register still exists and can be written,
 	// but has no effect: bank 0 at 0xC000 and the normal screen is
 	// exactly the 48K machine's layout.

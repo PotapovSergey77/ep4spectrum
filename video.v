@@ -813,7 +813,9 @@ module video (
 	reg        osd_ex_now = 1'b0, osd_ex_old = 1'b0;
 	reg  [6:0] osd_timer  = 7'd0;
 	reg  [1:0] osd_state  = 2'd0;   // 0 off, 1 showing the old, 2 the new
-	reg        osd_req    = 1'b0;   // a key press waiting to be acted on
+	// A key press waiting to be acted on, counted down in frames rather
+	// than acted on at once - see where it is used below.
+	reg  [2:0] osd_req    = 3'd0;
 
 	always @(posedge CLK or negedge nRESET) begin
 		if (nRESET == 1'b0) begin
@@ -823,14 +825,14 @@ module video (
 			osd_sp_now <= OSD_SPEED; osd_sp_old <= OSD_SPEED;
 			osd_ex_now <= OSD_EXT; osd_ex_old <= OSD_EXT;
 			osd_vprev <= 1'b0;
-			osd_req <= 1'b0;
+			osd_req <= 3'd0;
 		end else if (OSD_POKE == 1'b1) begin
 			// Set on ANY clock, not inside the CLKEN branch below. The
 			// press is one clock of 28MHz wide and the video enable comes
 			// every other clock, so half of them landed between enables
 			// and vanished - which on the board was the line appearing
 			// only on the second press.
-			osd_req <= 1'b1;
+			osd_req <= 3'd3;
 		end else if (CLKEN == 1'b1) begin
 			osd_vprev <= (vcounter[9:1] == 9'd0);
 
@@ -839,7 +841,7 @@ module video (
 				osd_mc_old <= osd_mc_now; osd_mc_now <= MACHINE;
 				osd_sp_old <= osd_sp_now; osd_sp_now <= OSD_SPEED;
 				osd_ex_old <= osd_ex_now; osd_ex_now <= OSD_EXT;
-				osd_req    <= 1'b0;
+				osd_req    <= 3'd0;
 				if (osd_state == 2'd0) begin
 					// Coming from nothing: hold what it was for half a
 					// second first, so the change can be seen happening.
@@ -852,13 +854,30 @@ module video (
 					osd_state <= 2'd2;
 					osd_timer <= 7'd100;
 				end
-			end else if (osd_req == 1'b1) begin
-				// A key that selects what is already selected. Nothing
-				// changes, and the question the press asked still
-				// deserves an answer.
-				osd_req   <= 1'b0;
-				osd_state <= 2'd2;
-				osd_timer <= 7'd100;
+			end else if (osd_req != 3'd0) begin
+				// Not acted on the moment the key arrives.
+				//
+				// A frequency change lands a few microseconds later than
+				// the press: the CPU only changes speed on a safe
+				// boundary. Acting at once meant the test above had not
+				// seen the change yet, this branch ran instead, and the
+				// line jumped straight to the new value - the one case
+				// where the half second of the old value went missing.
+				// The machine and the memory size change in the same
+				// clock as the key, which is why only the frequency
+				// showed it.
+				//
+				// So the press waits a couple of frames. If a value
+				// really changes, the branch above cancels the wait and
+				// does it properly; if nothing changes, the press still
+				// gets its answer here.
+				if (osd_frame == 1'b1) begin
+					osd_req <= osd_req - 3'd1;
+					if (osd_req == 3'd1) begin
+						osd_state <= 2'd2;
+						osd_timer <= 7'd100;
+					end
+				end
 			end else if (osd_frame == 1'b1) begin
 				if (osd_timer != 7'd0)
 					osd_timer <= osd_timer - 7'd1;

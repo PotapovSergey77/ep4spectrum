@@ -35,14 +35,6 @@ module divmmc (
 	// would clear the automapper is never executed, and paged_in stays
 	// stuck at one for as long as the machine runs.
 	input          beta_owns_3d,
-	// The 48K BASIC ROM is the one currently selected - bit 4 of $7FFD.
-	// The $3Dxx entry is gated on it, the way the reference DivMMC gates
-	// its own: inrom48k = (banco_rom[1] | notplus3) & banco_rom[0], with
-	// banco_rom[0] that same bit and its register clear from reset. On a
-	// 48K nothing ever writes $7FFD, so there the entry never fires at
-	// all - which is why Test v4.3 probing for TR-DOS survives on real
-	// hardware and died here.
-	input          inrom48k,
 
 	// The machine ROM comes from the SD slots: DivMMC is not part of the
 	// memory map at all, so its automapper must not arm either.
@@ -114,7 +106,7 @@ reg by_3d;
 localparam TRAP_3D = 1'b1;
 
 wire auto_now = (TRAP_3D && !mreq_n && !rd_n && !m1_n
-                 && a[15:8] == 8'h3D && !beta_owns_3d && inrom48k);
+                 && a[15:8] == 8'h3D && !beta_owns_3d);
 assign paged_in = paged_in_r | auto_now;
 
 // Declared before use: Quartus accepts use-before-declaration,
@@ -246,21 +238,22 @@ always @(posedge clk) begin
 			m1_trigger <= 1'b0;
 			paged_in_r <= 1'b0;
 		end else if (!mreq_n && !rd_n && !m1_n &&
-			// $0000 unconditionally, the other five only while the 48K
-			// BASIC ROM is selected - the reference gates them exactly
-			// so: "a==16'h0000 || inrom48k && (a==16'h0008 || ...)".
-			// On a 48K nothing writes $7FFD, so inrom48k is false and
-			// only the reset entry arms the automapper there. Ours armed
-			// on every interrupt and every RST, which is why DivMMC was
-			// still in the map at the hang with the $3Dxx entry closed.
-			((a==16'h0000) || (inrom48k &&
-			 ((a==16'h0008) || (a==16'h0038) ||
-			  (a==16'h0066) || (a==16'h04C6) || (a==16'h0562))))) begin
+			// All seven entries, unconditionally.
+			//
+			// The reference DivMMC gates six of them on "the 48K BASIC
+			// ROM is currently selected", and copying that here broke
+			// ESXDOS outright. That condition is bit 4 of $7FFD, which
+			// is clear out of reset, so on a 48K only the $0000 entry
+			// ever armed the automapper - and $0008 is the ESXDOS API,
+			// the way every dot command is called. .browse answered with
+			// an error and the machine could not be brought back up.
+			((a==16'h0000) || (a==16'h0008) || (a==16'h0038) ||
+			 (a==16'h0066) || (a==16'h04C6) || (a==16'h0562))) begin
 			// activate automapper after this cycle
 			m1_trigger <= 1'b1;
 			by_3d      <= 1'b0;
 		end else if (TRAP_3D && !mreq_n && !rd_n && !m1_n && a[15:8]==8'h3D
-		             && !beta_owns_3d && inrom48k) begin
+		             && !beta_owns_3d) begin
 			// Activate the automapper immediately, before the byte is
 			// fetched.
 			//
@@ -289,7 +282,10 @@ always @(posedge clk) begin
 		// That turned out to be something else - F12 was fixed with a
 		// 64-T one-shot in ep4spectrum and works - but the 1'b0 stayed,
 		// and with it the fault described below.
-		end else if (by_3d && !mreq_n && !rd_n && !m1_n
+		// Switched off again with the 1'b0 it spent a long time behind.
+		// Turning it on was speculative, fixed nothing, and lives in the
+		// DivMMC path that only the Spectrum machines use for the card.
+		end else if (1'b0 && by_3d && !mreq_n && !rd_n && !m1_n
 		             && (a[15] | a[14])) begin
 			// Armed through $3Dxx, and now fetching outside the ROM
 			// area: let go.
