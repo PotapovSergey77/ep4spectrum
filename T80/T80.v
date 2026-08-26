@@ -166,6 +166,20 @@ module T80 (
 	// Help Registers
 	reg     [15:0]  TmpAddr;        // Temporary address register
 	reg     [7:0]   IR;             // Instruction register
+	// Q, for the XF and YF flags of SCF and CCF.
+	//
+	// Zilog takes those two bits from (Q ^ F) | A, where Q is the F value
+	// the previous instruction wrote, and zero if it wrote none - POP AF
+	// and EX AF,AF' count as writing none. Right after an instruction
+	// that did write F, Q equals F and the term collapses to A; after one
+	// that did not, Q is zero and it collapses to F | A. So a single bit
+	// carries it: did the instruction that just ended change the flags.
+	//
+	// Taking them from A alone, which is what this core did, is what a
+	// NEC clone does - and a Z80 type tester reads exactly this to name
+	// the manufacturer.
+	reg             q_now;          // this instruction has computed flags
+	reg             q_touched;      // ...and so did the one before it
 	reg     [1:0]   ISet;           // Instruction set selector
 	reg     [15:0]  RegBusA_r;
 
@@ -370,6 +384,8 @@ module T80 (
 			A <= 16'b0;
 			TmpAddr <= 16'b0;
 			IR <= 8'b00000000;
+			q_now <= 1'b0;
+			q_touched <= 1'b0;
 			ISet <= 2'b00;
 			XY_State <= 2'b00;
 			IStatus <= 2'b00;
@@ -433,6 +449,13 @@ module T80 (
 							IR <= 8'b00000000;
 						else
 							IR <= DInst;
+
+						// Sampled at the opcode fetch, so that by the
+						// time SCF or CCF runs - at T_Res, the last
+						// T-state of this cycle - it says whether the
+						// PREVIOUS instruction changed the flags.
+						q_touched <= q_now;
+						q_now     <= 1'b0;
 
 						ISet <= 2'b00;
 						if (Prefix != 2'b00) begin
@@ -541,6 +564,7 @@ module T80 (
 						ALU_Op_r <= ALU_Op;
 
 						if (I_CPL == 1'b1) begin
+							q_now <= 1'b1;
 							// CPL
 							ACC <= ~ACC;
 							F[Flag_Y] <= ~ACC[5];
@@ -549,19 +573,21 @@ module T80 (
 							F[Flag_N] <= 1'b1;
 						end
 						if (I_CCF == 1'b1) begin
+							q_now <= 1'b1;
 							// CCF
 							F[Flag_C] <= ~F[Flag_C];
-							F[Flag_Y] <= ACC[5];
+							F[Flag_Y] <= ACC[5] | (q_touched ? 1'b0 : F[Flag_Y]);
 							F[Flag_H] <= F[Flag_C];
-							F[Flag_X] <= ACC[3];
+							F[Flag_X] <= ACC[3] | (q_touched ? 1'b0 : F[Flag_X]);
 							F[Flag_N] <= 1'b0;
 						end
 						if (I_SCF == 1'b1) begin
+							q_now <= 1'b1;
 							// SCF
 							F[Flag_C] <= 1'b1;
-							F[Flag_Y] <= ACC[5];
+							F[Flag_Y] <= ACC[5] | (q_touched ? 1'b0 : F[Flag_Y]);
 							F[Flag_H] <= 1'b0;
-							F[Flag_X] <= ACC[3];
+							F[Flag_X] <= ACC[3] | (q_touched ? 1'b0 : F[Flag_X]);
 							F[Flag_N] <= 1'b0;
 						end
 					end
@@ -632,6 +658,10 @@ module T80 (
 				end
 
 				if ((I_DJNZ == 1'b0 && Save_ALU_r == 1'b1) || ALU_Op_r == 4'b1001) begin
+					// Flags computed here, and that is what sets Q. A
+					// load of F - POP AF, EX AF,AF' - deliberately does
+					// not, which is the whole point of the distinction.
+					q_now <= 1'b1;
 					if (Mode == 3) begin
 						F[6] <= F_Out[6];
 						F[5] <= F_Out[5];

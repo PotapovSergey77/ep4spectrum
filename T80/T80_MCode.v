@@ -2200,10 +2200,8 @@ module T80_MCode (
 				end
 				3: begin
 					if (IR[3] == 1'b0) begin
-						//IncDec_16 <= 4'b0010;
 						IncDec_16 <= 4'b0110;
 					end else begin
-						//IncDec_16 <= 4'b1010;
 						IncDec_16 <= 4'b1110;
 					end
 					TStates <= 3'b100;
@@ -2261,14 +2259,14 @@ module T80_MCode (
 
 		if (Mode == 1) begin
 			if (MCycle == 3'b001) begin
-//              TStates <= 3'b100;
+				// M1 keeps the length the decode above gave it.
 			end else begin
 				TStates <= 3'b011;
 			end
 		end
 		if (Mode == 3) begin
 			if (MCycle == 3'b001) begin
-//              TStates <= 3'b100;
+				// M1 keeps the length the decode above gave it.
 			end else begin
 				TStates <= 3'b100;
 			end
