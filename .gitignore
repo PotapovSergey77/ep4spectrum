@@ -32,11 +32,13 @@ simulation/modelsim/*.sft
 simulation/modelsim/48.hex
 simulation/modelsim/esxmmc.hex
 simulation/modelsim/vol_table.hex
-# Quartus writes its whole output into release/, and build.sh then
-# makes the pair that gets flashed. None of it is committed: a build
-# artefact is reproducible from the tree it was built from, and the
-# name already carries that commit.
-/release/
+# Quartus writes its whole output - reports, summaries, the working .sof
+# and .pof under the revision name - into release/. Only the finished
+# pairs are kept: YYYYMMDD-hhhh.sof and .pof, dated and stamped with the
+# commit they came from by build.sh.
+/release/*
+!/release/20??????-????.sof
+!/release/20??????-????.pof
 /output_files/
 simulation/modelsim/*.xrf
 simulation/modelsim/vsim_*.log
