@@ -64,6 +64,14 @@ module ep4spectrum (
 	VGA_R,
 	VGA_G,
 	VGA_B,
+
+	// 2.4" parallel TFT, for identification. The data lines turn around
+	// for the reads, so the bus is inout.
+	TFT_DB,
+	TFT_RS,
+	TFT_WR_n,
+	TFT_RD_n,
+	TFT_RST_n,
 	VGA_HS,
 	VGA_VS,
 
@@ -126,6 +134,11 @@ module ep4spectrum (
 	output          VGA_R;
 	output          VGA_G;
 	output          VGA_B;
+	inout   [7:0]   TFT_DB;
+	output          TFT_RS;
+	output          TFT_WR_n;
+	output          TFT_RD_n;
+	output          TFT_RST_n;
 	output          VGA_HS;
 	output          VGA_VS;
 
@@ -1296,7 +1309,20 @@ module ep4spectrum (
 	// video.v - measured, IO was coming out a T-state short of the
 	// published table at every phase, and that is the ONLY contention
 	// path a border-drawing OUT goes through.
-	wire contention = (machine != MACHINE_PENT)
+	// Only at 3.5 MHz.
+	//
+	// Contention is counted off the VIDEO counter, not the CPU, so a
+	// contended access costs the same wall-clock time whatever the CPU
+	// is doing: the six T-states of delay it is worth at 3.5MHz are
+	// forty-eight T-states' worth at 28MHz. A program living in
+	// $4000-$7FFF therefore gained almost nothing from turbo - measured,
+	// 28MHz gave eight times the clock enables and 2.75 times the work,
+	// with 26366 of 40242 samples stalled on WAIT.
+	//
+	// Reproducing 3.5MHz ULA contention at 28MHz is not what a real
+	// turbo machine does either. So above 3.5MHz there is none, and the
+	// F10 setting applies where it means something.
+	wire contention = (machine != MACHINE_PENT) & (cpu_speed == 2'd0)
 	                  & ((cont_mode == 2'd2) ?
 	                        ((vid_contention & cont_mem) |
 	                         (vid_contention_io & cont_io)) :
@@ -2688,6 +2714,28 @@ module ep4spectrum (
 	// Z-controller's. F000 means nothing was holding the CPU, which
 	// leaves the clock. No F at all means the CPU never stopped - it is
 	// going round a loop, and every wait-related theory is wrong.
+
+	// --- 2.4" TFT ----------------------------------------------------
+	//
+	// An ILI9341, read out of the panel itself with tftid.v: command $D3
+	// answered $93 $41. The module carries no markings of any kind, so
+	// that reading is the only record of what it is.
+	//
+	// Fed the finished 15kHz stream, the same one the doubler takes, so
+	// the machine's timing cannot tell whether a panel is attached.
+	wire [7:0] tft_do;
+	wire       tft_oe;
+	assign TFT_DB = tft_oe ? tft_do : 8'bzzzzzzzz;
+
+	tft u_tft (
+		.CLK(clock), .CE(vid_clken), .nRESET(pll_locked),
+		.R_IN(vid_r_out), .G_IN(vid_g_out), .B_IN(vid_b_out),
+		.HS_IN_n(vid_hsync_n), .VS_IN_n(vid_vsync_n),
+		.PENTAGON(machine == MACHINE_PENT),
+		.DB_O(tft_do), .DB_OE(tft_oe),
+		.RS(TFT_RS), .WR_n(TFT_WR_n), .RD_n(TFT_RD_n), .RST_n(TFT_RST_n)
+	);
+
 	wire [3:0] nibble = any_trim ?
 	                    ((digit_scan == 2'd3) ? 4'hc :  // C, contention window
 	                     (digit_scan == 2'd2) ? {2'b00, cont_model} :
@@ -2704,7 +2752,7 @@ module ep4spectrum (
 	// paged in
 	// Point after the first digit only where the speed has a fraction -
 	// "3.5" and "7.0" - not on "14" or "28".
-	wire digit_dp    = ((digit_scan == 2'd3) &&
+	wire digit_dp = ((digit_scan == 2'd3) &&
 	                    (any_trim || (cpu_speed == 2'd0) || (cpu_speed == 2'd1))) ||
 	                   (divmmc_paged_in && (digit_scan == 2'd0));
 
