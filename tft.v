@@ -16,9 +16,11 @@
 // The rate works out exactly. A pixel is four clocks of 28MHz (143ns),
 // and 16-bit colour over an 8-bit bus is two byte writes - two clocks
 // each, 71ns, which is 14MHz against the ILI9341's specified minimum
-// cycle of 66ns. Seven percent of margin and not a clock to spare: if
-// the picture comes apart, that is the first thing to suspect, and the
-// answer is the 16-bit bus rather than a slower stream.
+// cycle of 66ns. Seven percent of margin and not a clock to spare, and
+// no way out of it: this module is strapped for 8-bit on its own PCB,
+// so the 16-bit bus that would halve the rate is not available. If the
+// picture ever comes apart, that margin is the first thing to suspect,
+// and the only remedy left would be a different panel.
 //
 // The window is 320x240 cut out of a 448x312 raster, so it carries the
 // 256x192 picture with 32 pixels of border either side and 24 lines
@@ -134,7 +136,50 @@ module tft (
 	//
 	// $11 sleep out, $3A pixel format 16-bit, $36 orientation with the
 	// row/column exchange that turns the native 240x320 portrait into
-	// 320x240, $29 display on.
+	// 320x240, $B1 frame rate, $29 display on.
+	//
+	// The frame rate is set as high as the part goes, and the reasoning
+	// behind that is worth keeping, because the obvious setting is the
+	// wrong one.
+	//
+	// The panel scans its own memory on its own oscillator while we write
+	// into that memory from the ULA's raster. Where the two pointers
+	// cross, the screen shows half of one frame above half of another,
+	// and the crossings happen |panel - ours| times a second.
+	//
+	// So matching the panel to our own 50Hz looks like the answer, and it
+	// was tried: $B1 with DIVA=01 and the $B5 porches, per machine, 48.83
+	// for Pentagon and 50.03 for the rest, straight out of the datasheet's
+	//
+	//     rate = fOSC / (RTNA * DIVA_ratio * (320 + VFP + VBP))
+	//
+	// It failed on the panel for a reason no arithmetic would show: at
+	// 50Hz the display visibly flickers. That is the LCD itself, not our
+	// signal - the rate that removes the tearing is below what the glass
+	// will hold steady.
+	//
+	// It could not have been made to work anyway. Matching the nominal
+	// rate does not lock anything: the panel's oscillator is free and
+	// specified to about ten percent, so a beat of a few Hz survives, and
+	// a seam that creeps is worse to look at than one that races. A real
+	// lock needs the panel's TE output steering these porches frame by
+	// frame, and on THIS module TE is not brought out to the connector,
+	// so that door is shut.
+	//
+	// Hence the opposite direction entirely: run it fast, so the flicker
+	// goes and the crossings come so often that the seam stops being a
+	// line the eye can follow.
+	//
+	// The controller's fastest is RTNA=16, 118Hz, and that was tried too.
+	// It costs contrast, visibly: the faster the scan, the less time each
+	// pixel has to charge, and the greyer the picture looks. RTNA=19 -
+	// 615k/(19*1*324) = 100Hz, the datasheet's own figure for that entry
+	// - keeps the flicker away and gives the glass back the charging time.
+	//
+	// So the setting is a compromise between three things the panel will
+	// not give at once: 50Hz flickers, 118Hz washes out, 100Hz is where
+	// they balance. The tearing is not gone - with no frame buffer and no
+	// TE it cannot be - but this is the best the hardware in hand allows.
 	reg [8:0] initrom;
 	always @* begin
 		case (idx)
@@ -143,7 +188,10 @@ module tft (
 		5'd2:  initrom = 9'h155;   //   16 bits
 		5'd3:  initrom = 9'h036;   // memory access control
 		5'd4:  initrom = 9'h128;   //   MV | BGR
-		5'd5:  initrom = 9'h029;   // display on
+		5'd5:  initrom = 9'h0B1;   // frame rate control
+		5'd6:  initrom = 9'h100;   //   DIVA = fosc, undivided
+		5'd7:  initrom = 9'h113;   //   RTNA = 19 -> 100Hz
+		5'd8:  initrom = 9'h029;   // display on
 		default: initrom = 9'h000;
 		endcase
 	end
@@ -220,7 +268,7 @@ module tft (
 					if (idx == 5'd0) begin
 						delay <= 23'd3360000;
 						state <= S_SLEEP;
-					end else if (idx == 5'd5) begin
+					end else if (idx == 5'd8) begin
 						idx   <= 5'd0;
 						state <= S_FRAME;
 					end
