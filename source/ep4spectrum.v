@@ -690,7 +690,19 @@ module ep4spectrum (
 		.dout16(sdram_word),
 		.addr(sdram_addr),
 		.we(sdram_we),
-		.oe(sdram_oe)
+		.oe(sdram_oe),
+
+		// Refresh comes every 16 T-states, which divides the 48K's 69888
+		// and Pentagon's 71680 exactly - so on those two it steals the
+		// same cycles in every frame and no program can see it. It does
+		// not divide the 128K's 70908: the phase walks 12 T a frame, and
+		// what a program timing its border sees is 4 T of jitter, eight
+		// pixels, cycling over four frames.
+		//
+		// So those two machines - and only those - restart the refresh
+		// count at the top of each frame. Elsewhere this line is a
+		// constant 1 and the schedule is untouched.
+		.refresh_sync(vid_vsync_n | ~want_128)
 	);
 	assign SDRAM_DQMH = sdram_dqm[1];
 	assign SDRAM_DQML = sdram_dqm[0];
@@ -2771,6 +2783,7 @@ module ep4spectrum (
 	                    (digit_scan == 2'd2) ? spd_lo :
 	                    (digit_scan == 2'd1) ? pg_tens :
 	                                           pg_units;
+
 
 	wire digit_blank = any_trim ? 1'b0 :
 	                   ((digit_scan == 2'd1) && (page_ram_sel < 6'd10));

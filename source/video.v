@@ -465,9 +465,29 @@ module video (
 	// It was seven while the contention window itself started a T-state
 	// late; that seven was compensating for the missing lead, and once
 	// cont_lead went in the need for it went with it.
+	// Was 32 counts - eight T-states - on the 48K and 128K, and that is
+	// a whole fetch block. Measured against a real 48K with ulatest3,
+	// which marks every T-state where an IO access was held:
+	//
+	//   real machine   contends through 14457..14462, the last block of
+	//                  the display line
+	//   ours           did not contend there at all
+	//
+	// The reason is the rotation itself. Eight T-states early moves the
+	// window off the display by one block: tb_iowin prints ours starting
+	// at T-states 2, 10 ... 114 - fifteen blocks - with the sixteenth
+	// wrapped round to 218, which is in the border before the next line.
+	// So the first block leaves the line at one end and the last block of
+	// the raster falls outside the window at the other.
+	//
+	// It showed up in exactly one row of the test and nowhere else, which
+	// is what a rotation does rather than a shift: inside the display the
+	// two windows agree everywhere except the block that fell off, and
+	// the block that wrapped landed in the border, where the test does
+	// not look.
 	wire signed [12:0] io_base =
-		(MACHINE == MACHINE_S48)  ? 13'sd32 :
-		(MACHINE == MACHINE_S128) ? 13'sd32 :
+		(MACHINE == MACHINE_S48)  ? 13'sd0  :
+		(MACHINE == MACHINE_S128) ? 13'sd0  :
 		(MACHINE == MACHINE_S3)   ? 13'sd0  : 13'sd0;
 	// io_base is a count of T-states expressed in hcounter counts, so it
 	// doubles with them in the scan-doubled mode.
@@ -1178,9 +1198,44 @@ module video (
 		// T-state and stops being a race. The 48K needed the same, 7 to
 		// 5, for the same reason.
 		//
-		// 128K keeps 8 and so keeps the race; it has not been looked at.
+		// 128K was 8, and it kept the race the other two were moved off.
+		// Measured on the board: counting raster T-states from the nIRQ
+		// edge to the first contended one gave 14363, where the published
+		// figure for a 128K is 14362 and our 48K reads its own 14336
+		// exactly. One T-state over, and not steadily - the acceptance
+		// point wandered by a T-state from frame to frame, which is this
+		// race and nothing else.
+		//
+		// The screen showed it as eight pixels rather than two, because
+		// contention amplifies it: a T-state of shift moves the accesses
+		// that follow across the 6,5,4,3,2,1,0,0 steps, so a one-T error
+		// at the interrupt comes out as four at the border. That is why
+		// scroll17-128 and ula128 jitter while ula48 - the same program
+		// for the other machine - is exact.
+		//
+		// Fourteen, and the route there is worth keeping because two
+		// earlier answers were wrong for instructive reasons.
+		//
+		// Ten was tried first: two counts is half a T-state, enough to
+		// leave the sampling instant, and the border went on jittering.
+		// It also could not have shown up on the meter, which counts CPU
+		// enables from the nIRQ edge and so only moves in whole T-states
+		// - a half-T shift leaves the edge between the same two pulses.
+		//
+		// Deriving it from the raster does not work either: by that
+		// route the 48K's 5 should read 14334.75 and it measures 14336
+		// exactly, so the model is wrong somewhere and cannot be trusted
+		// to place another machine.
+		//
+		// What does hold is the difference. Whichever convention is
+		// used - 14336 and 14362, or 14335 and 14361 - the 128K sits 26
+		// T-states after the 48K. Ours measured 27, so the interrupt
+		// wanted moving one whole T-state later: four counts, 10 to 14.
+		// Fourteen is 2 mod 4, the same residue as 10 and as the +2A/+3
+		// entry, so it stays clear of the sampling instant instead of
+		// landing back on it the way 12 would.
 		(MACHINE == MACHINE_S3)   ? 10'd6   :
-		(MACHINE == MACHINE_S128) ? 10'd8   :
+		(MACHINE == MACHINE_S128) ? 10'd14  :
 		                            10'd0;
 	// Wrapped into the line rather than added raw.
 	//
@@ -1273,10 +1328,31 @@ module video (
 	//
 	// Sizif's hc runs at the pixel rate, so its hc[3:1] is hcounter[4:2]
 	// here and hc[3], hc[1] are hcounter[4], hcounter[2].
+	// Measured against a real 48K with ulatest3, which prints what port
+	// $FF gives at each T-state. hcounter[4:2] is the T-state's index in
+	// the eight-T-state fetch block. The real machine:
+	//
+	//   index  0  1  2  3    4    5    6    7
+	//          FF FF FF bmp  attr bmp  attr FF
+	//
+	// and reads 00 40 01 41 there - two character cells and their two
+	// attributes, four different bytes.
+	//
+	// What was here put the attribute at 6 and 0 and the bitmap at 5 and
+	// 7, which is the same window moved two T-states late. The board then
+	// printed FF FF FF FF 01 41 01 41: the first pair of the block falls
+	// outside the window entirely and the second is handed out twice.
+	// Index 5 agreed with the real machine, and that agreement is what
+	// made the fault look small - it is the one place where a window two
+	// T-states out still overlaps the true one.
+	//
+	// Written as bit tests because the indices do not sit on a mask:
+	// the attribute is at 4 and 6, which is hcounter[4] with hcounter[2]
+	// clear; the bitmap is at 3 and 5, where hcounter[2] is set and
+	// hcounter[4] and hcounter[3] differ.
 	wire port_ff_attr   = (MACHINE == MACHINE_PENT)
-	                      | (hcounter[4:2] == 3'd6)
-	                      | (hcounter[4:2] == 3'd0);
-	wire port_ff_bitmap = hcounter[4] & hcounter[2];
+	                      | (hcounter[4] & ~hcounter[2]);
+	wire port_ff_bitmap = hcounter[2] & (hcounter[4] ^ hcounter[3]);
 	assign PORT_FF_ACTIVE = vpicture & ~hcounter[9]
 	                        & (port_ff_attr | port_ff_bitmap);
 	assign PORT_FF_DATA = port_ff_attr   ? attr_next   :

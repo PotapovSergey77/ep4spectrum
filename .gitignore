@@ -59,3 +59,10 @@ simulation/modelsim/work_int/
 simulation/modelsim/work_nmi/
 simulation/modelsim/outloop.bin
 simulation/modelsim/out.ppm
+
+# ModelSim work libraries for the one-off benches
+simulation/modelsim/work_iow/
+
+# zxtests3 builds its .tap files from .asm and .bas with the tools in
+# tools/; the ready-to-run set lives in testapp/tests/ instead.
+testapp/zxtests3/*.tap

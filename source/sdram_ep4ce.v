@@ -47,7 +47,8 @@ module sdram_ep4ce (
 	output [15:0] dout16,			// the whole word the byte came from
 	input [24:0]   	addr,       // byte address (addr[22:0] decoded, giving 8MB usable)
 	input 		 		oe,         // cpu/chipset requests read
-	input 		 		we          // cpu/chipset requests write
+	input 		 		we,         // cpu/chipset requests write
+	input				refresh_sync // restart the refresh schedule on its falling edge
 );
 
 // falling edge on oe/we/rfsh starts state machine
@@ -240,8 +241,35 @@ assign dout16 = word_r;
 // the border, zero lost. So the wider margin costs nothing and is worth
 // keeping: ~19ms to cover all 4096 rows against a 64ms requirement.
 
+// The schedule above is 32 q cycles, and a q cycle is half a T-state, so
+// a refresh comes every 16 T. Whether that is invisible depends entirely
+// on the machine's frame length:
+//
+//   48K       69888 T / 16 = 4368     exact
+//   Pentagon  71680 T / 16 = 4480     exact
+//   128K, +3  70908 T / 16 = 4431.75  NOT exact, 12 T over
+//
+// Where it divides, every frame steals its cycles at the same points of
+// the raster and nothing can see it. On the 128K and +3 the phase walks
+// 12 T a frame - which is 4 T backwards, 8 pixels - and returns after
+// four frames. A program timing its border from the interrupt then paints
+// it in one of four places, and the top border jitters by 8 pixels with
+// the wrong position showing more often than the right one. That is
+// scroll17-128, exactly, and it is why FUSE has never shown it: FUSE has
+// no DRAM to refresh.
+//
+// So restart the count at the top of each frame for the machines that
+// need it. refresh_sync is the frame pulse, already gated by machine in
+// ep4spectrum.v, so on the 48K and Pentagon it never arrives and their
+// schedule is bit-for-bit what it always was.
+reg refresh_sync_d = 1'b0;
+
 always @(posedge clk) begin
-	if (q == STATE_LAST) begin
+	refresh_sync_d <= refresh_sync;
+
+	if (refresh_sync_d == 1'b1 && refresh_sync == 1'b0) begin
+		refresh_timer <= 7'd0;
+	end else if (q == STATE_LAST) begin
 		if (refresh_timer == 7'd31) begin
 			refresh_timer <= 7'd0;
 			refresh_due   <= 1'b1;
