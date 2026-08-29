@@ -1572,6 +1572,7 @@ module ep4spectrum (
 		.SCR_WR(ram_write & (cpu_a[15:13] == 3'b010)),
 		.SCR_A(cpu_a[12:0]),
 		.SCR_D(cpu_do),
+		.FWD_HIT(),
 		.R(vid_r_out),
 		.G(vid_g_out),
 		.B(vid_b_out),
@@ -2808,6 +2809,7 @@ module ep4spectrum (
 	                    (digit_scan == 2'd2) ? spd_lo :
 	                    (digit_scan == 2'd1) ? pg_tens :
 	                                           pg_units;
+
 
 
 	wire digit_blank = any_trim ? 1'b0 :

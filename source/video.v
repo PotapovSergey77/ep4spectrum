@@ -103,6 +103,10 @@ module video (
 	SCR_WR,
 	SCR_A,
 	SCR_D,
+	// DIAGNOSTIC: high on any clock where a forward actually replaced a
+	// byte, so the board can count them and say whether the mechanism
+	// fires at all.
+	FWD_HIT,
 
 	// Video outputs
 	R,
@@ -193,6 +197,7 @@ module video (
 	input           SCR_WR;
 	input   [12:0]  SCR_A;
 	input   [7:0]   SCR_D;
+	output          FWD_HIT;
 
 	output reg [3:0]   R;
 	output reg [3:0]   G;
@@ -1322,6 +1327,45 @@ module video (
 	// when the next group's fetch is issued.
 	reg             pix_fwd  = 1'b0;
 	reg             attr_fwd = 1'b0;
+
+	// The other half of the same problem, and the one the flags above do
+	// not reach. A write does not land in the chip the moment the CPU
+	// makes it: it goes through the arbiter. If the fetch asks for that
+	// address a T-state or two later, the memory hands back what was
+	// there BEFORE the write, and nothing downstream can tell. The write
+	// happened before the forwarding window, so it looks accounted for -
+	// it is accounted for wrongly.
+	//
+	// So remember the last write for a few clocks and check the answer
+	// against it. The counter is in CLK ticks: 28MHz, eight to a
+	// T-state, so 24 covers three T-states, more than the arbiter takes.
+	reg  [12:0]     late_a = 13'd0;
+	reg   [7:0]     late_d = 8'd0;
+	reg   [4:0]     late_age = 5'd0;
+	wire            late_live = (late_age != 5'd0);
+
+	// The window runs from the fetch to the moment the byte is actually
+	// wanted, and those moments are not the group boundary. Further down
+	// this file the display takes them at hcounter[3:0] == 0011 for the
+	// character cell and 0111 for the attribute - inside the NEXT group,
+	// three and seven counts past the boundary.
+	//
+	// Three versions of this forwarding assumed the boundary and stopped
+	// at count 15, which is three counts short for the cell and seven for
+	// the attribute. That is what left holes: the diagnostic counter read
+	// 7 hits at 14333, none at 14334 and one at 14335, because a write
+	// straddling the end of the window catches it by an edge or misses it
+	// altogether. The answer was in the file the whole time and I guessed
+	// three times instead of reading it.
+	wire fwd_win_pix  = hcounter[3] | (hcounter[2:0] < 3'd3);
+	wire fwd_win_attr = hcounter[3] | (hcounter[2:0] < 3'd7);
+	wire fwd_a_pix    = (SCR_A == {vaddr_r[8:7], vaddr_r[3:1],
+	                               vaddr_r[6:4], haddr_r});
+	wire fwd_a_attr   = (SCR_A == {3'b110, vaddr_r[8:7],
+	                               vaddr_r[6:4], haddr_r});
+
+	assign FWD_HIT = SCR_WR & ((fwd_win_pix  & fwd_a_pix) |
+	                           (fwd_win_attr & fwd_a_attr));
 	reg     [1:0]   read_step;
 	reg             fetch_gen = 1'b0;
 	reg     [7:0]   pixels_next;
@@ -1466,11 +1510,27 @@ module video (
 			// after the answer survives - which recovered one T-state of
 			// the two instead of both, 14332 to 14333 where the real
 			// machine is at 14335.
+			if (late_age != 5'd0)
+				late_age <= late_age - 5'd1;
+			if (SCR_WR == 1'b1) begin
+				late_a   <= SCR_A;
+				late_d   <= SCR_D;
+				late_age <= 5'd24;
+			end
+
 			if (VID_DATA_VALID == 1'b1 && VID_DATA_GEN == fetch_gen) begin
 				if (VID_DATA_STEP == 1'b0) begin
-					if (pix_fwd == 1'b0)  pixels_next <= VID_D_IN;
+					if (pix_fwd == 1'b0)
+						pixels_next <=
+							(late_live && late_a == {vaddr_r[8:7],
+							 vaddr_r[3:1], vaddr_r[6:4], haddr_r})
+								? late_d : VID_D_IN;
 				end else begin
-					if (attr_fwd == 1'b0) attr_next <= VID_D_IN;
+					if (attr_fwd == 1'b0)
+						attr_next <=
+							(late_live && late_a == {3'b110, vaddr_r[8:7],
+							 vaddr_r[6:4], haddr_r})
+								? late_d : VID_D_IN;
 				end
 			end
 
@@ -1498,14 +1558,12 @@ module video (
 			// the arbiter's own latency - the write has not reached the
 			// chip when the fetch reads it - and that one would have to
 			// be caught further down, in the controller.
-			if (SCR_WR == 1'b1 && hcounter[3] == 1'b1) begin
-				if (SCR_A == {vaddr_r[8:7], vaddr_r[3:1],
-				              vaddr_r[6:4], haddr_r}) begin
+			if (SCR_WR == 1'b1) begin
+				if (fwd_win_pix == 1'b1 && fwd_a_pix == 1'b1) begin
 					pixels_next <= SCR_D;
 					pix_fwd     <= 1'b1;
 				end
-				if (SCR_A == {3'b110, vaddr_r[8:7],
-				              vaddr_r[6:4], haddr_r}) begin
+				if (fwd_win_attr == 1'b1 && fwd_a_attr == 1'b1) begin
 					attr_next <= SCR_D;
 					attr_fwd  <= 1'b1;
 				end
