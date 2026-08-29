@@ -2823,6 +2823,7 @@ module ep4spectrum (
 
 
 
+
 	wire digit_blank = any_trim ? 1'b0 :
 	                   ((digit_scan == 2'd1) && (page_ram_sel < 6'd10));
 	// decimal point after the 3, and on the page digit while DivMMC is
