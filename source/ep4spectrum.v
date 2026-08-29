@@ -319,10 +319,25 @@ module ep4spectrum (
 	// settings - where the interrupt moves all of them together and can
 	// never separate them.
 	//
-	// 9 is where the counted-loop demos put their write exactly on a
+	// 9 was where the counted-loop demos put their write exactly on a
 	// grid point, the causal floor. Two-way and saturating.
-	localparam [3:0] bord_phase = 4'd9;
-	wire [1:0] bord_delay = 2'd0;
+	//
+	// Measured against a real 48K with btime, which sweeps the T-state
+	// of the OUT and shows where the stripe lands: the real machine puts
+	// it in place at 14112, ours wanted 14113. One T-state late - our
+	// latch was closing after the write the real one still catches.
+	//
+	// A T-state is four hcounter counts, so the phase moves 9 to 5. That
+	// alone would also move the colour four counts - two pixels - to the
+	// left on screen, since the latch feeds the picture directly; two
+	// stages of pixel delay put it back. The deadline shifts, the
+	// position does not.
+	//
+	// Both of these are Sinclair-only knobs. Pentagon latches on
+	// hcounter[0] and forces its own delay of 3, so neither line can
+	// reach it.
+	localparam [3:0] bord_phase = 4'd5;
+	wire [1:0] bord_delay = 2'd2;
 	// Vertical trim: where the frame sits against the raster, stepped by
 	// Page Up / Page Down. video.v takes this in sixteenths of a line
 	// (INT_VADJ >>> 4), so a step of 16 is exactly one line.
@@ -1547,6 +1562,16 @@ module ep4spectrum (
 		.VID_DATA_GEN(vid_data_gen),
 		.VID_STALE(vid_stale),
 		.BORDER_IN(ula_border),
+
+		// The CPU writing the screen, handed straight to video.v so it
+		// can overtake the fetch that has already gone to memory. Only
+		// $4000-$5FFF, which is where every machine here keeps the
+		// screen the ULA is showing; the 128K's shadow screen, written
+		// through $C000, is not covered and would need the paged bank
+		// compared against the displayed one.
+		.SCR_WR(ram_write & (cpu_a[15:13] == 3'b010)),
+		.SCR_A(cpu_a[12:0]),
+		.SCR_D(cpu_do),
 		.R(vid_r_out),
 		.G(vid_g_out),
 		.B(vid_b_out),

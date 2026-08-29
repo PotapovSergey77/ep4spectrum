@@ -98,6 +98,11 @@ module video (
 
 	// IO interface
 	BORDER_IN,
+	// A CPU write to the screen, forwarded past the fetch - see the
+	// comment where it lands.
+	SCR_WR,
+	SCR_A,
+	SCR_D,
 
 	// Video outputs
 	R,
@@ -185,6 +190,9 @@ module video (
 	input           VID_DATA_GEN;
 
 	input   [2:0]   BORDER_IN;
+	input           SCR_WR;
+	input   [12:0]  SCR_A;
+	input   [7:0]   SCR_D;
 
 	output reg [3:0]   R;
 	output reg [3:0]   G;
@@ -1309,6 +1317,11 @@ module video (
 	reg     [8:1]   vaddr_r;
 	reg     [8:4]   haddr_r;
 	// 0 = pixels, 1 = attribute, 2 = both done for this group
+	// Set when a CPU write has overtaken the fetch for the byte still
+	// waiting here, so the answer from memory cannot undo it. Cleared
+	// when the next group's fetch is issued.
+	reg             pix_fwd  = 1'b0;
+	reg             attr_fwd = 1'b0;
 	reg     [1:0]   read_step;
 	reg             fetch_gen = 1'b0;
 	reg     [7:0]   pixels_next;
@@ -1437,6 +1450,8 @@ module video (
 				haddr_r   <= line_wrap ? 5'b0 : (hcounter[8:4] + 1'b1);
 				read_step <= fetch_wanted ? 2'd0 : 2'd2;
 				fetch_gen <= ~fetch_gen;
+				pix_fwd   <= 1'b0;
+				attr_fwd  <= 1'b0;
 			end else if (VID_REQ_ACK == 1'b1 && read_step != 2'd2) begin
 				read_step <= read_step + 1'b1;
 			end
@@ -1444,11 +1459,56 @@ module video (
 			// The step tag arrives with the data instead of being read
 			// from read_step, which by now has usually moved on to the
 			// next request.
+			// A byte the CPU has already overtaken must not be undone by
+			// the answer coming back from memory. The fetch was issued
+			// first but arrives later, so without these flags it lands
+			// on top of the forwarded value and only a write that got in
+			// after the answer survives - which recovered one T-state of
+			// the two instead of both, 14332 to 14333 where the real
+			// machine is at 14335.
 			if (VID_DATA_VALID == 1'b1 && VID_DATA_GEN == fetch_gen) begin
-				if (VID_DATA_STEP == 1'b0)
-					pixels_next <= VID_D_IN;
-				else
-					attr_next <= VID_D_IN;
+				if (VID_DATA_STEP == 1'b0) begin
+					if (pix_fwd == 1'b0)  pixels_next <= VID_D_IN;
+				end else begin
+					if (attr_fwd == 1'b0) attr_next <= VID_D_IN;
+				end
+			end
+
+			// A real Spectrum shares one memory: the ULA reads the byte
+			// at the moment it needs it, and a CPU write up to that
+			// moment is in the picture. Measured with stime against a
+			// real 48K, the deadline there is 14335 and ours was 14332 -
+			// three T-states early, because the fetch goes out two
+			// T-states before the group is displayed and the arbiter
+			// costs about one more.
+			//
+			// So catch the write on its way past. While the fetched byte
+			// is still sitting here waiting for its group, a CPU write to
+			// the address it came from replaces it, and the picture shows
+			// what the write put there rather than what the memory held
+			// when we asked.
+			//
+			// hcounter[3] is the window: fetch_start is at [3:0] == 8 and
+			// the group begins at 0, so the top half of the group is
+			// exactly the span between asking and displaying. Outside it
+			// the same registers are feeding the screen already and must
+			// not be touched.
+			//
+			// This recovers the two T-states of prefetch. The third is
+			// the arbiter's own latency - the write has not reached the
+			// chip when the fetch reads it - and that one would have to
+			// be caught further down, in the controller.
+			if (SCR_WR == 1'b1 && hcounter[3] == 1'b1) begin
+				if (SCR_A == {vaddr_r[8:7], vaddr_r[3:1],
+				              vaddr_r[6:4], haddr_r}) begin
+					pixels_next <= SCR_D;
+					pix_fwd     <= 1'b1;
+				end
+				if (SCR_A == {3'b110, vaddr_r[8:7],
+				              vaddr_r[6:4], haddr_r}) begin
+					attr_next <= SCR_D;
+					attr_fwd  <= 1'b1;
+				end
 			end
 		end
 	end
