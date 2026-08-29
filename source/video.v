@@ -387,6 +387,16 @@ module video (
 	wire [3:0] t_counts = VGA ? 4'd8 : 4'd4;
 
 	wire signed [12:0] hc_sum =
+		// A whole T-state a step, four hcounter counts.
+		//
+		// Finer was tried, on the board, for esh2_48's dash: half a
+		// T-state and then a quarter, which is one count and the finest
+		// this design can express. Neither found a setting that helped.
+		// So the difference from a real 48K there is not a shift of this
+		// window at any resolution, and moving it is not the answer -
+		// which is worth knowing, because the early-against-late ULA
+		// question makes a sub-T-state trim look like the obvious thing
+		// to reach for.
 		{3'b000, hcounter} + {{6{CONT_ADJ[4]}}, CONT_ADJ, 2'b00}
 		- {9'd0, t_counts} - (VGA ? (cont_lead <<< 1) : cont_lead);
 	wire signed [12:0] hc_wrap =
