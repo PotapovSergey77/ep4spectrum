@@ -178,8 +178,27 @@ module tft (
 	//
 	// So the setting is a compromise between three things the panel will
 	// not give at once: 50Hz flickers, 118Hz washes out, 100Hz is where
-	// they balance. The tearing is not gone - with no frame buffer and no
-	// TE it cannot be - but this is the best the hardware in hand allows.
+	// they balance.
+	//
+	// One more idea was tried and is worth recording as closed, because
+	// it is a good idea and it will occur to anyone reading this. Put the
+	// panel at exactly twice a machine's own frame rate - 97.66Hz for
+	// Pentagon's 48.83 - and every frame is scanned exactly twice, so the
+	// crossings should stand still instead of walking. Built, per machine,
+	// with the porches opened from 2 to 5. On the panel: no visible
+	// difference at all.
+	//
+	// The arithmetic says why, and it condemns the whole approach rather
+	// than that one setting. fOSC is 615kHz typical over 570 to 660 - about
+	// seven percent - so at 100Hz the rate is uncertain by some 7Hz. The
+	// correction being made was the 1.8Hz between 99.5 and 97.66: five
+	// times smaller than the tolerance it was swimming in. No open-loop
+	// choice of nominal frequency can survive that, which is the same
+	// reason the 50Hz match would not have locked either.
+	//
+	// The tearing is not gone, and no frequency setting will remove it.
+	// That needs a closed loop on TE, which this module does not bring
+	// out, or a frame buffer, which the device has no memory for.
 	reg [8:0] initrom;
 	always @* begin
 		case (idx)
