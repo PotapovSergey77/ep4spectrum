@@ -256,30 +256,30 @@ set_global_assignment -name OPTIMIZE_HOLD_TIMING "ALL PATHS"
 set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING ON
 set_global_assignment -name FITTER_EFFORT "AUTO FIT"
 
-set_global_assignment -name VERILOG_FILE sdram_ep4ce.v
-set_global_assignment -name VERILOG_FILE spi.v
-set_global_assignment -name VERILOG_FILE sigma_delta_dac.v
-set_global_assignment -name VERILOG_FILE YM2149/YM2149_volmix.v
-set_global_assignment -name VERILOG_FILE YM2149/vol_table_array.v
-set_global_assignment -name VERILOG_FILE T80/T80se.v
-set_global_assignment -name VERILOG_FILE T80/T80_Reg.v
-set_global_assignment -name VERILOG_FILE T80/T80_MCode.v
-set_global_assignment -name VERILOG_FILE T80/T80_ALU.v
-set_global_assignment -name VERILOG_FILE T80/T80.v
-set_global_assignment -name VERILOG_FILE clocks.v
-set_global_assignment -name VERILOG_FILE keyboard.v
-set_global_assignment -name VERILOG_FILE pll_ep4ce.v
-set_global_assignment -name VERILOG_FILE ps2_intf.v
-set_global_assignment -name VERILOG_FILE ep4spectrum.v
-set_global_assignment -name VERILOG_FILE ula_port.v
-set_global_assignment -name VERILOG_FILE bdi.v
-set_global_assignment -name VERILOG_FILE zcontroller.v
-set_global_assignment -name VERILOG_FILE video.v
-set_global_assignment -name VERILOG_FILE scandoubler.v
-set_global_assignment -name VERILOG_FILE rom48.v
-set_global_assignment -name VERILOG_FILE rom128.v
-set_global_assignment -name VERILOG_FILE rom_esxdos.v
-set_global_assignment -name VERILOG_FILE divmmc.v
+set_global_assignment -name VERILOG_FILE source/sdram_ep4ce.v
+set_global_assignment -name VERILOG_FILE source/spi.v
+set_global_assignment -name VERILOG_FILE source/sigma_delta_dac.v
+set_global_assignment -name VERILOG_FILE source/YM2149/YM2149_volmix.v
+set_global_assignment -name VERILOG_FILE source/YM2149/vol_table_array.v
+set_global_assignment -name VERILOG_FILE source/T80/T80se.v
+set_global_assignment -name VERILOG_FILE source/T80/T80_Reg.v
+set_global_assignment -name VERILOG_FILE source/T80/T80_MCode.v
+set_global_assignment -name VERILOG_FILE source/T80/T80_ALU.v
+set_global_assignment -name VERILOG_FILE source/T80/T80.v
+set_global_assignment -name VERILOG_FILE source/clocks.v
+set_global_assignment -name VERILOG_FILE source/keyboard.v
+set_global_assignment -name VERILOG_FILE source/pll_ep4ce.v
+set_global_assignment -name VERILOG_FILE source/ps2_intf.v
+set_global_assignment -name VERILOG_FILE source/ep4spectrum.v
+set_global_assignment -name VERILOG_FILE source/ula_port.v
+set_global_assignment -name VERILOG_FILE source/bdi.v
+set_global_assignment -name VERILOG_FILE source/zcontroller.v
+set_global_assignment -name VERILOG_FILE source/video.v
+set_global_assignment -name VERILOG_FILE source/scandoubler.v
+set_global_assignment -name VERILOG_FILE source/rom48.v
+set_global_assignment -name VERILOG_FILE source/rom128.v
+set_global_assignment -name VERILOG_FILE source/rom_esxdos.v
+set_global_assignment -name VERILOG_FILE source/divmmc.v
 
 set_global_assignment -name EDA_SIMULATION_TOOL "ModelSim-Altera (Verilog)"
 set_global_assignment -name EDA_OUTPUT_DATA_FORMAT "VERILOG HDL" -section_id eda_simulation
