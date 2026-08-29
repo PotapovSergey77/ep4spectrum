@@ -1364,8 +1364,18 @@ module video (
 	wire fwd_a_attr   = (SCR_A == {3'b110, vaddr_r[8:7],
 	                               vaddr_r[6:4], haddr_r});
 
-	assign FWD_HIT = SCR_WR & ((fwd_win_pix  & fwd_a_pix) |
-	                           (fwd_win_attr & fwd_a_attr));
+	// DIAGNOSTIC: not the forwarding into pixels_next, which is known to
+	// work, but the substitution at the moment the byte goes to the
+	// screen - the one that is supposed to buy the last T-state and has
+	// not. Zero here says the comparison never matches there and the
+	// remaining T-state is somewhere else entirely.
+	assign FWD_HIT = (hcounter[9] == 1'b0) & (hcounter[3] == 1'b0)
+	               & (hcounter[1] == 1'b1) & late_live
+	               & ((hcounter[2] == 1'b0)
+	                  ? (late_a == {vaddr_r[8:7], vaddr_r[3:1],
+	                                vaddr_r[6:4], haddr_r})
+	                  : (late_a == {3'b110, vaddr_r[8:7],
+	                                vaddr_r[6:4], haddr_r}));
 	reg     [1:0]   read_step;
 	reg             fetch_gen = 1'b0;
 	reg     [7:0]   pixels_next;
@@ -1617,10 +1627,33 @@ module video (
 					// 0011 PICTURE STORE
 					// 0111 ATTR STORE
 					if (hcounter[1] == 1'b1) begin
+						// Taking the write directly on the clock where the
+						// byte is consumed. Both assignments land on the
+						// same edge, so pixels_next still holds the old
+						// value when the display reads it and a forward
+						// arriving now would be a T-state late - which is
+						// precisely the one T-state stime was still short,
+						// 14334 against the real machine's 14335.
+						// Against the remembered write, not the live one.
+						// Testing SCR_WR here asks two narrow events to
+						// coincide - the CPU's write strobe and the one
+						// clock the byte is consumed on - and they mostly
+						// do not, which is why the direct test changed
+						// nothing. late_a holds the address for 24 clocks,
+						// three T-states, so the overlap is certain. A
+						// write older than the fetch carries the same
+						// value the memory returned, so matching it early
+						// costs nothing.
 						if (hcounter[2] == 1'b0)
-							pixels[7:0] <= pixels_next;
+							pixels[7:0] <=
+								(late_live && late_a == {vaddr_r[8:7],
+								 vaddr_r[3:1], vaddr_r[6:4], haddr_r})
+									? late_d : pixels_next;
 						else
-							attr <= attr_next;
+							attr <=
+								(late_live && late_a == {3'b110, vaddr_r[8:7],
+								 vaddr_r[6:4], haddr_r})
+									? late_d : attr_next;
 					end
 				end
 

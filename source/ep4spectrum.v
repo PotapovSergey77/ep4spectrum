@@ -336,8 +336,17 @@ module ep4spectrum (
 	// Both of these are Sinclair-only knobs. Pentagon latches on
 	// hcounter[0] and forces its own delay of 3, so neither line can
 	// reach it.
-	localparam [3:0] bord_phase = 4'd5;
-	wire [1:0] bord_delay = 2'd2;
+	// ONE ROW PER MACHINE. 5 and 2 come from btime against a real 48K
+	// and are right for the 48K and the 128K, but they were applied to
+	// every Sinclair machine and the +2A/+3 started shimmering on the
+	// border - which is what a write landing exactly on a sampling
+	// instant looks like. That machine keys contention off MREQ rather
+	// than off the start of the cycle, so its write sits elsewhere in
+	// the T-state and the same phase does not suit it.
+	//
+	// It keeps 9 and 0, which is where it was and where it was correct.
+	wire [3:0] bord_phase = (machine == MACHINE_S3) ? 4'd9 : 4'd5;
+	wire [1:0] bord_delay = (machine == MACHINE_S3) ? 2'd0 : 2'd2;
 	// Vertical trim: where the frame sits against the raster, stepped by
 	// Page Up / Page Down. video.v takes this in sixteenths of a line
 	// (INT_VADJ >>> 4), so a step of 16 is exactly one line.
@@ -2809,6 +2818,7 @@ module ep4spectrum (
 	                    (digit_scan == 2'd2) ? spd_lo :
 	                    (digit_scan == 2'd1) ? pg_tens :
 	                                           pg_units;
+
 
 
 
