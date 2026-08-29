@@ -555,14 +555,88 @@ module ep4spectrum (
 	// 56 MHz sdram clock (-2.5 ns phase shifted)
 	//--------------------------------
 
+	// Two of them, because the machines genuinely run at different
+	// speeds. The 48K's crystal is 14MHz and its CPU 3.5; the 128K, +2,
+	// +2A and +3 take the PAL subcarrier times four, 17.734475MHz, over
+	// five - 3.546895MHz. Pentagon is back on 14MHz, so it sits with the
+	// 48K.
+	//
+	// One PLL cannot do both: 3.5 and 3.546895 stand as 224 to 227, so a
+	// single VCO feeding both through integer post-scalers would have to
+	// run at 12.7GHz. Hence pll_128 alongside, at 56.75MHz.
+	wire a_c0, a_c1, a_c2, a_locked;
+	wire b_c0, b_c1, b_c2, b_locked;
+
 	pll_ep4ce pll (
 		.areset(1'b0),
 		.inclk0(CLOCK_50),
-		.c0(clk56),
-		.c1(SDRAM_CLK),
-		.c2(clk28),
-		.locked(pll_locked)
+		.c0(a_c0),
+		.c1(a_c1),
+		.c2(a_c2),
+		.locked(a_locked)
 	);
+
+	pll_128 pll128 (
+		.areset(1'b0),
+		.inclk0(CLOCK_50),
+		.c0(b_c0),
+		.c1(b_c1),
+		.c2(b_c2),
+		.locked(b_locked)
+	);
+
+	assign pll_locked = a_locked & b_locked;
+
+	wire want_128 = (machine == MACHINE_S128) | (machine == MACHINE_S3);
+
+	// A glitch-free mux, and it has to be: the machine is switched on a
+	// running program by design - F5..F8 deliberately do not reset - so
+	// the changeover happens under a live CPU and a live SDRAM. A plain
+	// mux would cut a clock pulse in half somewhere and put both into
+	// undefined states.
+	//
+	// The rule that makes it safe: an enable may only change when every
+	// clock it gates is low. Each PLL gives three - 56MHz, the same
+	// shifted -2.5ns for SDRAM_CLK, and 28MHz - and the moment they are
+	// all low is the falling edge of the 56 with the 28 already low. The
+	// shifted one leads by 2.5ns, so it went low first and is still low.
+	// One enable per PLL then gates all three together, which is what
+	// keeps their phase intact across the switch; three enables switching
+	// independently would not.
+	//
+	// The cross terms are the other half: neither side may enable until
+	// it has seen the other disabled, through a synchroniser because the
+	// two PLLs have no phase relation at all. So the output stops for a
+	// few periods mid-changeover rather than ever glitching. Everything
+	// simply pauses - the CPU, the ULA and the SDRAM controller together,
+	// keeping step with each other.
+	reg a_en = 1'b0, b_en = 1'b0;
+	reg a_sees_b1 = 1'b0, a_sees_b2 = 1'b0;
+	reg b_sees_a1 = 1'b0, b_sees_a2 = 1'b0;
+	reg a_want1 = 1'b0, a_want2 = 1'b0;
+	reg b_want1 = 1'b0, b_want2 = 1'b0;
+
+	always @(negedge a_c0) begin
+		a_sees_b1 <= b_en;
+		a_sees_b2 <= a_sees_b1;
+		a_want1   <= want_128;
+		a_want2   <= a_want1;
+		if (a_c2 == 1'b0)
+			a_en <= ~a_want2 & ~a_sees_b2;
+	end
+
+	always @(negedge b_c0) begin
+		b_sees_a1 <= a_en;
+		b_sees_a2 <= b_sees_a1;
+		b_want1   <= want_128;
+		b_want2   <= b_want1;
+		if (b_c2 == 1'b0)
+			b_en <= b_want2 & ~b_sees_a2;
+	end
+
+	assign clk56     = (a_c0 & a_en) | (b_c0 & b_en);
+	assign SDRAM_CLK = (a_c1 & a_en) | (b_c1 & b_en);
+	assign clk28     = (a_c2 & a_en) | (b_c2 & b_en);
 
 	// The system clock comes from its own PLL output rather than from
 	// dividing the SDRAM clock.
