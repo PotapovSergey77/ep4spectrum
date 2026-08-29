@@ -190,6 +190,28 @@ module tb_iowin;
 			$display("lines differing from the first: %0d of 192", bad);
 		end
 
+		// Where the picture actually starts, line by line. esh2_48 shows
+		// eight pixels of border at the left edge of the FIRST display
+		// line and not on any other, so the question is whether
+		// picture_s comes up later on line 0 than on the lines after it.
+		// Printed as the hcounter count of the first tick where it is
+		// high, which is directly comparable between lines.
+		begin : pstart
+			integer ln, k, first;
+			for (ln = 0; ln < 4; ln = ln + 1) begin
+				wait (vid.vcounter[9:1] == ln[8:0]);
+				wait (vid.hcounter == 10'd0);
+				first = -1;
+				for (k = 0; k < 200; k = k + 1) begin
+					@(posedge clk);
+					if (vid.picture_s === 1'b1 && first < 0)
+						first = vid.hcounter;
+				end
+				$display("line %0d: picture_s first high at hcounter %0d",
+					ln, first);
+			end
+		end
+
 		$display("DONE");
 		$finish;
 	end

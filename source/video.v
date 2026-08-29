@@ -662,10 +662,19 @@ module video (
 	// above only applies to them.
 	wire    [1:0]   bord_delay_eff =
 		(MACHINE == MACHINE_PENT) ? 2'd3 : BORD_DELAY;
-	wire    [2:0]   border_out =
+	wire    [2:0]   border_raw =
 		(bord_delay_eff == 2'd3) ? border_d3 :
 		(bord_delay_eff == 2'd2) ? border_d2 :
 		(bord_delay_eff == 2'd1) ? border_d1 : border_latched;
+
+	// esh2_48 shows an eight-pixel dash, one raster line high, hard
+	// against the left edge of the picture on the first display line,
+	// which a real 48K does not. Border with a zero colour, picture with
+	// an empty attribute and the seam between them all look the same on
+	// a screen, so the border was inverted for one build to tell them
+	// apart: the dash turned white with the rest of the border, so it is
+	// the border path carrying a zero, and the picture side is ruled out.
+	wire    [2:0]   border_out = border_raw;
 	always @(posedge CLK or negedge nRESET) begin
 		if (nRESET == 1'b0) begin
 			border_latched <= 3'b000;
@@ -770,6 +779,12 @@ module video (
 		end
 	end
 	// board. Pentagon none - its border was set against a real machine.
+	// The picture is delayed nine pixels and the border two, and the two
+	// were tuned separately. Setting them equal for one build to see
+	// whether esh2_48's dash was a seam mismatch answered no: the border
+	// moved eight pixels clear of the raster, which is what these numbers
+	// balance out in normal operation, so the seam is aligned and the
+	// dash is something else.
 	wire [3:0] pap_tap =
 		(MACHINE == MACHINE_S48)  ? 4'd9 :
 		(MACHINE == MACHINE_S128) ? 4'd9 :
