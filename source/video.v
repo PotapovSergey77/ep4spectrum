@@ -719,7 +719,7 @@ module video (
 
 
 	// Determine the pixel colour
-	assign dot = pixels[9] ^ (flashcounter[4] & attr[7]); // Combine delayed pixel with FLASH attr and clock state
+	assign dot = pixels[7] ^ (flashcounter[4] & attr[7]); // Combine delayed pixel with FLASH attr and clock state
 
 	// One pixel of delay on the PAPER, on the Sinclair machines only.
 	//
@@ -1357,8 +1357,10 @@ module video (
 	// straddling the end of the window catches it by an edge or misses it
 	// altogether. The answer was in the file the whole time and I guessed
 	// three times instead of reading it.
-	wire fwd_win_pix  = hcounter[3] | (hcounter[2:0] < 3'd3);
-	wire fwd_win_attr = hcounter[3] | (hcounter[2:0] < 3'd7);
+	// From the fetch at count 12 to the moment each byte is taken - 7 for
+	// the cell, 11 for the attribute - both a T-state later than before.
+	wire fwd_win_pix  = (hcounter[3:0] >= 4'd12) | (hcounter[3:0] < 4'd7);
+	wire fwd_win_attr = (hcounter[3:0] >= 4'd12) | (hcounter[3:0] < 4'd7);
 	wire fwd_a_pix    = (SCR_A == {vaddr_r[8:7], vaddr_r[3:1],
 	                               vaddr_r[6:4], haddr_r});
 	wire fwd_a_attr   = (SCR_A == {3'b110, vaddr_r[8:7],
@@ -1417,9 +1419,13 @@ module video (
 	// the attribute is at 4 and 6, which is hcounter[4] with hcounter[2]
 	// clear; the bitmap is at 3 and 5, where hcounter[2] is set and
 	// hcounter[4] and hcounter[3] differ.
+	// Moved with the fetch: these registers now hold their bytes a
+	// T-state later, so the indices that expose them move a T-state too,
+	// from 3,4,5,6 to 4,5,6,7. Same output as the real machine gives,
+	// which is what ulatest3 was made to agree with.
 	wire port_ff_attr   = (MACHINE == MACHINE_PENT)
-	                      | (hcounter[4] & ~hcounter[2]);
-	wire port_ff_bitmap = hcounter[2] & (hcounter[4] ^ hcounter[3]);
+	                      | (hcounter[4] & hcounter[2]);
+	wire port_ff_bitmap = hcounter[4] & ~hcounter[2];
 	assign PORT_FF_ACTIVE = vpicture & ~hcounter[9]
 	                        & (port_ff_attr | port_ff_bitmap);
 	assign PORT_FF_DATA = port_ff_attr   ? attr_next   :
@@ -1454,7 +1460,7 @@ module video (
 	// bit 0 is forced high - so a comparison against an even value never
 	// fires. This one starting the fetch was why 31kHz showed no raster:
 	// the fetch simply never began.
-	wire fetch_start = (hcounter[3:0] == (VGA ? 4'b1001 : 4'b1000));
+	wire fetch_start = (hcounter[3:0] == (VGA ? 4'b1101 : 4'b1100));
 	// The group being set up is the one after the current one. In the
 	// last group of a line that is group 0 of the next line, so the
 	// line number has to be stepped as well - vcounter[0] is the
@@ -1622,11 +1628,22 @@ module video (
 				// were fetched during the previous group and are only
 				// overwritten from hcounter[3:0]==1000 onwards, well
 				// after they have been consumed here.
-				if (hcounter[9] == 1'b0 && hcounter[3] == 1'b0) begin
-					// 3210
-					// 0011 PICTURE STORE
-					// 0111 ATTR STORE
-					if (hcounter[1] == 1'b1) begin
+				// A T-state later than it was, so that a write reaching
+				// the machine at 14335 still finds the byte here - which
+				// is where stime says the real ULA takes it, and where
+				// ours took it one T-state early. Everything that hangs
+				// off this moves with it: the fetch, the forwarding
+				// windows, the floating bus, and the output tap, which
+				// comes off pixels[7] instead of pixels[9] so the two
+				// pixels the shift register was holding as delay pay for
+				// the two the later load costs. The picture does not
+				// move; only the deadline does.
+				//
+				// 3210
+				// 0111 PICTURE STORE
+				// 1011 ATTR STORE
+				if (hcounter[9] == 1'b0) begin
+					if (hcounter[3:0] == 4'b0111) begin
 						// Taking the write directly on the clock where the
 						// byte is consumed. Both assignments land on the
 						// same edge, so pixels_next still holds the old
@@ -1644,16 +1661,25 @@ module video (
 						// write older than the fetch carries the same
 						// value the memory returned, so matching it early
 						// costs nothing.
-						if (hcounter[2] == 1'b0)
-							pixels[7:0] <=
-								(late_live && late_a == {vaddr_r[8:7],
-								 vaddr_r[3:1], vaddr_r[6:4], haddr_r})
-									? late_d : pixels_next;
-						else
-							attr <=
-								(late_live && late_a == {3'b110, vaddr_r[8:7],
-								 vaddr_r[6:4], haddr_r})
-									? late_d : attr_next;
+						// Both on the same count now. They used to be four
+						// counts apart - the cell at 3, the attribute at 7
+						// - because the output came off pixels[9] and the
+						// cell therefore reached the screen two pixels
+						// after it was loaded, which the attribute's later
+						// load matched. Off pixels[7] the cell appears at
+						// once, so the old stagger left the first two
+						// pixels of every character coloured by the
+						// PREVIOUS attribute: two stray pixels, visible
+						// wherever colour changes and so all over any demo
+						// drawn in vertical stripes.
+						pixels[7:0] <=
+							(late_live && late_a == {vaddr_r[8:7],
+							 vaddr_r[3:1], vaddr_r[6:4], haddr_r})
+								? late_d : pixels_next;
+						attr <=
+							(late_live && late_a == {3'b110, vaddr_r[8:7],
+							 vaddr_r[6:4], haddr_r})
+								? late_d : attr_next;
 					end
 				end
 
