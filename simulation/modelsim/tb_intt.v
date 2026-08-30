@@ -51,12 +51,20 @@ module tb_intt;
 	reg      m1_d = 1'b1;
 	reg [15:0] prev_a = 16'h0000;
 	reg      seen38 = 1'b0;
+	reg      ack_seen = 1'b0;
 
 	always @(posedge clk) if (nreset) begin
 		tick = tick + 1;
+		// The acknowledge asserts M1 together with IORQ, so say which
+		// cycle each fetch was: an edge count alone cannot tell an
+		// opcode fetch from an interrupt acknowledge, and that is the
+		// thing being measured.
+		if (m1_n == 1'b0 && iorq_n == 1'b0) ack_seen <= 1'b1;
 		if (m1_d == 1'b1 && m1_n == 1'b0) begin
 			if (n > 0)
-				$display("  $%04h: %0d T", prev_a, tick - prev);
+				$display("  $%04h: %0d T%s", prev_a, tick - prev,
+				         ack_seen ? "   <- acknowledge" : "");
+			ack_seen <= 1'b0;
 			prev   = tick;
 			prev_a = a;
 			n      = n + 1;
