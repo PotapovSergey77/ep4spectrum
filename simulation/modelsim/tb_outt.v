@@ -65,7 +65,7 @@ module tb_outt;
 			prev   = tick;
 			prev_a = a;
 			n      = n + 1;
-			if (n > 24) begin
+			if (n > 32) begin
 				$display("DONE");
 				$finish;
 			end
@@ -97,6 +97,16 @@ module tb_outt;
 		mem[i]=8'h3D; i=i+1;                          // DEC A
 		mem[i]=8'h0D; i=i+1;                          // DEC C
 		mem[i]=8'h28; i=i+1; mem[i]=8'h00; i=i+1;     // JR Z,$+2
+		// OUTI - scroll17-128 streams its scrolling text through
+		// hundreds of these, generated at run time, and it is the
+		// awkward one: a single instruction doing a memory read and an
+		// IO write, either of which can be contended. A real Z80 takes
+		// 16 T.
+		mem[i]=8'h06; i=i+1; mem[i]=8'h02; i=i+1;     // LD B,2
+		mem[i]=8'h21; i=i+1; mem[i]=8'h80; i=i+1;
+		mem[i]=8'h00; i=i+1;                          // LD HL,$0080
+		mem[i]=8'hED; i=i+1; mem[i]=8'hA3; i=i+1;     // OUTI
+		mem[i]=8'hED; i=i+1; mem[i]=8'hA3; i=i+1;     // OUTI
 		mem[i]=8'hED; i=i+1; mem[i]=8'h71; i=i+1;     // OUT (C),0
 		mem[i]=8'h18; i=i+1; mem[i]=8'hFE;            // JR -2, park
 

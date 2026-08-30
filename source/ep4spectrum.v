@@ -482,7 +482,7 @@ module ep4spectrum (
 	wire            rom_enable; // 0x0000-0x3FFF
 	wire            ram_enable; // 0x4000-0xFFFF
 	// 128K extensions
-	wire            page_enable; // all odd IO addresses with A15 and A1 clear (and A14 set in +3 mode)
+	wire            page_enable; // A15 and A1 clear (A0 too on the 48K only)
 	wire            psg_enable; // all odd IO addresses with A15 set and A1 clear
 	// +3 extensions
 	// MMC
@@ -2116,7 +2116,25 @@ module ep4spectrum (
 
 	generate
 	if (MODEL != 2) begin : addr_decode_128k
-		assign page_enable = (~cpu_ioreq_n) & cpu_m1_n & cpu_a[0] & ~(cpu_a[15] | cpu_a[1]);
+		// A0 is not part of this decode on real hardware. A 128K
+		// answers on A15 and A1 clear and nothing else, so $7FFC
+		// reaches the paging register just as $7FFD does - and because
+		// $7FFC has A0 clear it reaches the ULA at the same moment, so
+		// a single OUT sets the border and the displayed screen
+		// together. scroll17-128 scrolls its text exactly that way: a
+		// run of OUTI to $7FFC whose data byte carries the border
+		// colour in bits 2:0 and the screen select in bit 3. Requiring
+		// A0 here dropped every one of those writes, so the border half
+		// of the effect appeared and the raster half did not.
+		//
+		// The 48K keeps the old decode. Its paging register is wired up
+		// but has no effect (see page_ram_sel), bar bit 4 reaching the
+		// DivMMC through page_rom_sel - and a real 48K has no paging
+		// port at all, so widening what it answers to could only invent
+		// behaviour that machine never had.
+		assign page_enable = (~cpu_ioreq_n) & cpu_m1_n
+		                     & ~(cpu_a[15] | cpu_a[1])
+		                     & (mem128 | cpu_a[0]);
 	end
 	endgenerate
 
