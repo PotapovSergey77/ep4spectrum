@@ -430,8 +430,39 @@ module video (
 	// the +2A/+3 pattern really is 1,7,6,5,4,3,2,1 then it needs an
 	// explicit per-T-state table here, not a different span.
 	wire [2:0] cont_span = (MACHINE == MACHINE_S3) ? 3'd7 : 3'd6;
-	assign CONTENTION = vpicture & ~hc_cont[9]
-	                    & ((VGA ? hc_cont[5:3] : hc_cont[4:2]) < cont_span);
+	// The pattern's phase, separately from the window's edges. The two used
+	// to be the same thing - both came off hc_cont - and that is why the
+	// +2A/+3 could not be expressed: its delays are the same descending
+	// run as everyone else's, but turned two T-states within the group.
+	//
+	// FUSE settles both numbers, and they agree with the published ones.
+	// libspectrum puts the +2A/+3's first pixel at 14365 and its window
+	// offset at 4, against 14362 and 1 for a 128K; worked through
+	// contend_delay_common those cancel, and both machines contend
+	// exactly 14361..14488. Only the table inside differs:
+	//
+	//   128K     6,5,4,3,2,1,0,0  from 14361
+	//   +2A/+3   1,0,7,6,5,4,3,2  from 14361
+	//
+	// Our delay is span minus the index, so span 7 unrotated gives the
+	// right run starting in the wrong place; the rotation moves it.
+	//
+	// The value is measured, not reasoned out - tb_contpat.v drives this
+	// module for a display line and reads back what each phase is
+	// actually charged. Reasoning got it wrong once: the guess was that
+	// the window's first T-state is group index 0, and the 128K then
+	// tells you it is not. That machine is confirmed against hardware and
+	// reads 5,4,3,2,1,0,0,6, which is FUSE's array entry for entry, and
+	// it is only that if the first T-state sampled is group index 1.
+	// Rotating by six on top of that gave 0,7,6,5,4,3,2,1 - a plausible
+	// looking sequence containing every right number in the wrong order.
+	//
+	// One is the value that reads back 5,4,3,2,1,0,7,6, which is FUSE's
+	// contention_pattern_76543210 on the same phase reference the 128K
+	// row is right on.
+	wire [2:0] cont_rot = (MACHINE == MACHINE_S3) ? 3'd1 : 3'd0;
+	wire [2:0] cont_idx = (VGA ? hc_cont[5:3] : hc_cont[4:2]) + cont_rot;
+	assign CONTENTION = vpicture & ~hc_cont[9] & (cont_idx < cont_span);
 
 	// The IO window, kept as a separate signal only so IO_ADJ can trim it.
 	//
@@ -1274,6 +1305,17 @@ module video (
 		// landing back on it the way 12 would.
 		(MACHINE == MACHINE_S3)   ? 10'd6   :
 		(MACHINE == MACHINE_S128) ? 10'd14  :
+		// The +2A/+3 had no row of its own and fell through to zero,
+		// in a table whose own comment says one row per machine. Zero
+		// is fourteen counts - three and a half T-states - before the
+		// 128K's entry, and libspectrum wants the +2A/+3's first pixel
+		// three T-states AFTER the 128K's: 14365 against 14362. Later
+		// first pixel means the interrupt comes earlier in the line, so
+		// twelve counts below the 128K's fourteen.
+		//
+		// The fall-through was within half a T-state of that by
+		// accident, which is exactly why it went unnoticed.
+		(MACHINE == MACHINE_S3)   ? 10'd2   :
 		                            10'd0;
 	// Wrapped into the line rather than added raw.
 	//
@@ -1328,11 +1370,21 @@ module video (
 		+ (cy1 ? 10'sd1 : 10'sd0) + (cy2 ? 10'sd1 : 10'sd0)
 		- (bw1 ? 10'sd1 : 10'sd0) - (bw2 ? 10'sd1 : 10'sd0);
 	wire [8:0] int_line = int_line_s[8:0];
-	// The pulse is 32 T-states on the Sinclair machines and 36 on the
-	// 228-count ones, given here in counts - so it doubles with the
-	// counts-per-T-state in the doubled mode.
+	// The pulse, in counts - four to the T-state, so it doubles in the
+	// doubled mode.
+	//
+	// This was "32 on the Sinclair machines, 36 on the 228-count ones",
+	// which groups the +2A/+3 with the 128K and Pentagon with the 48K.
+	// libspectrum/timings.c groups them the other way round: the
+	// ferranti_7c frame the 128K and +2 use gives 36, the amstrad_asic
+	// frame of the +2A/+3 gives 32, and Pentagon gives 36. So the two
+	// machines that were not measured here had each other's figure.
 	wire [9:0] int_len =
-		(lines228 ? 10'd144 : 10'd128) << (VGA ? 1 : 0);
+		((MACHINE == MACHINE_S48)  ? 10'd128 :   // 32 T
+		 (MACHINE == MACHINE_S128) ? 10'd144 :   // 36 T
+		 (MACHINE == MACHINE_S3)   ? 10'd128 :   // 32 T
+		                             10'd144)     // 36 T, Pentagon
+		<< (VGA ? 1 : 0);
 
 	// Fetch address registers, after zx-sizif-512's video.sv.
 	//

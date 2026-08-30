@@ -217,6 +217,14 @@ module ep4spectrum (
 	// machine ROM is coming from the slots, and that is decided a
 	// thousand lines below.
 	reg             rom_from_sd = 1'b0;
+	// A Pentagon running its slot ROM, which is the only case where
+	// DivMMC has to go away. Declared here and assigned below, where
+	// `machine` exists - ModelSim will not take a net used before its
+	// declaration even where Quartus does.
+	wire            pent_from_sd;
+	// Whether DivMMC's six ROM entry points may arm its automapper.
+	// Assigned by the DivMMC instance below, where page_rom_sel exists.
+	wire            divmmc_entry_ok;
 	wire            key_f11;
 	wire            key_f8;
 	wire            key_f12;
@@ -224,7 +232,6 @@ module ep4spectrum (
 	wire            key_f6;
 	wire            key_f7;
 	wire            key_f9;
-	wire            key_f10;
 	wire            key_prtscr;
 	wire            key_scroll;
 	wire            key_space;
@@ -362,12 +369,6 @@ module ep4spectrum (
 	// Full on at power-up, which is what a real machine does. Judged on
 	// the board with a demo that draws border stripes: with memory and
 	// IO both contended the stripes line up and run at the right speed.
-	// The lamps read the mode inverted, so mode 2 is the state with all
-	// of them dark.
-	reg     [1:0]   cont_mode = 2'd2;
-	// Which machine was selected last, so entering one can set its own
-	// contention default without fighting F10 afterwards.
-	reg     [1:0]   mach_prev = 2'd3;
 	// Which lengthened T-states count as internal ones - see cycle_extra
 	// below. Declared here, with the other trims, because the block that
 	// steps it on Home/End runs long before that point in the file and
@@ -390,11 +391,18 @@ module ep4spectrum (
 	// port write meets it at a different point in the pattern.
 	reg     [16:0]  btn_div = 17'd0;
 	reg     [1:0]   btn_prev = 2'b11;
-	reg             key_f10_d = 1'b0;
 	wire            key_f3;
 	wire            key_f4;
 	reg             key_f3_d = 1'b0;
 	reg             key_f4_d = 1'b0;
+	// F10 is the DivMMC automapper switch - see divmmc_armed below.
+	wire            key_f10;
+	reg             key_f10_d = 1'b0;
+	reg             divmmc_armed = 1'b1;
+	// F12 hands the machine to DivMMC in the state it has at power-up -
+	// see divmmc_takeover below.
+	reg             divmmc_takeover = 1'b0;
+	reg             key_f12_d = 1'b0;
 	wire            key_f1;
 	wire            key_f2;
 	reg             key_f1_d = 1'b0;
@@ -433,6 +441,44 @@ module ep4spectrum (
 	// Memory size follows the machine: 48K has none of it, the other
 	// three have 128K. Pentagon can additionally be given 1024K on F9.
 	wire            mem128 = (machine != MACHINE_S48);
+	// DivMMC stands down for the Pentagon and for nothing else.
+	//
+	// It used to stand down for any machine running a ROM out of a slot,
+	// and the reason written down for that is Pentagon-only: the DivMMC
+	// automapper and TR-DOS both trap $3Dxx, and an automapper armed
+	// under a Beta can never disarm. A 128K or a +2A/+3 has no Beta and
+	// no such fight, and on real hardware those machines run their own
+	// ROM with a DivMMC attached quite happily - which is the whole
+	// point of the thing.
+	//
+	// The Z-Controller follows the same signal. It is Proteus's way to
+	// the card and exists only on the Pentagon, so keeping the two tied
+	// together leaves exactly one owner of the SD lines at any moment -
+	// a mux rather than an arbitration, which is how the pin assignment
+	// below is written.
+	assign pent_from_sd = rom_from_sd & (machine == MACHINE_PENT);
+	// The F10 switch is now the only thing DivMMC stands down for.
+	//
+	// The Pentagon used to stand it down too, and the reason written for
+	// that was the $3Dxx fight: an automapper armed under a Beta can
+	// never disarm, because its exit stub lives at $1FF8-$1FFF inside a
+	// ROM that is no longer mapped. That entry is closed on its own now,
+	// by beta_owns_3d - trdos_avail is exactly "Pentagon, slot ROM
+	// filled" - so the blanket stand-down was left doing only what
+	// divmmc_entry_ok does properly: keeping the other entries from
+	// arming under a ROM where those addresses are different code.
+	//
+	// With it gone, F12 reaches ESXDOS from the Pentagon menu the same
+	// way it does from the 128 menu. There was never a reason for the
+	// two machines to differ from where the user sits.
+	//
+	// Standing down clears paged_in as well as holding the automapper
+	// off, which is what a real switch does - not merely refusing to arm
+	// again, but letting go of the map it is already holding.
+	wire            divmmc_down = ~divmmc_armed;
+	// Declared here rather than beside its use, because the SD pin mux
+	// needs it and that sits above the old position.
+	wire            divmmc_maps = divmmc_paged_in & ~divmmc_down;
 	reg             ext1024 = 1'b0;   // 128K until F9 asks for the megabyte
 
 	// Master clock - 28 MHz
@@ -925,9 +971,13 @@ module ep4spectrum (
 		if (zc_act == 1'b1)             zc_act_cnt <= 22'h3fffff;
 		else if (zc_act_cnt != 22'd0)   zc_act_cnt <= zc_act_cnt - 22'd1;
 	end
-	assign LED[3] = rom_from_sd ? ~(zc_act_cnt != 22'd0) : divmmc_cs;
-	assign LED[2] = ~(cont_mode == 2'd1);
-	assign LED[1] = ~(cont_mode == 2'd0);
+	assign LED[3] = pent_from_sd ? ~(zc_act_cnt != 22'd0) : divmmc_cs;
+	// Silkscreen LED2 now says the DivMMC automapper is switched off,
+	// because a toggle with no indication is a toggle nobody can read.
+	// LED3 stays dark; both used to carry the contention mode, which no
+	// longer exists.
+	assign LED[2] = divmmc_armed;
+	assign LED[1] = 1'b1;
 	assign LED[0] = ~ext1024;
 
 	// ULA "ear" input (tape in) - no tape hardware on this board, keep idle
@@ -977,24 +1027,9 @@ module ep4spectrum (
 				cont_adj <= cont_adj + 5'd1;
 			end
 		end
-		// +2A/+3 comes up with contention OFF, and everything else with
-		// it on.
-		//
-		// Not a preference: on the board that machine is right without
-		// contention and wrong with it, and our window cannot express its
-		// published pattern - a run of length span always leaves a free
-		// T-state, and the +2A/+3 pattern may have none. Until that is
-		// settled, no contention is closer to the machine than the wrong
-		// contention. F10 still cycles it, so the comparison stays
-		// available.
-		mach_prev <= machine;
-		if (machine != mach_prev)
-			cont_mode <= (machine == MACHINE_S3) ? 2'd0 : 2'd2;
-		key_f10_d <= key_f10;
-		if (key_f10 == 1'b1 && key_f10_d == 1'b0)
-			cont_mode <= (cont_mode == 2'd2) ? 2'd0 : (cont_mode + 2'd1);
 		key_f3_d <= key_f3;
 		key_f4_d <= key_f4;
+
 	end
 
 
@@ -1289,7 +1324,28 @@ module ep4spectrum (
 	wire cycle_extra = (cont_model == 2'd0) ? 1'b0 :
 	                   (cont_model == 2'd1) ? (extra_m1 | extra_nonm1) :
 	                   (cont_model == 2'd2) ? extra_nonm1 : extra_m1;
-	wire cont_trigger = (machine == MACHINE_S3) ? ~cpu_mreq_n
+	// The refresh half of M1 has to come out of this.
+	//
+	// Only the +2A/+3 keys contention off the bare MREQ level; the other
+	// machines key off the start of a machine cycle and never meet the
+	// problem. A Z80 drives MREQ low twice in an M1 - once for the fetch
+	// at PC, once for the refresh - and the refresh carries { I, R } on
+	// the bus, which has nothing to do with what the program is touching.
+	// mreq_paid does not help: MREQ goes high between the two, so the
+	// flag clears and the refresh is charged in its own right.
+	//
+	// Measured, tb_s3io.v with I set to $FE the way an IM2 demo sets it:
+	// every refresh reads fe04, fe05, fe06 - R walking - and every one of
+	// them was charged. That is one spurious delay per M1, thousands a
+	// frame, and it is why the +2A/+3 looked right only with contention
+	// switched off. The board said the same thing before the simulation
+	// did: the first held address of each frame was $FExx with the low
+	// byte running.
+	//
+	// No emulator charges it and no real machine does. FUSE contends the
+	// M1 fetch as contend_read( pc, 4 ) and never looks at the refresh
+	// address at all.
+	wire cont_trigger = (machine == MACHINE_S3) ? (~cpu_mreq_n & cpu_rfsh_n)
 	                                            : (cycle_first | cycle_extra);
 
 	// No "already paid" flag on the ULA path, deliberately. It existed
@@ -1406,12 +1462,21 @@ module ep4spectrum (
 	// video.v - measured, IO was coming out a T-state short of the
 	// published table at every phase, and that is the ONLY contention
 	// path a border-drawing OUT goes through.
+	// F10 used to switch this off a piece at a time, and the +2A/+3 came
+	// up with it off entirely, because that machine was right without
+	// contention and wrong with it. The cause was the refresh cycle being
+	// charged - see cont_trigger above - and with that gone the model
+	// stands on its own on every machine. There is nothing left worth
+	// switching between, so the key and its two lamps are gone with it.
+	//
+	// Worth keeping from that episode: a +2A/+3 contends nothing on IO at
+	// all and nothing on the internal T-states either, so a program
+	// painting the border with OUTs out of uncontended RAM is charged
+	// nothing on real hardware. "Off" and "correct" agree exactly there,
+	// which is why switching it off looked like a fix for so long.
 	wire contention = (machine != MACHINE_PENT)
-	                  & ((cont_mode == 2'd2) ?
-	                        ((vid_contention & cont_mem) |
-	                         (vid_contention_io & cont_io)) :
-	                     (cont_mode == 2'd1) ?
-	                        (vid_contention & cont_mem) : 1'b0);
+	                  & ((vid_contention & cont_mem)
+	                     | (vid_contention_io & cont_io));
 
 	// Holding the CPU means withholding its clock enable here, which is
 	// what Sizif does by holding clkcpu.
@@ -1709,6 +1774,87 @@ module ep4spectrum (
 		.DACout(BEEP)
 	);
 
+	// Which ROM has to be selected before ESXDOS's entry points count.
+	//
+	// The six of them are addresses in the 48K BASIC ROM - $0008 is the
+	// API, $0038 the interrupt handler - so they only mean what ESXDOS
+	// intends while that ROM is the one paged. The reference DivMMC says
+	// exactly this, but as a flat rule, and a flat rule is wrong here
+	// because our machines do not all have a ROM select:
+	//
+	//   built-in 48K image   no select at all, so always
+	//   128K slot ROM        48 BASIC is bit 4 of $7FFD
+	//   +2A/+3 slot ROM      48 BASIC is ROM 3, $1FFD bit 2 over that
+	//   Pentagon slot ROM    48 BASIC is bank 3, TR-DOS over bit 4
+	//
+	// The Pentagon row also shuts the entries while TR-DOS is paged,
+	// which is the half of the $3Dxx trap this side is responsible for:
+	// beta_owns_3d refuses the $3Dxx entry itself, and this refuses the
+	// rest of them for as long as the Beta ROM is the one running.
+	//
+	// Applying the 128K rule to a 48K is what broke ESXDOS when this was
+	// tried before: bit 4 is clear out of reset, so only the $0000 entry
+	// ever armed and every dot command failed at $0008. Leaving it off
+	// for a 128K running its own ROM is what came up in 48 BASIC instead
+	// of the 128 menu - $0000 armed on the reset fetch and ESXDOS took
+	// the machine before the menu ever ran.
+	assign divmmc_entry_ok = divmmc_takeover ? 1'b1 :
+		(rom_from_sd & (machine == MACHINE_S128)) ? page_rom_sel :
+		(rom_from_sd & (machine == MACHINE_S3))   ? (plus3_page[1] & page_rom_sel) :
+		(rom_from_sd & (machine == MACHINE_PENT)) ? (~trdos_active & page_rom_sel) :
+		                                            1'b1;
+
+	// F10 switches the DivMMC automapper off and on, which is what the
+	// switch on a real DivMMC board is for.
+	//
+	// It is needed to run a demo against a machine's own ROM at all.
+	// BBG128 is the case that showed it: its snapshot carries
+	// $7FFD = $30 and IM 1, so it runs on the ROM's $0038 handler with
+	// 48 BASIC paged - which is exactly the condition that arms the
+	// automapper. ESXDOS then pages in over the ROM every frame, inside
+	// the handler the demo depends on. Loading the demo needs ESXDOS and
+	// running it needs ESXDOS gone, and nothing but a switch can be both.
+	//
+	// A block of its own because it needs the reset, and the block the
+	// other keys are edge-detected in has none. Re-armed by reset
+	// deliberately: a machine that can be left with no way back to
+	// ESXDOS short of a power cycle is a machine that will be. Nothing
+	// is lost by that - a demo is started with RANDOMIZE USR, not by
+	// resetting into it.
+	always @(posedge clock or negedge reset_n) begin
+		if (reset_n == 1'b0) begin
+			divmmc_armed    <= 1'b1;
+			key_f10_d       <= 1'b0;
+			divmmc_takeover <= 1'b0;
+			key_f12_d       <= 1'b0;
+		end else begin
+			key_f10_d <= key_f10;
+			if (key_f10 == 1'b1 && key_f10_d == 1'b0)
+				divmmc_armed <= ~divmmc_armed;
+			// F12 means "give me ESXDOS", and this makes it mean
+			// exactly that.
+			//
+			// Everything DivMMC touches goes to the state it has at
+			// power-up, which is the one state ESXDOS is known to work
+			// in - the slots are empty then, so nothing of the slot
+			// machinery is in its way. Three flags carry that: the
+			// entry condition, TR-DOS availability (and with it
+			// beta_owns_3d), and who owns the card.
+			//
+			// Gating them one at a time was the wrong approach and cost
+			// several builds. There is no need to work out WHICH of them
+			// stops ESXDOS on a Pentagon when all three can simply be
+			// put where they already work.
+			//
+			// Cleared by reset, which is the natural way back: F11 puts
+			// the machine on its own ROM again with TR-DOS and the
+			// Z-Controller back in place.
+			key_f12_d <= key_f12;
+			if (key_f12 == 1'b1 && key_f12_d == 1'b0)
+				divmmc_takeover <= 1'b1;
+		end
+	end
+
 	// DIVMMC interface - wired straight to the SD card module pins. See
 	// file header comment: the ESXDOS ROM is copied into SDRAM at boot,
 	// so this is live as soon as an SD card is present.
@@ -1718,7 +1864,8 @@ module ep4spectrum (
 		.clken(psg_clken),
 		.enable(divmmc_enable),
 		.beta_owns_3d(trdos_avail),
-		.stand_down(rom_from_sd),
+		.stand_down(divmmc_down),
+		.entry_ok(divmmc_entry_ok),
 		.a(cpu_a),
 		.wr_n(cpu_wr_n),
 		.rd_n(cpu_rd_n),
@@ -1748,7 +1895,7 @@ module ep4spectrum (
 	// where DivMMC is stood down anyway. That keeps exactly one owner of
 	// the card at a time and makes the pin mux below a single choice
 	// rather than an arbitration.
-	wire       zc_enable = rom_from_sd & (~cpu_ioreq_n) & cpu_m1_n;
+	wire       zc_enable = pent_from_sd & (~cpu_ioreq_n) & cpu_m1_n;
 	wire [7:0] zc_do;
 	wire       zc_cs_n, zc_sck, zc_mosi, zc_wait_n;
 	zcontroller u_zc (
@@ -1768,9 +1915,36 @@ module ep4spectrum (
 		.wait_n(zc_wait_n)
 	);
 
-	assign SD_CS   = rom_from_sd ? zc_cs_n : divmmc_cs;
-	assign SD_SCK  = rom_from_sd ? zc_sck  : divmmc_sclk;
-	assign SD_MOSI = rom_from_sd ? zc_mosi : divmmc_mosi;
+	// The card goes to whoever used it last, and STAYS there.
+	//
+	// It was combinational on divmmc_maps, and that cannot work on this
+	// machine: the Pentagon menu pages 48 BASIC in for its own routines,
+	// so the automapper arms and disarms every frame, and the SD lines
+	// were being handed back and forth at that rate - including
+	// mid-transfer, with SD_CS going up and down under a card that was
+	// half way through a command. The board says how often: the arm
+	// counter saturates in a second or two just sitting in the menu.
+	//
+	// A latch instead. DivMMC takes the card whenever it is mapped; the
+	// Z-Controller takes it back when a program actually touches one of
+	// its two ports, which is Proteus and nothing else. Neither can lose
+	// it in the middle of a transfer, because nothing but the other one
+	// deliberately using the card moves it.
+	wire       zc_ports = zc_enable & ((cpu_a[7:0] == 8'h57)
+	                                 | (cpu_a[7:0] == 8'h77));
+	reg        card_to_divmmc = 1'b1;
+	always @(posedge clock or negedge reset_n) begin
+		if (reset_n == 1'b0)
+			card_to_divmmc <= ~pent_from_sd;
+		else if (divmmc_maps == 1'b1 || divmmc_takeover == 1'b1)
+			card_to_divmmc <= 1'b1;
+		else if (zc_ports == 1'b1)
+			card_to_divmmc <= 1'b0;
+	end
+	wire       zc_owns_card = pent_from_sd & ~card_to_divmmc;
+	assign SD_CS   = zc_owns_card ? zc_cs_n : divmmc_cs;
+	assign SD_SCK  = zc_owns_card ? zc_sck  : divmmc_sclk;
+	assign SD_MOSI = zc_owns_card ? zc_mosi : divmmc_mosi;
 	assign divmmc_miso = SD_MISO;
 
 	// Asynchronous reset
@@ -1923,17 +2097,24 @@ module ep4spectrum (
 	// there. Now it can be measured on the board instead of guessed at.
 	wire       romld_read       = romld_dat_enable & ~cpu_rd_n;
 
-	// Where each slot sits, in units of 32K of rom_addr space. Bit 19 of
-	// rom_addr is DivMMC's; every base here leaves it clear, so the two
-	// cannot overlap by construction rather than by arithmetic.
+	// Where each slot sits in rom_addr space. Bit 19 is DivMMC's and
+	// every base here leaves it clear, so the two cannot overlap by
+	// construction rather than by arithmetic.
 	//
-	//   slot 0  128K      rom_addr 0x00000  32K
-	//   slot 1  Pentagon  rom_addr 0x08000  32K
-	//   slot 2  TR-DOS    rom_addr 0x10000  16K
-	function [4:0] slot_base(input [1:0] s);
-		slot_base = (s == 2'd0) ? 5'd0 :
-		            (s == 2'd1) ? 5'd1 : 5'd2;
-	endfunction
+	//   slot 0  128K/+2    rom_addr 0x00000  32K   2 banks
+	//   slot 1  Pentagon   rom_addr 0x10000  64K   4 banks
+	//   slot 2  +2A/+3     rom_addr 0x20000  64K   4 banks
+	//   slot 3  disk image - not here, it goes through cpu_addr
+	//
+	// Slot 2 was TR-DOS and is the +2A/+3's now. TR-DOS stopped being a
+	// slot of its own when the Pentagon image became one 64K file with
+	// TR-DOS as its bank 1, and what was left behind was worse than
+	// unused: slot_base put it at 0x10000, which is where the Pentagon
+	// image starts, so anything written to it landed on top of Pentagon.
+	//
+	// The old slot_base function is gone with it. It expressed a base in
+	// units of 32K, and two of the three slots are 64K now, so the units
+	// no longer fit the thing they were measuring.
 
 	reg [19:0] romld_cnt       = 20'd0;
 	reg [3:0]  rom_slot_filled = 4'b0000;
@@ -2019,7 +2200,8 @@ module ep4spectrum (
 	// was a power cycle. Now the choice is a keypress and a reset, in
 	// either direction, and the slots keep their contents either way.
 	wire       rom_sd_ready = ((machine == MACHINE_S128) & rom_slot_filled[0])
-	                        | ((machine == MACHINE_PENT) & rom_slot_filled[1]);
+	                        | ((machine == MACHINE_PENT) & rom_slot_filled[1])
+	                        | ((machine == MACHINE_S3)   & rom_slot_filled[2]);
 
 	// Which ROM the machine runs can only change across a reset.
 	//
@@ -2064,12 +2246,17 @@ module ep4spectrum (
 	// Gated on rom_from_sd, which is what makes it safe. TR-DOS and
 	// DivMMC both trap $3Dxx, and an earlier attempt armed this whenever
 	// slot 2 was filled - so it fired while ESXDOS was still running, ate
-	// its own entry and the card would not initialise. But rom_from_sd is
-	// exactly the state in which divmmc_maps has already stood the
-	// automapper down, so in here there is nobody to conflict with.
+	// its own entry and the card would not initialise.
+	//
+	// This signal is also beta_owns_3d, and that is now the whole of the
+	// defence on the $3Dxx side: DivMMC no longer stands down wholesale
+	// on a Pentagon, so the two do share the machine. They do not share
+	// the entry - whenever this is true, DivMMC refuses $3Dxx - and
+	// divmmc_entry_ok shuts the other entries for as long as TR-DOS is
+	// the ROM actually paged.
 	reg  trdos_paged = 1'b0;
 	assign trdos_avail = rom_from_sd & (machine == MACHINE_PENT)
-	                     & rom_slot_filled[1];
+	                     & rom_slot_filled[1] & ~divmmc_takeover;
 
 	// The fetch that triggers the entry has to come from the TR-DOS ROM
 	// ALREADY. $3D00 is the address programs CALL to reach TR-DOS, and
@@ -2104,6 +2291,10 @@ module ep4spectrum (
 
 	always @(posedge clock) begin
 		if (reset_n == 1'b0)
+			trdos_paged <= 1'b0;
+		else if (divmmc_takeover == 1'b1)
+			// The takeover puts TR-DOS out of the picture, and a latched
+			// page from before it would otherwise outlive that.
 			trdos_paged <= 1'b0;
 		else if (cpu_m1_n == 1'b0 && cpu_mreq_n == 1'b0 && cpu_rd_n == 1'b0) begin
 			if (trdos_now == 1'b1)
@@ -2233,12 +2424,17 @@ module ep4spectrum (
 	// fetching it off the card. It comes back on a power cycle, which
 	// clears the slot flags; a plain reset does not, so switching machine
 	// and resetting brings the loaded ROM up rather than ESXDOS again.
-	// A machine running a ROM out of the slots does not have DivMMC in
-	// its map at all. Letting the two share was tried: see divmmc.v,
-	// where the reason it produced a differently-behaved machine on
-	// every attempt is written down. Getting a program onto a TR-DOS
-	// machine is a job for a disk image in slot 3, not for ESXDOS.
-	wire divmmc_maps = divmmc_paged_in & ~rom_from_sd;
+	// All three machines keep DivMMC while running their own ROM, which
+	// is how the real machines behave, and the entries are gated instead
+	// of the whole device - see divmmc_entry_ok. What stops DivMMC
+	// winning the reset fetch above is that gate: out of reset the ROM
+	// select is clear on every machine, so $0000 is not an entry, and the
+	// loaded image gets control.
+	//
+	// F10 is the way to put DivMMC out of the way once a program is
+	// loaded, which some of them need: a demo running IM 1 on the ROM
+	// handler with 48 BASIC paged meets the automapper at $0038 every
+	// frame otherwise.
 
 	wire ext_ram_write = (rom_enable & esxdos_downloaded[1] & divmmc_maps & divmmc_write) & ~cpu_wr_n;
 	wire int_ram_write = ram_enable & ~cpu_wr_n;
@@ -2535,9 +2731,16 @@ module ep4spectrum (
 			// cpu_addr rather than this one.
 			// The Pentagon slot is 64K now and takes sixteen bits of the
 			// counter; the others are 32K and take fifteen.
+			// Sixteen bits of counter for the two 64K slots, fifteen
+			// for the 32K one - the width has to match the slot or the
+			// concatenation does not come to twenty bits, and Verilog
+			// trims a too-wide value from the TOP, taking the base off
+			// the front. That is what once wrote all three images at
+			// address zero, one on top of the last.
 			(romld_write | romld_read) ?
-				((romld_slot == 2'd1) ? {4'd1, romld_cnt[15:0]}
-				                      : {slot_base(romld_slot), romld_cnt[14:0]}) :
+				((romld_slot == 2'd1) ? {4'd1, romld_cnt[15:0]} :
+				 (romld_slot == 2'd2) ? {4'd2, romld_cnt[15:0]} :
+				                        {5'd0, romld_cnt[14:0]}) :
 			((esxdos_downloaded[1] == 1'b1) && (divmmc_maps == 1'b1)) ? {2'b11, divmmc_addr[17:0]} :
 			// Otherwise access the internal ROM
 			// a loaded 128K or Pentagon image, 32K via page_rom_sel
@@ -2555,7 +2758,23 @@ module ep4spectrum (
 			// pages its half in, and because bit 4 is zero what arrives
 			// is Proteus rather than TR-DOS. TR-DOS is no longer a slot
 			// of its own - it is bank 1 of this image.
-			rom_from_sd ? {4'd1, ~trdos_active, page_rom_sel, cpu_a[13:0]} :
+			// One row per machine, because the three do not agree on
+			// where the image sits OR on what selects a bank inside it.
+			//
+			//   128K/+2   32K, one line:  $7FFD bit 4
+			//   +2A/+3    64K, two lines: $1FFD bit 2 over $7FFD bit 4
+			//   Pentagon  64K, two lines: TR-DOS over $7FFD bit 4
+			//
+			// This used to be the Pentagon row alone, for every machine.
+			// A 128K with its slot filled read from the Pentagon's base
+			// with the Pentagon's banking - which nothing noticed only
+			// because no 128K image was ever loaded into it.
+			rom_from_sd ?
+				((machine == MACHINE_S128) ?
+					{5'd0, page_rom_sel, cpu_a[13:0]} :
+				 (machine == MACHINE_S3) ?
+					{4'd2, plus3_page[1], page_rom_sel, cpu_a[13:0]} :
+					{4'd1, ~trdos_active, page_rom_sel, cpu_a[13:0]}) :
 			{6'b000000, cpu_a[13:0]};
 	end
 	endgenerate
@@ -2827,46 +3046,7 @@ module ep4spectrum (
 	// Z-controller's. F000 means nothing was holding the CPU, which
 	// leaves the clock. No F at all means the CPU never stopped - it is
 	// going round a loop, and every wait-related theory is wrong.
-	// DIAGNOSTIC: the address of the last opcode fetch at the first
-	// contended T-state of the frame - the instant the raster enters the
-	// display. FUSE renders BBG128 correctly, so unlike esh2_48's dash
-	// this one has a reference: break there in its debugger, read PC, and
-	// the difference between the two numbers is the drift.
-	//
-	// The last opcode fetch, not the address on the bus: during an IO
-	// cycle the bus carries the port, which is what a first attempt at
-	// this measured.
-	// Which raster T-state the CPU is at when it fetches the opcode at
-	// $C396 - where the interrupt returns into BBG128, so that nothing but
-	// ADDRESS at a fixed T-state was too coarse: $C3E5 is the DJNZ
-	// itself, run eight times over, so FUSE standing there says only
-	// that we are ahead and not by how much. A fixed address outside the
-	// loop and a T-state read against it is exact, and FUSE gives the
-	// same thing from a breakpoint on that address.
-	reg [15:0] tcnt    = 16'd0;
-	reg [15:0] pc_show = 16'd0;
-	reg        pc_irq  = 1'b1;
-	reg        pc_arm  = 1'b0;
-	always @(posedge clock) begin
-		pc_irq <= vid_irq_n;
-		if (pc_irq == 1'b1 && vid_irq_n == 1'b0) begin
-			tcnt   <= 16'd0;
-			pc_arm <= 1'b1;
-		end else begin
-			if (cpu_clken == 1'b1)
-				tcnt <= tcnt + 16'd1;
-			if (pc_arm == 1'b1 && cpu_m1_n == 1'b0 && cpu_mreq_n == 1'b0
-			    && cpu_a == 16'hC396) begin
-				pc_show <= tcnt;
-				pc_arm  <= 1'b0;
-			end
-		end
-	end
-	wire [3:0] nibble = (digit_scan == 2'd3) ? pc_show[15:12] :
-	                    (digit_scan == 2'd2) ? pc_show[11:8]  :
-	                    (digit_scan == 2'd1) ? pc_show[7:4]   :
-	                                           pc_show[3:0];
-	wire [3:0] nibble_normal = any_trim ?
+	wire [3:0] nibble = any_trim ?
 	                    ((digit_scan == 2'd3) ? 4'hc :  // C, contention window
 	                     (digit_scan == 2'd2) ? {2'b00, cont_model} :
 	                     (digit_scan == 2'd1) ? {3'b000, cont_adj[4]} :
@@ -2876,14 +3056,7 @@ module ep4spectrum (
 	                    (digit_scan == 2'd1) ? pg_tens :
 	                                           pg_units;
 
-
-
-
-
-
-
-	wire digit_blank = 1'b0;
-	wire digit_blank_x = any_trim ? 1'b0 :
+	wire digit_blank = any_trim ? 1'b0 :
 	                   ((digit_scan == 2'd1) && (page_ram_sel < 6'd10));
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in

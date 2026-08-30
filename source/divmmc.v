@@ -40,6 +40,19 @@ module divmmc (
 	// memory map at all, so its automapper must not arm either.
 	input          stand_down,
 
+	// High when the six ROM entry points below may arm the automapper.
+	// They are ESXDOS's, and they are addresses in the 48K BASIC ROM:
+	// $0008 is the API and $0038 the interrupt handler. Under a different
+	// ROM the same addresses are different code, so the reference DivMMC
+	// arms them only while 48 BASIC is the selected half. This is that
+	// condition, worked out by the caller because the answer differs by
+	// machine - see divmmc_entry_ok in ep4spectrum.v.
+	//
+	// $3Dxx is deliberately NOT gated by it. That entry is TR-DOS's and
+	// the specification arms it whatever ROM is paged; beta_owns_3d is
+	// what decides that one.
+	input          entry_ok,
+
 	input  [15:0] 	a,
 	input          wr_n,
 	input          rd_n,
@@ -238,7 +251,13 @@ always @(posedge clk) begin
 			m1_trigger <= 1'b0;
 			paged_in_r <= 1'b0;
 		end else if (!mreq_n && !rd_n && !m1_n &&
-			// All seven entries, unconditionally.
+			// Five entries gated by entry_ok, the NMI one not. They were
+			// unconditional, and that was the right condition applied
+			// to the wrong machines: unconditional is right for a 48K,
+			// which has no ROM select, and wrong for a 128K running its
+			// own ROM, where $0038 is the interrupt handler and $0000
+			// fires on the reset fetch - which brought the machine up
+			// in 48 BASIC instead of the 128 menu.
 			//
 			// The reference DivMMC gates six of them on "the 48K BASIC
 			// ROM is currently selected", and copying that here broke
@@ -247,8 +266,20 @@ always @(posedge clk) begin
 			// ever armed the automapper - and $0008 is the ESXDOS API,
 			// the way every dot command is called. .browse answered with
 			// an error and the machine could not be brought back up.
-			((a==16'h0000) || (a==16'h0008) || (a==16'h0038) ||
-			 (a==16'h0066) || (a==16'h04C6) || (a==16'h0562))) begin
+			//
+			// $0066 is outside the gate. It is the NMI entry, and on
+			// this board an NMI comes from F12 and nothing else, so it
+			// cannot fire by accident - holding it under the ROM
+			// condition only made the way in longer. From the 128 menu
+			// bit 4 is clear, so the first F12 was not seen here at
+			// all: it went to the ROM own handler, which drops into 48
+			// BASIC, and only a SECOND F12 reached ESXDOS. Ungated, it
+			// is what the NMI button on a real DivMMC is for - one
+			// press, from whatever ROM happens to be paged.
+			((a==16'h0066) ||
+			 (entry_ok &&
+			  ((a==16'h0000) || (a==16'h0008) || (a==16'h0038) ||
+			   (a==16'h04C6) || (a==16'h0562))))) begin
 			// activate automapper after this cycle
 			m1_trigger <= 1'b1;
 			by_3d      <= 1'b0;

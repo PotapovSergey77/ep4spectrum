@@ -1,4 +1,4 @@
-; romload - load 128K / Pentagon / TR-DOS ROM images from the SD card
+; romload - load 128K, +2A/+3 and Pentagon ROM images from the SD card
 ;
 ; Copyright (c) 2026 Sergey Potapov (potapov.sergey.77@gmail.com)
 ;
@@ -43,11 +43,11 @@ CTL_RESET       equ $04         ; bit 2: zero the byte counter
 CTL_FILL        equ $08         ; bit 3: mark this slot filled
 CTL_DRV_B       equ $20         ; bits 6-5: which drive the disk slot
 CTL_DRV_C       equ $40         ; writes to - A is 0
-CTL_DRV_D       equ $60
+CTL_DRV_D       equ $60         ; defined, not used - see below
 
 SLOT_128        equ 0
 SLOT_PENT       equ 1
-SLOT_TRDOS      equ 2
+SLOT_PLUS3      equ 2
 SLOT_DISK       equ 3
 
 SCRWIDTH        equ 32
@@ -83,21 +83,46 @@ RDLEN           equ 256
 ; BASIC keeps working. The stream is already channel 2 anyway,
 ; since the command was typed at the BASIC prompt.
 start:
-                ; One 64K image with all four banks in it: the 128 menu,
-                ; 48 BASIC, TR-DOS and Proteus. TR-DOS is no longer a
-                ; file of its own - it is bank 1 of this one.
+                ; Three machines, in the order the slots are numbered.
                 ;
                 ; Size in 256-byte BLOCKS, not bytes. 65536 does not fit
                 ; in sixteen bits and arrives as zero, which made every
                 ; block look like an overshoot: the loader gave up on the
                 ; first one and the slot stayed empty, so neither the
                 ; Pentagon menu nor anything else came up.
+                ;
+                ; A missing file is not an error - one_rom says so on its
+                ; own line and moves on, so a card carrying one image
+                ; still brings that machine up.
+
+                ; 128K/+2: two banks, the 128 menu and 48 BASIC, picked
+                ; by bit 4 of $7FFD alone.
+                ld      hl,fn_128
+                ld      de,128          ; 32K
+                ld      a,SLOT_128
+                call    one_rom
+
+                ; +2A/+3: four banks - editor, syntax, +3DOS, 48 BASIC -
+                ; picked by bit 2 of $1FFD over bit 4 of $7FFD.
+                ld      hl,fn_plus3
+                ld      de,256          ; 64K
+                ld      a,SLOT_PLUS3
+                call    one_rom
+
+                ; Pentagon: four banks in one file - the 128 menu, 48
+                ; BASIC, TR-DOS and Proteus. TR-DOS is not a file of its
+                ; own here, it is bank 1 of this one.
                 ld      hl,fn_pent
                 ld      de,256          ; 64K
                 ld      a,SLOT_PENT
                 call    one_rom
 
-                ; A blank disk in all four drives.
+                ; A blank disk in A, B and C.
+                ;
+                ; D is deliberately left alone. It does not work, and a
+                ; drive that formats but cannot be used is worse than one
+                ; that is plainly empty - TR-DOS shows it as a disk and
+                ; then fails on it.
                 ;
                 ; They have to come from here. TR-DOS formats with
                 ; WRITE TRACK, which writes no data in this controller,
@@ -114,8 +139,6 @@ start:
                 ld      a,CTL_DRV_B
                 call    blank_drv
                 ld      a,CTL_DRV_C
-                call    blank_drv
-                ld      a,CTL_DRV_D
                 call    blank_drv
 
                 ; Nothing loaded at all is the case worth spelling out.
@@ -505,6 +528,8 @@ pd_show:        push    af
 lead:           defb    0
 
 ; ---------------------------------------------------------------------
+fn_128:         defb    "128.rom",0
+fn_plus3:       defb    "plus3.rom",0
 fn_pent:        defb    "pentagon.rom",0
 
 msg_nofile:     defb    "not on card",13,0
@@ -518,6 +543,8 @@ msg_bytes:      defb    "K",13,0
 msg_howto:      defb    13
                 defb    "No ROM images found. Put these in",13
                 defb    "the root of the card:",13,13
+                defb    "  128.rom       32K",13
+                defb    "  plus3.rom     64K",13
                 defb    "  pentagon.rom  64K",13,13
                 defb    "Staying on the 48K ROM.",13,0
 
