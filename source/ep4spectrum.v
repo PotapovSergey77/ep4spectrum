@@ -2809,7 +2809,46 @@ module ep4spectrum (
 	// Z-controller's. F000 means nothing was holding the CPU, which
 	// leaves the clock. No F at all means the CPU never stopped - it is
 	// going round a loop, and every wait-related theory is wrong.
-	wire [3:0] nibble = any_trim ?
+	// DIAGNOSTIC: the address of the last opcode fetch at the first
+	// contended T-state of the frame - the instant the raster enters the
+	// display. FUSE renders BBG128 correctly, so unlike esh2_48's dash
+	// this one has a reference: break there in its debugger, read PC, and
+	// the difference between the two numbers is the drift.
+	//
+	// The last opcode fetch, not the address on the bus: during an IO
+	// cycle the bus carries the port, which is what a first attempt at
+	// this measured.
+	// Which raster T-state the CPU is at when it fetches the opcode at
+	// $C396 - where the interrupt returns into BBG128, so that nothing but
+	// ADDRESS at a fixed T-state was too coarse: $C3E5 is the DJNZ
+	// itself, run eight times over, so FUSE standing there says only
+	// that we are ahead and not by how much. A fixed address outside the
+	// loop and a T-state read against it is exact, and FUSE gives the
+	// same thing from a breakpoint on that address.
+	reg [15:0] tcnt    = 16'd0;
+	reg [15:0] pc_show = 16'd0;
+	reg        pc_irq  = 1'b1;
+	reg        pc_arm  = 1'b0;
+	always @(posedge clock) begin
+		pc_irq <= vid_irq_n;
+		if (pc_irq == 1'b1 && vid_irq_n == 1'b0) begin
+			tcnt   <= 16'd0;
+			pc_arm <= 1'b1;
+		end else begin
+			if (cpu_clken == 1'b1)
+				tcnt <= tcnt + 16'd1;
+			if (pc_arm == 1'b1 && cpu_m1_n == 1'b0 && cpu_mreq_n == 1'b0
+			    && cpu_a == 16'hC396) begin
+				pc_show <= tcnt;
+				pc_arm  <= 1'b0;
+			end
+		end
+	end
+	wire [3:0] nibble = (digit_scan == 2'd3) ? pc_show[15:12] :
+	                    (digit_scan == 2'd2) ? pc_show[11:8]  :
+	                    (digit_scan == 2'd1) ? pc_show[7:4]   :
+	                                           pc_show[3:0];
+	wire [3:0] nibble_normal = any_trim ?
 	                    ((digit_scan == 2'd3) ? 4'hc :  // C, contention window
 	                     (digit_scan == 2'd2) ? {2'b00, cont_model} :
 	                     (digit_scan == 2'd1) ? {3'b000, cont_adj[4]} :
@@ -2825,7 +2864,8 @@ module ep4spectrum (
 
 
 
-	wire digit_blank = any_trim ? 1'b0 :
+	wire digit_blank = 1'b0;
+	wire digit_blank_x = any_trim ? 1'b0 :
 	                   ((digit_scan == 2'd1) && (page_ram_sel < 6'd10));
 	// decimal point after the 3, and on the page digit while DivMMC is
 	// paged in

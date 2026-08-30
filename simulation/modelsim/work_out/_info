@@ -1,0 +1,143 @@
+m255
+K3
+13
+cModel Technology
+Z0 dC:\Users\dev\development\ep4spectrum\simulation\modelsim
+vT80
+Z1 !s100 5_?O8bg:YWXS^f9W>=:;21
+Z2 IDA==oV^LaWR5@dZOzhZnd1
+Z3 VBAe@XV1iES5KK]E<A^EkH2
+Z4 dC:\Users\dev\development\ep4spectrum\simulation\modelsim
+Z5 w1787996602
+Z6 8../../source/T80/T80.v
+Z7 F../../source/T80/T80.v
+L0 76
+Z8 OV;L;10.1d;51
+r1
+31
+Z9 !s108 1788076768.949000
+Z10 !s107 tb_intt.v|../../source/T80/T80se.v|../../source/T80/T80_Reg.v|../../source/T80/T80_MCode.v|../../source/T80/T80_ALU.v|../../source/T80/T80.v|
+Z11 !s90 -work|work_out|../../source/T80/T80.v|../../source/T80/T80_ALU.v|../../source/T80/T80_MCode.v|../../source/T80/T80_Reg.v|../../source/T80/T80se.v|tb_intt.v|
+Z12 o-work work_out -O0
+n@t80
+!i10b 1
+!s85 0
+!s101 -O0
+vT80_ALU
+Z13 !s100 Tf[HdAkJHbPLZh7QO8hfm0
+Z14 IWeebaEFY>RJHZbfM2D_[83
+Z15 V^N5e6?f7jYo=[dIII8bFm2
+R4
+R5
+Z16 8../../source/T80/T80_ALU.v
+Z17 F../../source/T80/T80_ALU.v
+L0 65
+R8
+r1
+31
+R9
+R10
+R11
+R12
+Z18 n@t80_@a@l@u
+!i10b 1
+!s85 0
+!s101 -O0
+vT80_MCode
+Z19 !s100 `RGK6c>708:1]=<K?gZa?3
+Z20 I5A=2ZMiKG0?[1>LiGRH?53
+Z21 VU>2CV?4R7ZFRXj9JbO9Z<3
+R4
+R5
+Z22 8../../source/T80/T80_MCode.v
+Z23 F../../source/T80/T80_MCode.v
+L0 80
+R8
+r1
+31
+R9
+R10
+R11
+R12
+Z24 n@t80_@m@code
+!i10b 1
+!s85 0
+!s101 -O0
+vT80_Reg
+Z25 !s100 jgKR=bkF3Cf>XMNU^KNR;1
+Z26 If0e6MRIV8nEKR[8CMaP[d3
+Z27 V]2SRh4JlRVBIDNS>2A=]42
+R4
+R5
+Z28 8../../source/T80/T80_Reg.v
+Z29 F../../source/T80/T80_Reg.v
+L0 58
+R8
+r1
+31
+R9
+R10
+R11
+R12
+Z30 n@t80_@reg
+!i10b 1
+!s85 0
+!s101 -O0
+vT80se
+Z31 !s100 lakd<@0behe[N^XeZ:IfR3
+Z32 IZ3:TRo6jfhURf__oB?I0A0
+Z33 VOndc8F82o<z57KH<GJ13F1
+R4
+R5
+Z34 8../../source/T80/T80se.v
+Z35 F../../source/T80/T80se.v
+L0 69
+R8
+r1
+31
+R9
+R10
+R11
+R12
+Z36 n@t80se
+!i10b 1
+!s85 0
+!s101 -O0
+vtb_intt
+!i10b 1
+!s100 K;e:6<_U=L1cU@aPDYUc?1
+IFZo7:A>=jaAKYBQ9f?[i70
+Z37 VA]?G]CMTjIBz[oN>k?=Zi2
+R4
+w1788076803
+Z38 8tb_intt.v
+Z39 Ftb_intt.v
+L0 20
+R8
+r1
+!s85 0
+31
+!s108 1788076815.937000
+!s107 tb_intt.v|
+Z40 !s90 -work|work_out|tb_intt.v|
+!s101 -O0
+R12
+vtb_outt
+Z41 IKfITen4>2Pnc`k^2B3_k60
+Z42 VB0Y]C4ojVOTEYdQRiQ<9X3
+R4
+Z43 w1788075578
+Z44 8tb_outt.v
+Z45 Ftb_outt.v
+L0 27
+R8
+r1
+31
+Z46 !s108 1788075591.181000
+Z47 !s107 tb_outt.v|../../source/T80/T80se.v|../../source/T80/T80_Reg.v|../../source/T80/T80_MCode.v|../../source/T80/T80_ALU.v|../../source/T80/T80.v|
+Z48 !s90 -work|work_out|../../source/T80/T80.v|../../source/T80/T80_ALU.v|../../source/T80/T80_MCode.v|../../source/T80/T80_Reg.v|../../source/T80/T80se.v|tb_outt.v|
+R12
+Z49 !s100 n5b2nbE`5T3m;PA_jbcGh0
+!i10b 1
+!s85 0
+!s101 -O0

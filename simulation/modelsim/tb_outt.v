@@ -90,7 +90,13 @@ module tb_outt;
 		mem[i]=8'h00; i=i+1;                          // NOP
 		mem[i]=8'hD3; i=i+1; mem[i]=8'hFE; i=i+1;     // OUT ($FE),A
 		mem[i]=8'h00; i=i+1;                          // NOP
-		mem[i]=8'hED; i=i+1; mem[i]=8'h71; i=i+1;     // OUT (C),0
+		// The delay shapes BBG128 uses: DJNZ round a loop and out of it,
+		// and the small instructions between its OUTs.
+		mem[i]=8'h06; i=i+1; mem[i]=8'h03; i=i+1;     // LD B,3
+		mem[i]=8'h10; i=i+1; mem[i]=8'hFE; i=i+1;     // DJNZ 02
+		mem[i]=8'h3D; i=i+1;                          // DEC A
+		mem[i]=8'h0D; i=i+1;                          // DEC C
+		mem[i]=8'h28; i=i+1; mem[i]=8'h00; i=i+1;     // JR Z,$+2
 		mem[i]=8'hED; i=i+1; mem[i]=8'h71; i=i+1;     // OUT (C),0
 		mem[i]=8'h18; i=i+1; mem[i]=8'hFE;            // JR -2, park
 
