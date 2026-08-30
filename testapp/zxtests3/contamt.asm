@@ -1,3 +1,13 @@
+; WITHDRAWN - do not build this into testapp/tests.
+;
+; It runs on a 128K and resets a 48K. The timed block below is
+; ulatest3's, taken verbatim without working through its arithmetic:
+; the final delay is FRAMET - TVAR + 32656 with sixteen-bit wrap, which
+; happens to land well for a 70908-T frame and does not for 69888. The
+; source is kept because the lesson is worth keeping - an instrument
+; whose timing its author cannot account for is worth less than no
+; instrument - but it is not a working test.
+;
 ; contamt - HOW MUCH each contended access is delayed, T-state by
 ; T-state, printed as a map.
 ;
