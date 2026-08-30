@@ -151,7 +151,11 @@ cPORTl equ $+1
 	dec c
 	halt
 
-	rst 0
+	; The trap that used to be RST 0 - which on a Spectrum is a reset,
+	; and on the 48K this test rebooted the machine instead of saying
+	; anything. Parking here keeps whatever was printed on the screen,
+	; so how far it got is visible.
+_trap	jr _trap
 
 	include delay.asm
 	include instint.asm
