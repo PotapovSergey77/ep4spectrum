@@ -66,3 +66,4 @@ simulation/modelsim/work_iow/
 # zxtests3 builds its .tap files from .asm and .bas with the tools in
 # tools/; the ready-to-run set lives in testapp/tests/ instead.
 testapp/zxtests3/*.tap
+simulation/modelsim/work_out/
