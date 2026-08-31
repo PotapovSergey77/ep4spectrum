@@ -236,6 +236,13 @@ module T80 (
 	//   by hand from the register file.
 	wire    [8:0]   BIO_ioq  = {1'b0, DI_Reg} + {1'b0, ID16[7:0]};
 	wire    [8:0]   BIO_ioq2 = (BIO_ioq & 9'b000000111) ^ {1'b0, BusA};
+	// The repeat correction for INxR and OTxR. When the count has not
+	// run out the H and parity flags are not the single form's: they
+	// are adjusted by the carry out of k and by B either side of
+	// itself. BusA is B after the decrement, as above.
+	wire            BIO_pbase = ~(^BIO_ioq2);
+	wire    [7:0]   BIO_Bm1   = BusA - 8'd1;
+	wire    [7:0]   BIO_Bp1   = BusA + 8'd1;
 	// CPI and its family take the undocumented 5 and 3 not from the
 	// comparison but from A - (HL) - H, bit 1 into flag 5 and bit 3
 	// into flag 3. The ALU has already put the CP result in ALU_Q
@@ -823,7 +830,57 @@ module T80 (
 					F[Flag_N] <= DI_Reg[7];
 					F[Flag_C] <= BIO_ioq[8];
 					F[Flag_H] <= BIO_ioq[8];
-					F[Flag_P] <= ~(^BIO_ioq2);
+					F[Flag_P] <= BIO_pbase;
+
+					// The repeat correction, in here rather than in a block
+					// of its own because the moment is what matters and this
+					// condition already has it right. BTR_r cannot serve as
+					// the "will repeat" test - measured, it is still zero on
+					// every T-state where I_BTR is high, so a block keyed on
+					// it never fired at all for these instructions.
+					//
+					// IR[4] tells a repeating opcode from a single one, and
+					// BusA is B after the decrement, so B not yet zero means
+					// another pass is coming. Then the 5 and 3 come from PC
+					// as they do for the transfer forms, and H and parity
+					// move as well - which the transfer forms do not do.
+					if (IR[4] == 1'b1 && BusA != 8'h00) begin
+						F[Flag_Y] <= PC[13];
+						F[Flag_X] <= PC[11];
+						if (BIO_ioq[8] == 1'b1) begin
+							if (DI_Reg[7] == 1'b1) begin
+								F[Flag_P] <= BIO_pbase ^ (~^BIO_Bm1[2:0]) ^ 1'b1;
+								F[Flag_H] <= (BusA[3:0] == 4'h0);
+							end else begin
+								F[Flag_P] <= BIO_pbase ^ (~^BIO_Bp1[2:0]) ^ 1'b1;
+								F[Flag_H] <= (BusA[3:0] == 4'hF);
+							end
+						end else begin
+							F[Flag_P] <= BIO_pbase ^ (~^BusA[2:0]) ^ 1'b1;
+							F[Flag_H] <= 1'b0;
+						end
+					end
+				end
+
+				// A block instruction that is going to repeat takes the
+				// undocumented 5 and 3 from PC, not from the value the
+				// single form uses.
+				//
+				// This is what z80full separates as LDIR->NOP' and its
+				// three companions. Those vectors start with BC = 0, so
+				// after one pass BC is $FFFF and the instruction WOULD
+				// have gone round again - the repeating rule applies even
+				// though it never gets there, the test having pointed DE
+				// at the instruction's own opcode so it rewrites itself
+				// into ED 00. Plain LDIR and LDDR pass because their
+				// vectors run the count down to zero, and the last pass
+				// does not repeat.
+				//
+				// PC here is the instruction address plus two, before the
+				// repeat takes it back.
+				if (BTR_r == 1'b1) begin
+					F[Flag_Y] <= PC[13];
+					F[Flag_X] <= PC[11];
 				end
 
 			end
