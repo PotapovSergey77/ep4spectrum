@@ -216,6 +216,32 @@ module T80 (
 	reg     [7:0]   BusA;
 	wire    [7:0]   ALU_Q;
 	wire    [7:0]   F_Out;
+	wire   [15:0]   RegBC;
+	wire   [15:0]   RegHL;
+	// Block IO flags, taken from the T80 in Alex-Electron's zx fork,
+	// which has them right. The rule is the one FUSE uses - N from the
+	// byte, H and carry from k overflowing, P/V from the parity of the
+	// bottom three bits of k against B - but three details are theirs
+	// and each is one I had wrong:
+	//
+	//   the moment: T2 for the OUT forms, T1 for the IN ones. Mine had
+	//   no T-state condition at all, because T1 alone did not fire -
+	//   which now reads as having found the IN answer and lost the OUT.
+	//
+	//   the byte: DI_Reg. I moved to DO because DI_Reg read stale where
+	//   I was sampling; on their T-state it is the right one.
+	//
+	//   the operand: ID16, the increment-decrement output, so C+-1 or L
+	//   comes from the path that computed it rather than being rebuilt
+	//   by hand from the register file.
+	wire    [8:0]   BIO_ioq  = {1'b0, DI_Reg} + {1'b0, ID16[7:0]};
+	wire    [8:0]   BIO_ioq2 = (BIO_ioq & 9'b000000111) ^ {1'b0, BusA};
+	// CPI and its family take the undocumented 5 and 3 not from the
+	// comparison but from A - (HL) - H, bit 1 into flag 5 and bit 3
+	// into flag 3. The ALU has already put the CP result in ALU_Q
+	// and the half borrow in F_Out, so the value is one subtract
+	// away.
+	wire    [7:0]   CP_Undoc = ALU_Q - {7'd0, F_Out[Flag_H]};
 
 	// Registered micro code outputs
 	reg     [4:0]   Read_To_Reg_r;
@@ -358,6 +384,8 @@ module T80 (
 		.ALU_Op(ALU_Op_r),
 		.IR(IR[5:0]),
 		.ISet(ISet),
+		.WZ(TmpAddr),
+		.XY_State(XY_State),
 		.BusA(BusA),
 		.BusB(BusB),
 		.F_In(F),
@@ -639,13 +667,39 @@ module T80 (
 
 					if (Special_LD[2] == 1'b1) begin
 						case (Special_LD[1:0])
+							// LD A,I and LD A,R set the whole flag byte bar carry,
+							// and only P was being set here.
+							//
+							// S and Z are DOCUMENTED, so this was not a matter of
+							// undocumented behaviour: after LD A,I the sign and zero
+							// flags kept whatever the previous instruction left, and
+							// code doing LD A,I then JP M or JR Z read rubbish.
+							// z80full calls these tests 148 and 149.
+							//
+							// A real Z80 takes S and Z from the value loaded, clears
+							// H and N, puts IFF2 in P/V - which was already right, and
+							// is what every ROM uses to save the interrupt state - and
+							// takes the undocumented 5 and 3 from the value too.
+							// Carry is left alone.
 							2'b00: begin
 								ACC <= I;
 								F[Flag_P] <= IntE_FF2;
+								F[Flag_S] <= I[7];
+								F[Flag_Z] <= (I == 8'h00);
+								F[Flag_H] <= 1'b0;
+								F[Flag_N] <= 1'b0;
+								F[Flag_X] <= I[3];
+								F[Flag_Y] <= I[5];
 							end
 							2'b01: begin
 								ACC <= R;
 								F[Flag_P] <= IntE_FF2;
+								F[Flag_S] <= R[7];
+								F[Flag_Z] <= (R == 8'h00);
+								F[Flag_H] <= 1'b0;
+								F[Flag_N] <= 1'b0;
+								F[Flag_X] <= R[3];
+								F[Flag_Y] <= R[5];
 							end
 							2'b10: begin
 								I <= ACC;
@@ -683,6 +737,12 @@ module T80 (
 						F[Flag_Z] <= 1'b0;
 					F[Flag_S] <= DI_Reg[7];
 					F[Flag_P] <= ~(^DI_Reg);
+					// And the undocumented 5 and 3, which came from nowhere at all.
+					// IN r,(C) takes them from the byte read, the same as any
+					// ordinary load - z80full calls these tests IN R,(C) and
+					// IN (C).
+					F[Flag_X] <= DI_Reg[3];
+					F[Flag_Y] <= DI_Reg[5];
 				end
 
 				if (TState == 3'd1) begin
@@ -714,6 +774,16 @@ module T80 (
 				end
 				if (I_BC == 1'b1 || I_BT == 1'b1)
 					F[Flag_P] <= IncDecZ;
+				// The 5 and 3 of CPI, CPD, CPIR and CPDR. A plain CP takes them
+				// from the operand, which is what the ALU does and is right
+				// there; the block compare is the exception. Measured before
+				// this went in, tb_flags.v: CPI with A=$10, (HL)=$01 gave F=$16
+				// where a Z80 gives $3E - every documented flag already right,
+				// both undocumented ones wrong.
+				if (TState == 3'd1 && I_BC == 1'b1) begin
+					F[Flag_X] <= CP_Undoc[3];
+					F[Flag_Y] <= CP_Undoc[1];
+				end
 
 				if ((TState == 3'd1 && Save_ALU_r == 1'b0) ||
 					(Save_ALU_r == 1'b1 && ALU_Op_r != 4'b0111)) begin
@@ -727,6 +797,33 @@ module T80 (
 					endcase
 					if (XYbit_undoc == 1'b1)
 						DO <= ALU_Q;
+				end
+
+				// The block IO group - INI, IND, OUTI, OUTD and the repeats.
+				//
+				// AFTER the write above, deliberately: that one puts the
+				// whole ALU flag byte into F, and placed before it this was
+				// simply overwritten - measured, the flags came out as if
+				// nothing had been added at all.
+				//
+				// A Z80 builds these from the byte transferred, not from the
+				// B decrement the microcode does: N is the byte's top bit,
+				// H and carry say whether k overflowed a byte, and P/V is
+				// the parity of the bottom three bits of k against the new
+				// B. S, Z and the undocumented 5 and 3 really do come from
+				// B, and the decrement already gets those right.
+				// The block IO group - INI, IND, OUTI, OUTD and the repeats.
+				// S, Z and the undocumented 5 and 3 stay with the microcode's
+				// decrement of B, which gets them right. Building all of F
+				// here instead was tried and reverted: it overwrites carry and
+				// zero too, and ESXDOS drives its SPI through these and tests
+				// them - the card would not initialise.
+				if ((TState == 3'd2 && I_BTR == 1'b1 && IR[0] == 1'b1) ||
+				    (TState == 3'd1 && I_BTR == 1'b1 && IR[0] == 1'b0)) begin
+					F[Flag_N] <= DI_Reg[7];
+					F[Flag_C] <= BIO_ioq[8];
+					F[Flag_H] <= BIO_ioq[8];
+					F[Flag_P] <= ~(^BIO_ioq2);
 				end
 
 			end
@@ -849,6 +946,8 @@ module T80 (
 		.AddrC(RegAddrC),
 		.DIH(RegDIH),
 		.DIL(RegDIL),
+		.DOBC(RegBC),
+		.DOHL(RegHL),
 		.DOAH(RegBusA[15:8]),
 		.DOAL(RegBusA[7:0]),
 		.DOBH(RegBusB[15:8]),

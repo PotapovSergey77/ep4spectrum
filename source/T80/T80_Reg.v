@@ -65,6 +65,8 @@ module T80_Reg (
 	AddrC,
 	DIH,
 	DIL,
+	DOBC,
+	DOHL,
 	DOAH,
 	DOAL,
 	DOBH,
@@ -82,6 +84,8 @@ module T80_Reg (
 	input   [2:0]   AddrC;
 	input   [7:0]   DIH;
 	input   [7:0]   DIL;
+	output [15:0]  DOBC;
+	output [15:0]  DOHL;
 	output  [7:0]   DOAH;
 	output  [7:0]   DOAL;
 	output  [7:0]   DOBH;
@@ -101,6 +105,12 @@ module T80_Reg (
 		end
 	end
 
+	// BC and HL, always visible. The block IO flags need C or L and
+	// the new B, and the three addressed ports carry whatever the
+	// microcode is using at the time. Two more reads of a register
+	// array cost nothing.
+	assign DOBC = {RegsH[0], RegsL[0]};
+	assign DOHL = {RegsH[2], RegsL[2]};
 	assign DOAH = RegsH[AddrA];
 	assign DOAL = RegsL[AddrA];
 	assign DOBH = RegsH[AddrB];

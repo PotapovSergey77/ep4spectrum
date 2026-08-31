@@ -68,6 +68,8 @@ module T80_ALU (
 	ALU_Op,
 	IR,
 	ISet,
+	WZ,
+	XY_State,
 	BusA,
 	BusB,
 	F_In,
@@ -90,6 +92,8 @@ module T80_ALU (
 	input   [3:0]   ALU_Op;
 	input   [5:0]   IR;
 	input   [1:0]   ISet;
+	input   [15:0]  WZ;
+	input   [1:0]   XY_State;
 	input   [7:0]   BusA;
 	input   [7:0]   BusB;
 	input   [7:0]   F_In;
@@ -278,9 +282,14 @@ module T80_ALU (
 				end
 				F_Out[Flag_H] = 1'b1;
 				F_Out[Flag_N] = 1'b0;
-				F_Out[Flag_X] = 1'b0;
-				F_Out[Flag_Y] = 1'b0;
-				if (IR[2:0] != 3'b110) begin
+				// A BIT on memory takes the undocumented 5 and 3 from
+				// MEMPTR, not from the operand, and so do the DD/FD
+				// forms even when they name a register. Both were being
+				// zeroed here, this core having had no such register.
+				if (IR[2:0] == 3'b110 || XY_State != 2'b00) begin
+					F_Out[Flag_X] = WZ[11];
+					F_Out[Flag_Y] = WZ[13];
+				end else begin
 					F_Out[Flag_X] = BusB[3];
 					F_Out[Flag_Y] = BusB[5];
 				end

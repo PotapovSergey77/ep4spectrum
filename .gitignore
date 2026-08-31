@@ -67,4 +67,13 @@ simulation/modelsim/work_iow/
 # tools/; the ready-to-run set lives in testapp/tests/ instead.
 testapp/zxtests3/*.tap
 # ModelSim compiles a library per bench; none of them belong in the tree.
+# ModelSim compiles a library per bench, and a stray vlog run leaves one
+# in the project root too.
 simulation/modelsim/work_*/
+work_*/
+
+# Build products of the z80test sources. The finished pair lives in
+# testapp/tests/; sjasm and mktap regenerate these from the .asm files.
+testapp/z80test/*.out
+testapp/z80test/*.lst
+testapp/z80test/*.tap
