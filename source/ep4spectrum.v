@@ -528,7 +528,7 @@ module ep4spectrum (
 	wire            rom_enable; // 0x0000-0x3FFF
 	wire            ram_enable; // 0x4000-0xFFFF
 	// 128K extensions
-	wire            page_enable; // A15 and A1 clear (A0 too on the 48K only)
+	wire            page_enable; // A15 and A1 clear; A14 set on +2A/+3, A0 on 48K
 	wire            psg_enable; // all odd IO addresses with A15 set and A1 clear
 	// +3 extensions
 	// MMC
@@ -2323,8 +2323,17 @@ module ep4spectrum (
 		// DivMMC through page_rom_sel - and a real 48K has no paging
 		// port at all, so widening what it answers to could only invent
 		// behaviour that machine never had.
+		// A14 as well, and only on the +2A/+3. That machine decodes
+		// the port as A15 clear, A14 SET and A1 clear, where a 128K
+		// or a Pentagon does not look at A14 at all - so $3FFD
+		// reaches the register on a 128K and must not on a +3.
+		//
+		// The comment on the declaration promised this and the code
+		// never did it. Taken from the MiSTer core, which has it as
+		// ~addr[15] & ~addr[1] & (addr[14] | ~plus3).
 		assign page_enable = (~cpu_ioreq_n) & cpu_m1_n
 		                     & ~(cpu_a[15] | cpu_a[1])
+		                     & (cpu_a[14] | (machine != MACHINE_S3))
 		                     & (mem128 | cpu_a[0]);
 	end
 	endgenerate
