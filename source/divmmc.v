@@ -280,12 +280,13 @@ always @(posedge clk) begin
 			// BASIC, and only a SECOND F12 reached ESXDOS. Ungated, it
 			// is what the NMI button on a real DivMMC is for - one
 			// press, from whatever ROM happens to be paged.
-			// $0000 sits OUTSIDE the gate, as it does in divmmc_mcleod.v:
-			// the reset fetch must arm whatever ROM is paged, or ESXDOS never
-			// gets control at power-up.
-			((a==16'h0000) || (a==16'h0066) ||
+			// $0000 stays UNDER the gate here, unlike divmmc_mcleod.v: there
+			// ESXDOS is the boot ROM, while this board boots machine ROMs
+			// loaded from the card. Ungated, ESXDOS wins the reset fetch and
+			// the machine's own menu never runs.
+			((a==16'h0066) ||
 			 (entry_ok &&
-			  ((a==16'h0008) || (a==16'h0038) ||
+			  ((a==16'h0000) || (a==16'h0008) || (a==16'h0038) ||
 			   (a==16'h04C6) || (a==16'h0562))))) begin
 			// activate automapper after this cycle
 			m1_trigger <= 1'b1;
