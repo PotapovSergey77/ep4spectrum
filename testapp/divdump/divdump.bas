@@ -1,0 +1,8 @@
+   0 REM DivMMC bank viewer
+     PRINT #1;"0-7 bank  Q/A +-128  W/S +-2048"
+
+  10 RANDOMIZE USR 49152
+
+9000 CLEAR 49151
+9010 LOAD "" CODE
+9020 RUN

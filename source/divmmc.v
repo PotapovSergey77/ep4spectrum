@@ -173,7 +173,11 @@ always @(posedge clk) begin
 		spi_tx_strobe = 1'b0;
 			
 		if (a[3:0]==4'h3 && enable && !wr_n)
-			ctrl <= din;
+			// MAPRAM, bit 6, is a set-only bit: once on it stays on until
+			// a reset. Writing the whole byte let it be cleared again.
+			// Matches divmmc_mcleod.v, which has
+			// mapram_mode <= mapram_mode | din[6].
+			ctrl <= {din[7], ctrl[6] | din[6], din[5:0]};
 			
 		if(a[3:0]==4'h7 && enable && !wr_n)
 			sd_cs <= din[0];
@@ -276,9 +280,12 @@ always @(posedge clk) begin
 			// BASIC, and only a SECOND F12 reached ESXDOS. Ungated, it
 			// is what the NMI button on a real DivMMC is for - one
 			// press, from whatever ROM happens to be paged.
-			((a==16'h0066) ||
+			// $0000 sits OUTSIDE the gate, as it does in divmmc_mcleod.v:
+			// the reset fetch must arm whatever ROM is paged, or ESXDOS never
+			// gets control at power-up.
+			((a==16'h0000) || (a==16'h0066) ||
 			 (entry_ok &&
-			  ((a==16'h0000) || (a==16'h0008) || (a==16'h0038) ||
+			  ((a==16'h0008) || (a==16'h0038) ||
 			   (a==16'h04C6) || (a==16'h0562))))) begin
 			// activate automapper after this cycle
 			m1_trigger <= 1'b1;

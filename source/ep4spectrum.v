@@ -478,7 +478,12 @@ module ep4spectrum (
 	wire            divmmc_down = ~divmmc_armed;
 	// Declared here rather than beside its use, because the SD pin mux
 	// needs it and that sits above the old position.
-	wire            divmmc_maps = divmmc_paged_in & ~divmmc_down;
+	// CONMEM forces the DivMMC memory in, automapper or not - that is what
+	// bit 7 of the control port is for, and how the firmware reaches its
+	// own banks from code running above $4000. divmmc_mcleod.v drives
+	// sram_write_n = wr_n unconditionally in CONMEM mode, which only makes
+	// sense with the memory actually mapped.
+	wire            divmmc_maps = (divmmc_paged_in | divmmc_conmem) & ~divmmc_down;
 	reg             ext1024 = 1'b0;   // 128K until F9 asks for the megabyte
 
 	// Master clock - 28 MHz
