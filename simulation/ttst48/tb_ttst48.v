@@ -80,6 +80,14 @@ module tb_ttst48;
 		.KEYB_IN(5'h1F), .EAR_IN(1'b0)
 	);
 
+	// The screen fetch's side of the video module - see below.
+	wire [12:0] vid_a;
+	wire        vid_rd_n, vid_req_step, vid_req_gen;
+	wire        port_ff_active;
+	wire [7:0]  port_ff_data;
+	reg         vid_ack = 1'b0, vid_valid = 1'b0, vid_step = 1'b0, vid_gen = 1'b0;
+	reg  [7:0]  vid_d = 8'h00;
+
 	video vid (
 		.CLK(clock), .CLKEN(vid_clken), .MEM_CYC(1'b0), .nRESET(reset_n),
 		.VGA(1'b0), .MACHINE(machine),
@@ -88,11 +96,11 @@ module tb_ttst48;
 		.INT_ADJ(12'd0), .INT_VADJ(8'd0), .CONT_ADJ(5'd0), .IO_ADJ(8'd0),
 		.BORD_PHASE(4'd5), .BORD_DELAY(2'd2),
 		.OSD_SPEED(2'd0), .OSD_EXT(1'b0), .OSD_POKE(1'b0), .OSD_ACTIVE(),
-		.PORT_FF_ACTIVE(), .PORT_FF_DATA(),
-		.VID_A(), .VID_D_IN(8'h00), .nVID_RD(), .nWAIT(),
-		.VID_REQ_STEP(), .VID_REQ_GEN(), .VID_STALE(),
-		.VID_REQ_ACK(1'b0), .VID_DATA_VALID(1'b0),
-		.VID_DATA_STEP(1'b0), .VID_DATA_GEN(1'b0),
+		.PORT_FF_ACTIVE(port_ff_active), .PORT_FF_DATA(port_ff_data),
+		.VID_A(vid_a), .VID_D_IN(vid_d), .nVID_RD(vid_rd_n), .nWAIT(),
+		.VID_REQ_STEP(vid_req_step), .VID_REQ_GEN(vid_req_gen), .VID_STALE(),
+		.VID_REQ_ACK(vid_ack), .VID_DATA_VALID(vid_valid),
+		.VID_DATA_STEP(vid_step), .VID_DATA_GEN(vid_gen),
 		.BORDER_IN(ula_border), .SCR_WR(1'b0), .SCR_A(13'd0), .SCR_D(8'd0),
 		.FWD_HIT(),
 		.R(), .G(), .B(),
@@ -104,7 +112,37 @@ module tb_ttst48;
 	// address; ROM below $4000 is not writable.
 	reg [7:0] mem [0:65535];
 	initial $readmemh("mem.hex", mem);
-	assign cpu_di = (~cpu_ioreq_n) ? 8'hFF : mem[cpu_a];
+
+	// The screen fetch, served out of the same memory: acknowledge a
+	// request and hand the byte back on the next clock. Only the
+	// floating bus reads these bytes here, and it takes them from
+	// registers the fetch fills half a group ahead, so the arbiter's
+	// exact latency does not matter.
+	always @(posedge clock) begin
+		vid_ack   <= 1'b0;
+		vid_valid <= 1'b0;
+		if (vid_ack) begin
+			vid_valid <= 1'b1;
+		end else if (~vid_rd_n && ~vid_valid) begin
+			vid_ack  <= 1'b1;
+			vid_d    <= mem[{3'b010, vid_a}];
+			vid_step <= vid_req_step;
+			vid_gen  <= vid_req_gen;
+		end
+	end
+
+	// IO reads, as ep4spectrum.v answers them on a 48K with F10 off:
+	// even ports the ULA; $xxFD with A14 set the AY, which reads 0 here
+	// because the test has just selected a register number above 15;
+	// $1F the Kempston, 0; and the floating bus on port $FF.
+	wire io_psg  = cpu_a[0] & cpu_a[15] & ~cpu_a[1] & cpu_a[14];
+	wire io_kemp = (cpu_a[7:0] == 8'h1F);
+	wire io_fb   = cpu_a[0] & port_ff_active & (cpu_a[7:0] == 8'hFF);
+	wire [7:0] io_d = ~cpu_a[0] ? ula_do :
+	                  io_psg     ? 8'h00 :
+	                  io_kemp    ? 8'h00 :
+	                  io_fb      ? port_ff_data : 8'hFF;
+	assign cpu_di = (~cpu_ioreq_n) ? io_d : mem[cpu_a];
 	always @(posedge clock)
 		if (cpu_clken_gated && ~cpu_mreq_n && ~cpu_wr_n && cpu_a[15:14] != 2'b00)
 			mem[cpu_a] <= cpu_do;

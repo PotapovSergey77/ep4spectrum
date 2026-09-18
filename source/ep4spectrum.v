@@ -2065,7 +2065,17 @@ module ep4spectrum (
 	assign ula_enable = (~cpu_ioreq_n) & cpu_m1_n & ~cpu_a[0]; // all even IO addresses
 	assign psg_enable = (~cpu_ioreq_n) & cpu_m1_n & cpu_a[0] & cpu_a[15] & ~cpu_a[1];
 	assign kempston_enable = (~cpu_ioreq_n) & cpu_m1_n & ~cpu_a[7] & ~cpu_a[6] & ~cpu_a[5] & cpu_a[4] & cpu_a[3] & cpu_a[2] & cpu_a[1] & cpu_a[0];
-	assign divmmc_enable = esxdos_downloaded[1] & (~cpu_ioreq_n) & cpu_m1_n & cpu_a[7] & cpu_a[6] & cpu_a[5] & ~cpu_a[4] & cpu_a[0];
+	// With F10 standing DivMMC down its ports go too, not just the
+	// automapper: a switched-off interface is one that is not there.
+	// ttst48's test 35 is what showed it. Its loop does OUT (C),r with
+	// every value of C in turn, and at C = $E3 that is $E3 written to
+	// the control port - CONMEM and the set-only MAPRAM. With the port
+	// live the latch took it while the memory map ignored it, and
+	// pressing F10 again brought ESXDOS back in over the ROM on a
+	// control byte nobody had meant to write. Without F10 the same OUT
+	// pages ESXDOS in at once and the machine goes down, exactly as it
+	// would with a real DivMMC plugged in.
+	assign divmmc_enable = esxdos_downloaded[1] & ~divmmc_down & (~cpu_ioreq_n) & cpu_m1_n & cpu_a[7] & cpu_a[6] & cpu_a[5] & ~cpu_a[4] & cpu_a[0];
 
 	// Beta Disk ports, live only while the TR-DOS ROM is paged in - that
 	// is how a real interface behaves, and it keeps $1F, $3F, $5F, $7F
@@ -2152,8 +2162,20 @@ module ep4spectrum (
 	// Ports chosen clear of everything already decoded: A0=1 keeps them
 	// off the ULA, A1=1 off the AY and the paging register, A4=1 off
 	// DivMMC's 1110 group, and neither is 0x1F.
-	wire romld_ctl_enable = (~cpu_ioreq_n) & cpu_m1_n & (cpu_a[7:0] == 8'h9b);
-	wire romld_dat_enable = (~cpu_ioreq_n) & cpu_m1_n & (cpu_a[7:0] == 8'h9f);
+	//
+	// Live only while DivMMC's memory is mapped in, which is where the
+	// loader runs - romload is a dot command, executing at $2000 in
+	// DivMMC RAM. Everywhere else the two ports do not exist, as on the
+	// machines being copied. They used to answer any program, and
+	// ttst48's test 35 found it: its loop does OUT (C),r and IN r,(C)
+	// through every value of C, so at $9B it wrote $9B to the control
+	// port - slot 3, and clear its filled flag - and at $9F it wrote a
+	// byte into the disk image and stepped the counter. Each of those
+	// is an SDRAM access the CPU waits on, so the test also lost
+	// T-states it has no reason to lose.
+	wire romld_live       = esxdos_downloaded[1] & divmmc_maps;
+	wire romld_ctl_enable = romld_live & (~cpu_ioreq_n) & cpu_m1_n & (cpu_a[7:0] == 8'h9b);
+	wire romld_dat_enable = romld_live & (~cpu_ioreq_n) & cpu_m1_n & (cpu_a[7:0] == 8'h9f);
 	wire romld_write      = romld_dat_enable & ~cpu_wr_n;
 	// Slot 3 is a disk image, not a ROM, and it goes in the RAM half of
 	// SDRAM rather than the ROM half: a .trd is 640K and the ROM half has
