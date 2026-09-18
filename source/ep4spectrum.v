@@ -508,6 +508,7 @@ module ep4spectrum (
 	wire            vid_mem_sync;
 	wire            vid_contention;
 	wire            vid_contention_io;
+	wire            vid_contention_io_next;
 	wire            vid_port_ff_active;
 	wire    [7:0]   vid_port_ff_data;
 	// The CPU's enable after the ULA has had its say - see the contention
@@ -570,6 +571,7 @@ module ep4spectrum (
 	wire    [2:0]   cpu_mc;
 	wire    [2:0]   cpu_ts;
 	wire            cpu_io_cyc;
+	wire            cpu_idle_cyc;
 	wire            cpu_wait_all_n;
 	wire            cpu_irq_n;
 	wire            cpu_nmi_n;
@@ -1164,7 +1166,8 @@ module ep4spectrum (
 		.DO(cpu_do),
 		.MC(cpu_mc),
 		.TS(cpu_ts),
-		.IO_CYC(cpu_io_cyc)
+		.IO_CYC(cpu_io_cyc),
+		.IDLE_CYC(cpu_idle_cyc)
 	);
 	// VSYNC interrupt routed to CPU
 	// (tested disabling this entirely as a diagnostic - made no
@@ -1206,7 +1209,22 @@ module ep4spectrum (
 	// window at 0xC000 when the bank paged there is a contended one -
 	// odd banks on a 128K, banks 4..7 on a +2A/+3.
 	wire cont_page = (machine == MACHINE_S3) ? page_ram_sel[2] : page_ram_sel[0];
-	wire cont_addr = cpu_a[14] & (~cpu_a[15] | cont_page);
+	// In an idle machine cycle the ULA sees whatever the CPU last put on
+	// the address bus, because a real Z80 leaves it there: the
+	// displacement's address through JR's five internal T-states, DE
+	// through LDIR's, HL through CPIR's and INIR's, the port through
+	// OTIR's, IR after an opcode fetch's refresh. T80 drives PC instead,
+	// which is contended whenever the code is - so LDDR at $5B3B was
+	// charged against $5B3D where a real machine judges $D00E, which is
+	// uncontended, and every block instruction in contended memory came
+	// out slow. So the address of the last real bus cycle is kept, and
+	// judged in its place.
+	reg  [15:0] last_bus_a = 16'h0000;
+	always @(posedge clock)
+		if (cpu_clken == 1'b1 && (cpu_mreq_n == 1'b0 || cpu_ioreq_n == 1'b0))
+			last_bus_a <= cpu_a;
+	wire [15:0] cont_a = cpu_idle_cyc ? last_bus_a : cpu_a;
+	wire cont_addr = cont_a[14] & (~cont_a[15] | cont_page);
 	// The +2A/+3 does not contend IO at all. On the others an IO cycle
 	// is charged from the published four-case table, which keys on the
 	// port's high byte and on A0:
@@ -1329,6 +1347,17 @@ module ep4spectrum (
 	wire cycle_extra = (cont_model == 2'd0) ? 1'b0 :
 	                   (cont_model == 2'd1) ? (extra_m1 | extra_nonm1) :
 	                   (cont_model == 2'd2) ? extra_nonm1 : extra_m1;
+	// A machine cycle of nothing but internal T-states is charged on
+	// every one of them, not just on T1 and past the third.
+	//
+	// T80 does not always fold internal T-states onto an access. JR e
+	// is "pc:4, pc+1:3, pc+1:1 x5", and T80 runs the five as a machine
+	// cycle of their own, with no read and no write. The length test
+	// above saw T1, T4 and T5 of it and missed T2 and T3, so a JR in
+	// contended memory was charged three of its five checks. Richard
+	// Chandler's ttst48 counts T-states to the interrupt and caught it:
+	// every test looping on a JR from $5B00 came out short.
+	wire cycle_idle = cpu_idle_cyc;
 	// The refresh half of M1 has to come out of this.
 	//
 	// Only the +2A/+3 keys contention off the bare MREQ level; the other
@@ -1351,7 +1380,7 @@ module ep4spectrum (
 	// M1 fetch as contend_read( pc, 4 ) and never looks at the refresh
 	// address at all.
 	wire cont_trigger = (machine == MACHINE_S3) ? (~cpu_mreq_n & cpu_rfsh_n)
-	                                            : (cycle_first | cycle_extra);
+	                                            : (cycle_first | cycle_extra | cycle_idle);
 
 	// No "already paid" flag on the ULA path, deliberately. It existed
 	// because MREQ stays low for two or three T-states, so the level
@@ -1487,6 +1516,42 @@ module ep4spectrum (
 	// what Sizif does by holding clkcpu.
 	assign cpu_clken_gated = cpu_clken & ~contention;
 
+	// A write to the ULA port lands when the CPU is let go, not when
+	// IORQ and WR go low.
+	//
+	// A real 48K stops the CPU's clock before the IO cycle's T2 edge, so
+	// IORQ has not even been asserted while the CPU waits, and the
+	// border changes after the wait: WoS's 48K reference puts the colour
+	// at the end of the OUT minus three T-states. Here IORQ and WR are
+	// already low throughout T2, and the wait is decided on the enable
+	// that ends it - so the port used to take the value at the start of
+	// T2 and the delay came afterwards, d T-states too early for a write
+	// charged d. FUSE does the same (periph.c: writeport_internal sits
+	// between ula_contend_port_early and _late), and so did we.
+	//
+	// It shows in exactly one place. T-state 14335 is the only one on
+	// the line that is both the last border group before the picture
+	// and charged the full six. esh2_48's black OUT (C),0 lands there,
+	// and the real machine paints it six T-states later, inside the
+	// picture where no border shows; we painted it at once, as an
+	// eight-pixel dash on the first display line. Uncharged writes are
+	// untouched: with no wait the value is taken at the same clock as
+	// before.
+	//
+	// Set on each CPU enable, for the T-state that follows it: true when
+	// the CPU will still be in T2 of an IO cycle whose T2 is charged, and
+	// the enable ending that T2 will be withheld. The port waits while it
+	// is true and takes the value in the first T-state that will not be.
+	// Only at 3.5MHz, since the lookahead is one T-state at that speed.
+	wire io_t2_next = (io_start & ~contention) | ((io_seq == 3'd1) & contention);
+	reg  ula_io_held = 1'b0;
+	always @(posedge clock) begin
+		if (cpu_clken == 1'b1)
+			ula_io_held <= (machine != MACHINE_PENT) & (cpu_speed == 2'd0)
+			               & io_t2_next & (io_hh | ~io_ha0)
+			               & vid_contention_io_next;
+	end
+
 	// The speed change lands here rather than where the key is read: on
 	// a slot boundary, with no memory or IO cycle open and nothing
 	// waiting on the arbiter. Everything downstream assumes the CPU's
@@ -1583,10 +1648,10 @@ module ep4spectrum (
 		// white was simply dropped.
 		//
 		// The write is an idempotent register load, so letting it run
-		// for the whole bus cycle is harmless - the first load happens
-		// the moment IORQ and WR are both low, which is the exact
-		// T-state the program intended.
-		.ENABLE(ula_enable),
+		// for the whole bus cycle is harmless. The first load waits out
+		// any contention on the cycle's T2 - see ula_io_held - and
+		// otherwise happens the moment IORQ and WR are both low.
+		.ENABLE(ula_enable & ~ula_io_held),
 		.nWR(cpu_wr_n),
 		.BORDER_OUT(ula_border),
 		.EAR_OUT(ula_ear_out),
@@ -1614,6 +1679,7 @@ module ep4spectrum (
 		.MACHINE(machine),
 		.CONTENTION(vid_contention),
 		.CONTENTION_IO(vid_contention_io),
+		.CONTENTION_IO_NEXT(vid_contention_io_next),
 		.INT_ADJ(int_adj),
 		.INT_VADJ(int_vadj),
 		.CONT_ADJ(cont_adj),

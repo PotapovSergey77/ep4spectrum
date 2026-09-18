@@ -2075,22 +2075,34 @@ module T80_MCode (
 			end
 			8'b01101111: begin
 				// RLD
-				MCycles <= 3'b100;
+				//
+				// A Z80 runs this as pc:4, pc+1:4, hl:3, hl:1 x4, hl:3:
+				// the read, four internal T-states with HL still on the
+				// bus, then the write. It stood here as three T-states
+				// of nothing, then a four-T-state read, then the write -
+				// the same eighteen
+				// T-states, but on a 48K it put three T-states where HL is
+				// judged for contention at an address that is not HL,
+				// and ttst48 test 8 (contended, HL = $5B00) came out
+				// fast. The read now comes first and carries the four
+				// internal T-states itself, so every one is judged
+				// against HL; the write follows it directly, as before,
+				// so the data path is unchanged.
+				MCycles <= 3'b011;
 				case (MCycle)
-				2: begin
-					NoRead <= 1'b1;
+				1: begin
 					Set_Addr_To <= aXY;
 				end
-				3: begin
+				2: begin
 					Read_To_Reg <= 1'b1;
 					Set_BusB_To[2:0] <= 3'b110;
 					Set_BusA_To[2:0] <= 3'b111;
 					ALU_Op <= 4'b1101;
-					TStates <= 3'b100;
+					TStates <= 3'b111;
 					Set_Addr_To <= aXY;
 					Save_ALU <= 1'b1;
 				end
-				4: begin
+				3: begin
 					I_RLD <= 1'b1;
 					Write <= 1'b1;
 				end
@@ -2099,21 +2111,34 @@ module T80_MCode (
 			end
 			8'b01100111: begin
 				// RRD
-				MCycles <= 3'b100;
+				//
+				// A Z80 runs this as pc:4, pc+1:4, hl:3, hl:1 x4, hl:3:
+				// the read, four internal T-states with HL still on the
+				// bus, then the write. It stood here as three T-states
+				// of nothing, then a four-T-state read, then the write -
+				// and RRD even read memory at PC in those three T-states, the same eighteen
+				// T-states, but on a 48K it put three T-states where HL is
+				// judged for contention at an address that is not HL,
+				// and ttst48 test 8 (contended, HL = $5B00) came out
+				// fast. The read now comes first and carries the four
+				// internal T-states itself, so every one is judged
+				// against HL; the write follows it directly, as before,
+				// so the data path is unchanged.
+				MCycles <= 3'b011;
 				case (MCycle)
-				2: begin
+				1: begin
 					Set_Addr_To <= aXY;
 				end
-				3: begin
+				2: begin
 					Read_To_Reg <= 1'b1;
 					Set_BusB_To[2:0] <= 3'b110;
 					Set_BusA_To[2:0] <= 3'b111;
 					ALU_Op <= 4'b1110;
-					TStates <= 3'b100;
+					TStates <= 3'b111;
 					Set_Addr_To <= aXY;
 					Save_ALU <= 1'b1;
 				end
-				4: begin
+				3: begin
 					I_RRD <= 1'b1;
 					Write <= 1'b1;
 				end
@@ -2182,9 +2207,18 @@ module T80_MCode (
 			8'b10100010, 8'b10101010, 8'b10110010, 8'b10111010: begin
 				// INI, IND, INIR, INDR
 				// note B is decremented AFTER being put on the bus
+				//
+				// The extra T-state belongs on the opcode fetch, as
+				// OUTI already has it: a Z80 runs INI as pc:4,
+				// pc+1:4, IR:1, then the port and the write to HL.
+				// It sat on the write here, which is the same 16
+				// T-states but puts the port a T-state early, so on a
+				// 48K the IO contention was judged at the wrong phase
+				// (ttst48 test 32, INI/INIR/IND/INDR, contended).
 				MCycles <= 3'b100;
 				case (MCycle)
 				1: begin
+					TStates <= 3'b101;
 					Set_Addr_To <= aBC;
 					Set_BusB_To <= 4'b1010;
 					Set_BusA_To <= 4'b0000;
@@ -2204,7 +2238,6 @@ module T80_MCode (
 					end else begin
 						IncDec_16 <= 4'b1110;
 					end
-					TStates <= 3'b100;
 					Write <= 1'b1;
 					I_BTR <= 1'b1;
 				end

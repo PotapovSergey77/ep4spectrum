@@ -97,7 +97,12 @@ module T80se (
 	// T1, so a walk keyed on the pin starts a T-state after the cycle
 	// really began - which is the phase error the ULA contention model
 	// was compensating for with a second window.
-	IO_CYC
+	IO_CYC,
+	// This machine cycle touches no bus at all: neither the opcode
+	// fetch, nor a memory read or write, nor IO. These are the internal
+	// T-states the published timings write as "pc+1:1 x5" and the like,
+	// which a 48K ULA charges one T-state at a time.
+	IDLE_CYC
 );
 
 	parameter Mode = 0;    // 0 => Z80, 1 => Fast Z80, 2 => 8080, 3 => GB
@@ -125,6 +130,7 @@ module T80se (
 	output  [2:0]   MC;
 	output  [2:0]   TS;
 	output          IO_CYC;
+	output          IDLE_CYC;
 
 	wire            IntCycle_n;
 	wire            NoRead;
@@ -137,6 +143,7 @@ module T80se (
 	assign MC = MCycle;
 	assign TS = TState;
 	assign IO_CYC = IORQ;
+	assign IDLE_CYC = (MCycle != 3'b001) & NoRead & ~Write & ~IORQ;
 
 	T80 #(
 		.Mode(Mode),

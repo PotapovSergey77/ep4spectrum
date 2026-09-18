@@ -66,6 +66,7 @@ module video (
 	MACHINE,
 	CONTENTION,
 	CONTENTION_IO,
+	CONTENTION_IO_NEXT,
 	INT_ADJ,
 	INT_VADJ,
 	CONT_ADJ,
@@ -132,6 +133,8 @@ module video (
 	output          CONTENTION;
 	// Same window a T-state earlier, for IO - see the assign below.
 	output          CONTENTION_IO;
+	// The IO window as it will stand at the CPU's next T-state.
+	output          CONTENTION_IO_NEXT;
 	input   [11:0]  INT_ADJ;
 	input   [7:0]   INT_VADJ;
 	input   [4:0]   CONT_ADJ;
@@ -554,6 +557,26 @@ module video (
 	wire [9:0] hc_io = hi_wrap[9:0];
 	assign CONTENTION_IO = vpicture & ~hc_io[9]
 	                       & ((VGA ? hc_io[5:3] : hc_io[4:2]) < cont_span);
+
+	// The same window one T-state ahead, for the ULA port's write.
+	//
+	// A border write has to land when the CPU is let go, not when IORQ
+	// and WR go low: a real 48K stops the CPU's clock before the IO
+	// cycle's T2 edge, so the write happens after the wait. Here T2 has
+	// already begun when the wait is decided - on the enable that ends
+	// it - so the port has to know at the start of T2 whether that
+	// enable will be withheld. Four hcounter increments fall between one
+	// CPU enable and the next at 3.5MHz, whatever their phase, so the
+	// window at hcounter plus one T-state is exactly the one the next
+	// enable will meet. vpicture needs no lookahead: the window sits
+	// well inside the line, so the line never changes under it.
+	wire signed [12:0] hn_sum  = hi_sum + {9'd0, t_counts};
+	wire signed [12:0] hn_wrap =
+		(hn_sum < 0)      ? (hn_sum + hline) :
+		(hn_sum >= hline) ? (hn_sum - hline) : hn_sum;
+	wire [9:0] hc_ion = hn_wrap[9:0];
+	assign CONTENTION_IO_NEXT = vpicture & ~hc_ion[9]
+	                            & ((VGA ? hc_ion[5:3] : hc_ion[4:2]) < cont_span);
 
 
 	// The border colour is latched rather than taken straight off the
